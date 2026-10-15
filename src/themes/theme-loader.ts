@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import githubCss from "./github.css?raw";
 import nightCss from "./night.css?raw";
 import newsprintCss from "./newsprint.css?raw";
@@ -85,18 +86,23 @@ export class ThemeLoader {
 
   public reloadCustomCss() {
     const userCssLink = document.getElementById("base_user_css") as HTMLLinkElement;
-    if (userCssLink && userCssLink.href) {
-      const url = new URL(userCssLink.href, window.location.href);
+    const rawHref = userCssLink?.getAttribute("href");
+    if (userCssLink && rawHref && rawHref.trim().length > 0) {
+      const url = new URL(rawHref, window.location.href);
       url.searchParams.set("t", Date.now().toString());
       userCssLink.href = url.toString();
     }
   }
 
   private listenToThemeUpdates() {
-    window.addEventListener("tauri://theme-updated" as any, () => {
+    const onThemeUpdate = () => {
       console.log("[Theme] 检测到本地 CSS 样式变更，正在热重载...");
       this.reloadCustomCss();
       this.setTheme(this.currentTheme);
+    };
+    window.addEventListener("tauri://theme-updated" as any, onThemeUpdate);
+    listen("theme-updated", onThemeUpdate).catch(() => {
+      // 非 Tauri 容器环境下静默降级
     });
   }
 }

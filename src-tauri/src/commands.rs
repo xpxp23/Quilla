@@ -1,3 +1,4 @@
+use crate::buffer::DocumentBuffer;
 use crate::safe_io::SafeIO;
 use crate::search::{SearchEngine, SearchMatch};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ pub struct AppState {
     pub current_workspace: Mutex<Option<String>>,
     pub initial_file: Mutex<Option<String>>,
     pub is_new_window: Mutex<bool>,
+    pub document_buffer: Mutex<DocumentBuffer>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -22,13 +24,27 @@ pub struct FileItem {
 }
 
 #[tauri::command]
-pub fn save_file_content(path: String, content: String) -> Result<(), String> {
-    SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))
+pub fn save_file_content(
+    path: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))?;
+    if let Ok(mut buf) = state.document_buffer.lock() {
+        buf.set_text(&content);
+        buf.mark_clean();
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub fn read_file_content(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))
+pub fn read_file_content(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
+    if let Ok(mut buf) = state.document_buffer.lock() {
+        buf.set_text(&content);
+        buf.mark_clean();
+    }
+    Ok(content)
 }
 
 #[tauri::command]
@@ -68,23 +84,24 @@ pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
                     .to_string_lossy()
                     .to_string();
 
-                // 过滤隐藏文件与黑名单巨型/二进制目录
-                if file_name.starts_with('.') || BLACKLIST.iter().any(|&b| file_name.eq_ignore_ascii_case(b)) {
+                // 过滤隐藏文件与黑名单巨型/二进制目录 (同时隐藏图片默认存放目录 assets 防止干扰文档树)
+                if file_name.starts_with('.')
+                    || file_name.eq_ignore_ascii_case("assets")
+                    || BLACKLIST.iter().any(|&b| file_name.eq_ignore_ascii_case(b))
+                {
                     continue;
                 }
 
                 if path.is_dir() {
                     let children = build_tree(&path, depth + 1, count);
-                    // 智能后序剪枝：若文件夹内部没有任何文本文件，则直接不展示该文件夹
-                    if !children.is_empty() {
-                        *count += 1;
-                        items.push(FileItem {
-                            name: file_name,
-                            path: path.to_string_lossy().to_string(),
-                            is_dir: true,
-                            children: Some(children),
-                        });
-                    }
+                    // 保留工作区内的用户目录（包含空文件夹，确保新建文件夹后立即可见并可在其下创建文件）
+                    *count += 1;
+                    items.push(FileItem {
+                        name: file_name,
+                        path: path.to_string_lossy().to_string(),
+                        is_dir: true,
+                        children: Some(children),
+                    });
                 } else if is_text_file(&path) {
                     *count += 1;
                     items.push(FileItem {
@@ -97,7 +114,7 @@ pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
             }
         }
         // 目录在前，文件在后排序
-        items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
         items
     }
 
@@ -121,7 +138,7 @@ pub fn search_workspace_content(
 #[tauri::command]
 pub fn select_workspace_folder(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let folder = rfd::FileDialog::new()
-        .set_title("选择工作区文件夹 (Typora)")
+        .set_title("选择工作区文件夹")
         .pick_folder();
 
     if let Some(path) = folder {
@@ -141,6 +158,20 @@ pub fn select_save_file_path(default_name: Option<String>) -> Result<Option<Stri
         .add_filter("Markdown 文件 (*.md)", &["md", "markdown"])
         .add_filter("文本文档 (*.txt)", &["txt"])
         .add_filter("所有文件 (*.*)", &["*"]);
+
+    if let Some(name) = default_name {
+        dialog = dialog.set_file_name(&name);
+    }
+
+    let file = dialog.save_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn select_export_html_path(default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("导出为 HTML 文档")
+        .add_filter("HTML 网页 (*.html)", &["html", "htm"]);
 
     if let Some(name) = default_name {
         dialog = dialog.set_file_name(&name);
@@ -183,7 +214,7 @@ pub fn save_image_asset(
     let base_dir = if let Some(ref dp) = doc_path {
         Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
-        Path::new(".").to_path_buf()
+        std::env::temp_dir().join("quilla-unsaved")
     };
 
     let assets_dir = base_dir.join("assets");
@@ -194,7 +225,11 @@ pub fn save_image_asset(
     let target_file = assets_dir.join(&filename);
     fs::write(&target_file, bytes).map_err(|e| format!("写入图片失败: {}", e))?;
 
-    Ok(format!("assets/{}", filename))
+    if doc_path.is_some() {
+        Ok(format!("assets/{}", filename))
+    } else {
+        Ok(target_file.to_string_lossy().replace('\\', "/"))
+    }
 }
 
 #[tauri::command]
@@ -227,7 +262,7 @@ pub fn copy_image_to_assets(
     let base_dir = if let Some(ref dp) = doc_path {
         Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
-        Path::new(".").to_path_buf()
+        std::env::temp_dir().join("quilla-unsaved")
     };
 
     let assets_dir = base_dir.join("assets");
@@ -238,7 +273,11 @@ pub fn copy_image_to_assets(
     let target_file = assets_dir.join(&new_filename);
     fs::copy(src, &target_file).map_err(|e| format!("复制图片失败: {}", e))?;
 
-    Ok(format!("assets/{}", new_filename))
+    if doc_path.is_some() {
+        Ok(format!("assets/{}", new_filename))
+    } else {
+        Ok(target_file.to_string_lossy().replace('\\', "/"))
+    }
 }
 
 #[tauri::command]
@@ -272,6 +311,7 @@ pub fn read_image_base64(
         "gif" => "image/gif",
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
+        "bmp" => "image/bmp",
         _ => "image/png",
     };
 
@@ -364,9 +404,25 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("打开文件资源管理器失败: {}", e))?;
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        // 跨平台备用
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| format!("在 Finder 中显示失败: {}", e))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let p = Path::new(&path);
+        let dir = if p.is_dir() {
+            p
+        } else {
+            p.parent().unwrap_or(Path::new("."))
+        };
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("打开文件管理器失败: {}", e))?;
     }
     Ok(())
 }
@@ -385,7 +441,7 @@ pub fn is_blank_new_window(state: State<'_, AppState>) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<(), String> {
-    // 优先通过独立进程拉起全新的 Typora 实例（对齐 Typora 独立进程模型，保证崩溃隔离与独立窗口生命周期）
+    // 优先通过独立进程拉起全新的 Quilla 实例（保证崩溃隔离与独立窗口生命周期）
     if let Ok(current_exe) = std::env::current_exe() {
         let mut cmd = std::process::Command::new(current_exe);
         if let Some(ref path) = file_path {
@@ -393,13 +449,12 @@ pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Re
         } else {
             cmd.arg("--new-window");
         }
-        if let Ok(_) = cmd.spawn() {
+        if cmd.spawn().is_ok() {
             return Ok(());
         }
     }
 
     // 备用机制：通过 Tauri WebviewWindowBuilder 在同一进程内动态创建窗口
-    use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -433,12 +488,23 @@ pub fn open_external_url(url: String) -> Result<(), String> {
         return Ok(());
     }
 
+    // 严格校验允许的外部协议，防止命令注入或恶意本地文件执行
+    let lower = target.to_lowercase();
+    if !(lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("ftp://"))
+    {
+        return Err("仅支持打开 http/https/mailto/ftp 协议链接".to_string());
+    }
+
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", target])
+        // 使用 rundll32 url.dll,FileProtocolHandler 替代 cmd /c start，避免 & 等参数被 shell 截断或命令注入
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", target])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("打开系统浏览器失败: {}", e))?;
@@ -462,4 +528,3 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 
     Ok(())
 }
-

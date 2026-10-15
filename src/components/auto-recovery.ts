@@ -7,6 +7,15 @@ export interface RecoverySnapshot {
 
 const STORAGE_KEY = "typora_auto_recovery_snapshot";
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 /**
  * 实时/定时在后台保存脏内容快照，杜绝意外闪退或断电导致内容丢失
  */
@@ -64,15 +73,16 @@ export function checkAndPromptRecovery(
   banner.className = "ty-recovery-banner";
   const dateObj = new Date(snapshot.timestamp);
   const timeStr = `${dateObj.getMonth() + 1}月${dateObj.getDate()}日 ${dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+  const safeTitle = escapeHtml(snapshot.title || "未命名文档");
 
   banner.innerHTML = `
     <div class="recovery-text">
       <span class="recovery-icon">⚠️</span>
-      <span>发现未正常保存的文档快照: <strong>${snapshot.title || "未命名文档"}</strong> (${timeStr})</span>
+      <span>发现未正常保存的文档快照: <strong>${safeTitle}</strong> (${timeStr})</span>
     </div>
     <div class="recovery-actions">
-      <button class="recovery-btn btn-restore" title="恢复上次编辑内容">恢复草稿</button>
-      <button class="recovery-btn btn-discard" title="永久丢弃此快照">丢弃</button>
+      <button type="button" class="recovery-btn btn-restore" title="恢复上次编辑内容">恢复草稿</button>
+      <button type="button" class="recovery-btn btn-discard" title="永久丢弃此快照">丢弃</button>
     </div>
   `;
 
@@ -88,7 +98,10 @@ export function checkAndPromptRecovery(
     onDiscard?.();
   });
 
-  const editorPane = document.getElementById("editor-pane");
+  const editorPane =
+    document.getElementById("content") ||
+    document.getElementById("write-wrapper") ||
+    document.getElementById("editor-pane");
   if (editorPane) {
     editorPane.insertBefore(banner, editorPane.firstChild);
   }

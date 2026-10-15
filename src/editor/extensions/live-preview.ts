@@ -14,10 +14,17 @@ import { findMathBlocks } from "./math-block-extension";
 import { invoke } from "@tauri-apps/api/core";
 import katex from "katex";
 import { centerElementInTypewriter } from "./typewriter-mode";
+import { forceRefreshEffect } from "./refresh-effect";
 
 export let activeDocumentPath: string | null = null;
+const imageBase64Cache = new Map<string, string>();
+
 export function setActiveDocumentPath(path: string | null) {
   activeDocumentPath = path;
+}
+
+export function clearImageCache() {
+  imageBase64Cache.clear();
 }
 
 // 1. KaTeX 数学公式 Widget (强制 HTML 矢量输出，无 MathML 冗余)
@@ -71,11 +78,16 @@ class MathWidget extends WidgetType {
 
 // 2. 任务列表 Checkbox Widget
 class TaskWidget extends WidgetType {
-  constructor(readonly checked: boolean, readonly pos: number) {
+  constructor(readonly checked: boolean, readonly pos: number, readonly indentLen: number = 0) {
     super();
   }
 
   toDOM(view: EditorView) {
+    const wrap = document.createElement("span");
+    wrap.className = "task-list-item-prefix";
+    if (this.indentLen > 0) {
+      wrap.style.marginLeft = `${this.indentLen * 6}px`;
+    }
     const input = document.createElement("input");
     input.type = "checkbox";
     input.className = "task-list-item-checkbox";
@@ -87,15 +99,20 @@ class TaskWidget extends WidgetType {
         changes: { from: this.pos, to: this.pos + 1, insert: newChar },
       });
     });
-    return input;
+    wrap.appendChild(input);
+    return wrap;
   }
 
   eq(other: TaskWidget) {
-    return other.checked === this.checked && other.pos === this.pos;
+    return (
+      other.checked === this.checked &&
+      other.pos === this.pos &&
+      other.indentLen === this.indentLen
+    );
   }
 }
 
-// 3. 行内图片渲染 Widget (支持 width/align 自适应与浮层控制)
+// 3. 行内图片渲染 Widget (支持内存缓存、原位更新 dataset 偏移，彻底消除打字时图片重绘闪烁)
 class ImageWidget extends WidgetType {
   constructor(
     readonly alt: string,
@@ -110,6 +127,20 @@ class ImageWidget extends WidgetType {
 
   get estimatedHeight(): number {
     return 200;
+  }
+
+  updateDOM(dom: HTMLElement): boolean {
+    if (
+      dom.dataset.src === this.src &&
+      dom.dataset.alt === this.alt &&
+      (dom.dataset.width || "") === this.width &&
+      (dom.dataset.align || "left") === this.align
+    ) {
+      dom.dataset.from = String(this.pos);
+      dom.dataset.to = String(this.endPos);
+      return true;
+    }
+    return false;
   }
 
   toDOM(view: EditorView) {
@@ -144,20 +175,31 @@ class ImageWidget extends WidgetType {
       view.requestMeasure();
     };
 
-    if (this.src.startsWith("http://") || this.src.startsWith("https://") || this.src.startsWith("data:")) {
+    if (
+      this.src.startsWith("http://") ||
+      this.src.startsWith("https://") ||
+      this.src.startsWith("data:")
+    ) {
       img.src = this.src;
     } else {
-      invoke<string>("read_image_base64", {
-        docPath: activeDocumentPath,
-        relPath: this.src,
-      })
-        .then((base64) => {
-          img.src = base64;
-          view.requestMeasure();
+      const cacheKey = `${activeDocumentPath || ""}::${this.src}`;
+      const cached = imageBase64Cache.get(cacheKey);
+      if (cached) {
+        img.src = cached;
+      } else {
+        invoke<string>("read_image_base64", {
+          docPath: activeDocumentPath,
+          relPath: this.src,
         })
-        .catch(() => {
-          img.src = this.src;
-        });
+          .then((base64) => {
+            imageBase64Cache.set(cacheKey, base64);
+            img.src = base64;
+            view.requestMeasure();
+          })
+          .catch(() => {
+            img.src = this.src;
+          });
+      }
     }
 
     if (this.alt) {
@@ -266,7 +308,7 @@ class HorizontalRuleWidget extends WidgetType {
   }
 }
 
-// 5. 动态 [TOC] 目录树 Widget
+// 5.5 动态 [TOC] 目录树 Widget (自动排除代码块内部 # 注释)
 class TocWidget extends WidgetType {
   constructor(readonly linePos: number) {
     super();
@@ -293,8 +335,23 @@ class TocWidget extends WidgetType {
     list.className = "cm-toc-list";
 
     let hasHeadings = false;
+    let inFence = false;
+    let fenceChar = "";
     for (let i = 1; i <= doc.lines; i++) {
       const line = doc.line(i);
+      const trimmed = line.text.trim();
+      if (/^(```+|~~~+)/.test(trimmed)) {
+        const marker = trimmed.startsWith("`") ? "`" : "~";
+        if (!inFence) {
+          inFence = true;
+          fenceChar = marker;
+        } else if (marker === fenceChar) {
+          inFence = false;
+        }
+        continue;
+      }
+      if (inFence) continue;
+
       const m = line.text.match(/^(#{1,6})\s+(.*)$/);
       if (m) {
         hasHeadings = true;
@@ -405,8 +462,6 @@ interface InlineToken {
   data?: any;
 }
 
-import { forceRefreshEffect } from "./refresh-effect";
-
 function buildDecorations(view: EditorView): DecorationSet {
   if (typeof document !== "undefined" && document.body.classList.contains("source-mode")) {
     return Decoration.none;
@@ -420,7 +475,20 @@ function buildDecorations(view: EditorView): DecorationSet {
   const mermaidBlocks = findMermaidBlocks(view.state);
   const mathBlocks = findMathBlocks(view.state);
 
-  // 1. 扫描普通代码块区间 (排除 mermaid 流程图，mermaid 交由 mermaidLiveViewField 专职处理)
+  // 0. 识别顶部 YAML Front Matter (第1行为 --- 且在 30 行内由 --- 或 ... 闭合)
+  let frontMatterEndLine = 0;
+  if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
+    const limit = Math.min(doc.lines, 35);
+    for (let i = 2; i <= limit; i++) {
+      const t = doc.line(i).text.trim();
+      if (t === "---" || t === "...") {
+        frontMatterEndLine = i;
+        break;
+      }
+    }
+  }
+
+  // 1. 扫描普通代码块区间 (支持 ``` 与 ~~~ 以及 c++/c#/ts-node 等带符号语言名，排除 mermaid)
   interface CodeRange {
     startLine: number;
     endLine: number;
@@ -432,13 +500,14 @@ function buildDecorations(view: EditorView): DecorationSet {
   let inMermaid = false;
   let codeStart = 0;
   let codeLang = "";
+  let fenceChar = "";
   let codeLines: string[] = [];
 
-  for (let i = 1; i <= doc.lines; i++) {
+  for (let i = Math.max(1, frontMatterEndLine + 1); i <= doc.lines; i++) {
     const l = doc.line(i);
     const trimmed = l.text.trim();
     if (inMermaid) {
-      if (/^```+$/.test(trimmed)) {
+      if (/^(```+|~~~+)$/.test(trimmed)) {
         inMermaid = false;
       }
       continue;
@@ -448,15 +517,19 @@ function buildDecorations(view: EditorView): DecorationSet {
         inMermaid = true;
         continue;
       }
-      const match = trimmed.match(/^```(\w*)$/);
+      const match = trimmed.match(/^(```+|~~~+)\s*([^\s`~]*).*$/);
       if (match) {
         inCode = true;
         codeStart = i;
-        codeLang = match[1];
+        fenceChar = match[1][0];
+        codeLang = match[2] || "";
         codeLines = [];
       }
     } else {
-      if (/^```+$/.test(trimmed)) {
+      const isClose =
+        (fenceChar === "`" && /^```+$/.test(trimmed)) ||
+        (fenceChar === "~" && /^~~~+$/.test(trimmed));
+      if (isClose) {
         inCode = false;
         codeRanges.push({
           startLine: codeStart,
@@ -470,11 +543,23 @@ function buildDecorations(view: EditorView): DecorationSet {
     }
   }
 
-  // 2. 遍历全篇文档逐行构建结构与行内装饰，确保 CodeMirror 内部 HeightMap 永远保持全局精确对齐，杜绝长文档底部光标偏移
+  // 2. 遍历全篇文档逐行构建结构与行内装饰
   for (let lineNum = 1; lineNum <= doc.lines; lineNum++) {
     const line = doc.line(lineNum);
     const text = line.text;
     const trimmed = text.trim();
+
+    // 2.0 顶部 YAML Front Matter 样式渲染
+    if (frontMatterEndLine > 0 && lineNum <= frontMatterEndLine) {
+      const cls =
+        lineNum === 1
+          ? "cm-code-block-first-line cm-frontmatter-line"
+          : lineNum === frontMatterEndLine
+          ? "cm-code-block-last-line cm-frontmatter-line"
+          : "cm-code-block-line cm-frontmatter-line";
+      builder.add(line.from, line.from, Decoration.line({ class: cls }));
+      continue;
+    }
 
     // 2.1 检查是否位于普通代码块中
     const codeRange = codeRanges.find((r) => lineNum >= r.startLine && lineNum <= r.endLine);
@@ -549,10 +634,7 @@ function buildDecorations(view: EditorView): DecorationSet {
     }
 
     // 2.2 表格行交由专职 StateField 处理
-    if (
-      trimmed.startsWith("|") ||
-      isTableDelimiter(trimmed)
-    ) {
+    if (trimmed.startsWith("|") || isTableDelimiter(trimmed)) {
       continue;
     }
 
@@ -604,434 +686,454 @@ function buildDecorations(view: EditorView): DecorationSet {
       }
     }
 
-      let prefixEnd = 0;
+    let prefixEnd = 0;
 
-      // 2.45 脚注定义行 ([^label]: ...)
-      const fnDefMatch = text.match(/^\[\^([^\]\n]+)\]:\s*/);
-      if (fnDefMatch) {
-        builder.add(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
+    // 2.45 脚注定义行 ([^label]: ...)
+    const fnDefMatch = text.match(/^\[\^([^\]\n]+)\]:\s*/);
+    if (fnDefMatch) {
+      builder.add(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
+    }
+
+    // 2.5 标题识别 (# Title)
+    const headerMatch = text.match(/^(#{1,6})\s+/);
+    if (headerMatch) {
+      const depth = headerMatch[1].length;
+      const prefixLen = headerMatch[0].length;
+      const isCursorAtPrefix = cursorHead >= line.from && cursorHead <= line.from + prefixLen;
+
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.line({ class: `cm-heading cm-heading-${depth}` })
+      );
+      if (!isCursorAtPrefix) {
+        builder.add(line.from, line.from + prefixLen, Decoration.replace({}));
       }
+      prefixEnd = prefixLen;
+    }
 
-      // 2.5 标题识别 (# Title)
-      const headerMatch = text.match(/^(#{1,6})\s+/);
-      if (headerMatch) {
-        const depth = headerMatch[1].length;
-        const prefixLen = headerMatch[0].length;
-        const isCursorAtPrefix = cursorHead >= line.from && cursorHead <= line.from + prefixLen;
-
-        builder.add(
-          line.from,
-          line.from,
-          Decoration.line({ class: `cm-heading cm-heading-${depth}` })
-        );
-        if (!isCursorAtPrefix) {
-          builder.add(line.from, line.from + prefixLen, Decoration.replace({}));
-        }
-        prefixEnd = prefixLen;
+    // 2.6 引用块 (> Quote) 与 GitHub Callout 告警识别 (> [!NOTE])
+    const quoteMatch = text.match(/^>\s*/);
+    if (quoteMatch && prefixEnd === 0) {
+      const isCursorAtQuotePrefix = cursorHead >= line.from && cursorHead <= line.from + quoteMatch[0].length;
+      builder.add(line.from, line.from, Decoration.line({ class: "cm-blockquote" }));
+      if (!isCursorAtQuotePrefix) {
+        builder.add(line.from, line.from + quoteMatch[0].length, Decoration.replace({}));
       }
+      prefixEnd = quoteMatch[0].length;
+    }
 
-      // 2.6 引用块 (> Quote)
-      const quoteMatch = text.match(/^>\s*/);
-      if (quoteMatch && prefixEnd === 0) {
-        const isCursorAtQuotePrefix = cursorHead >= line.from && cursorHead <= line.from + quoteMatch[0].length;
-        builder.add(line.from, line.from, Decoration.line({ class: "cm-blockquote" }));
-        if (!isCursorAtQuotePrefix) {
-          builder.add(line.from, line.from + quoteMatch[0].length, Decoration.replace({}));
-        }
-        prefixEnd = quoteMatch[0].length;
+    // 2.68 列表项识别与多级缩进引导线 (Indent Guide Lines)
+    const listMatch = text.match(/^(\s*)([-*+]|\d+\.)\s+/);
+    if (listMatch && prefixEnd === 0) {
+      const indentSpaces = listMatch[1].length;
+      const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.line({ class: `cm-list-item cm-list-level-${level}` })
+      );
+    }
+
+    // 2.7 收集该行内所有 Token
+    const tokens: InlineToken[] = [];
+
+    // 任务列表 (- [ ] / - [x]，支持多级缩进空格)
+    const taskMatch = text.match(/^(\s*[-*+]\s+\[)([ xX])(\]\s*)/);
+    if (taskMatch && prefixEnd === 0) {
+      const prefixLen = taskMatch[1].length;
+      const indentLen = (text.match(/^\s*/)?.[0] || "").length;
+      const isChecked = taskMatch[2].toLowerCase() === "x";
+      tokens.push({
+        type: "task",
+        start: 0,
+        end: taskMatch[0].length,
+        content: taskMatch[0],
+        data: { isChecked, checkPos: prefixLen, indentLen },
+      });
+    }
+
+    // 行内图片 (![alt](src)) 与 HTML 图片标签 (<img ... />)
+    const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+    let m;
+    while ((m = imgRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "image",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[0],
+        data: { alt: m[1], src: m[2], width: "", align: "left" },
+      });
+    }
+
+    const htmlImgRegex = /<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi;
+    while ((m = htmlImgRegex.exec(text)) !== null) {
+      const fullAttrs = `${m[1]} ${m[3]}`;
+      const altMatch = fullAttrs.match(/alt=["']([^"']*)["']/i);
+      const widthMatch = fullAttrs.match(/width=["']([^"']*)["']/i);
+      const alignMatch = fullAttrs.match(/align=["']([^"']*)["']/i);
+      tokens.push({
+        type: "image",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[0],
+        data: {
+          src: m[2],
+          alt: altMatch ? altMatch[1] : "",
+          width: widthMatch ? widthMatch[1] : "",
+          align: alignMatch ? alignMatch[1] : "left",
+        },
+      });
+    }
+
+    // 超链接 ([text](url)) - 排除图片
+    const linkRegex = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+    while ((m = linkRegex.exec(text)) !== null) {
+      if (m.index > 0 && text[m.index - 1] === "!") {
+        continue;
       }
+      tokens.push({
+        type: "link",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[0],
+        data: { text: m[1], url: m[2] },
+      });
+    }
 
-      // 2.68 列表项识别与多级缩进引导线 (Indent Guide Lines)
-      const listMatch = text.match(/^(\s*)([-*+]|\d+\.)\s+/);
-      if (listMatch && prefixEnd === 0) {
-        const indentSpaces = listMatch[1].length;
-        const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
-        builder.add(
-          line.from,
-          line.from,
-          Decoration.line({ class: `cm-list-item cm-list-level-${level}` })
-        );
+    // 行内代码 (`code`)
+    const codeRegex = /`([^`\n]+)`/g;
+    while ((m = codeRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "code",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1],
+      });
+    }
+
+    // 行内数学公式 ($formula$)
+    const mathRegex = /\$([^$\n]+)\$/g;
+    while ((m = mathRegex.exec(text)) !== null) {
+      if (m[1].startsWith("$") || m[1].endsWith("$")) continue;
+      tokens.push({
+        type: "math",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1],
+      });
+    }
+
+    // 行内加粗斜体 (***bold italic*** 或 ___bold italic___)
+    const boldItalicRegex = /(\*{3}|_{3})([^*_\n]+?)\1/g;
+    while ((m = boldItalicRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "bold_italic",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[2],
+      });
+    }
+
+    // 行内加粗 (**bold** 或 __bold__)
+    const boldRegex = /(\*{2}|_{2})([^*_\n]+?)\1/g;
+    while ((m = boldRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "bold",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[2],
+      });
+    }
+
+    // 行内斜体 (*italic* 或 _italic_) - 避免与 ** / __ 冲突
+    const italicRegex = /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g;
+    while ((m = italicRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "italic",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1] || m[2],
+      });
+    }
+
+    // 行内删除线 (~~del~~)
+    const strikeRegex = /~~([^~\n]+)~~/g;
+    while ((m = strikeRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "strikethrough",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1],
+      });
+    }
+
+    // 行内高亮 (==mark==)
+    const highlightRegex = /==([^=\n]+)==/g;
+    while ((m = highlightRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "highlight",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1],
+      });
+    }
+
+    // 行内脚注引用 [^note] (排除定义行)
+    const fnRefRegex = /\[\^([^\]\n]+)\](?!\:)/g;
+    while ((m = fnRefRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "footnote_ref",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[0],
+        data: { label: m[1] },
+      });
+    }
+
+    // 行内下标 (H~2~O)
+    const subRegex = /(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g;
+    while ((m = subRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "subscript",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1],
+      });
+    }
+
+    // 行内上标 (X^2^)
+    const supRegex = /\^([^\^\s\n][^\^\n]*?)\^/g;
+    while ((m = supRegex.exec(text)) !== null) {
+      tokens.push({
+        type: "superscript",
+        start: m.index,
+        end: m.index + m[0].length,
+        content: m[1],
+      });
+    }
+
+    // 按位置排序并过滤重叠
+    tokens.sort((a, b) => a.start - b.start);
+    const validTokens: InlineToken[] = [];
+    let curLimit = prefixEnd;
+    for (const tok of tokens) {
+      if (tok.start >= curLimit) {
+        validTokens.push(tok);
+        curLimit = tok.end;
       }
+    }
 
-      // 2.7 收集该行内所有 Token
-      const tokens: InlineToken[] = [];
+    // 核心：Token 级高雅微观局部展开
+    for (const tok of validTokens) {
+      const s = line.from + tok.start;
+      const e = line.from + tok.end;
 
-      // 任务列表 (- [ ] / - [x])
-      const taskMatch = text.match(/^([-*+]\s+\[)([ xX])(\]\s*)/);
-      if (taskMatch && prefixEnd === 0) {
-        const prefixLen = taskMatch[1].length;
-        const isChecked = taskMatch[2].toLowerCase() === "x";
-        tokens.push({
-          type: "task",
-          start: 0,
-          end: taskMatch[0].length,
-          content: taskMatch[0],
-          data: { isChecked, checkPos: prefixLen },
-        });
-      }
+      const isCursorInside = cursorHead >= s && cursorHead <= e;
 
-      // 行内图片 (![alt](src)) 与 HTML 图片标签 (<img ... />)
-      const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
-      let m;
-      while ((m = imgRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "image",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[0],
-          data: { alt: m[1], src: m[2], width: "", align: "left" },
-        });
-      }
-
-      const htmlImgRegex = /<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi;
-      while ((m = htmlImgRegex.exec(text)) !== null) {
-        const fullAttrs = `${m[1]} ${m[3]}`;
-        const altMatch = fullAttrs.match(/alt=["']([^"']*)["']/i);
-        const widthMatch = fullAttrs.match(/width=["']([^"']*)["']/i);
-        const alignMatch = fullAttrs.match(/align=["']([^"']*)["']/i);
-        tokens.push({
-          type: "image",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[0],
-          data: {
-            src: m[2],
-            alt: altMatch ? altMatch[1] : "",
-            width: widthMatch ? widthMatch[1] : "",
-            align: alignMatch ? alignMatch[1] : "left",
-          },
-        });
-      }
-
-      // 超链接 ([text](url)) - 排除图片
-      const linkRegex = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
-      while ((m = linkRegex.exec(text)) !== null) {
-        if (m.index > 0 && text[m.index - 1] === "!") {
-          continue;
-        }
-        tokens.push({
-          type: "link",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[0],
-          data: { text: m[1], url: m[2] },
-        });
-      }
-
-      // 行内代码 (`code`)
-      const codeRegex = /`([^`\n]+)`/g;
-      while ((m = codeRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "code",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1],
-        });
-      }
-
-      // 行内数学公式 ($formula$)
-      const mathRegex = /\$([^$\n]+)\$/g;
-      while ((m = mathRegex.exec(text)) !== null) {
-        if (m[1].startsWith("$") || m[1].endsWith("$")) continue;
-        tokens.push({
-          type: "math",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1],
-        });
-      }
-
-      // 行内加粗斜体 (***bold italic*** 或 ___bold italic___)
-      const boldItalicRegex = /(\*{3}|_{3})([^*_\n]+?)\1/g;
-      while ((m = boldItalicRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "bold_italic",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[2],
-        });
-      }
-
-      // 行内加粗 (**bold** 或 __bold__)
-      const boldRegex = /(\*{2}|_{2})([^*_\n]+?)\1/g;
-      while ((m = boldRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "bold",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[2],
-        });
-      }
-
-      // 行内斜体 (*italic* 或 _italic_) - 避免与 ** / __ 冲突
-      const italicRegex = /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g;
-      while ((m = italicRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "italic",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1] || m[2],
-        });
-      }
-
-      // 行内删除线 (~~del~~)
-      const strikeRegex = /~~([^~\n]+)~~/g;
-      while ((m = strikeRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "strikethrough",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1],
-        });
-      }
-
-      // 行内高亮 (==mark==)
-      const highlightRegex = /==([^=\n]+)==/g;
-      while ((m = highlightRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "highlight",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1],
-        });
-      }
-
-      // 行内脚注引用 [^note] (排除定义行)
-      const fnRefRegex = /\[\^([^\]\n]+)\](?!\:)/g;
-      while ((m = fnRefRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "footnote_ref",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[0],
-          data: { label: m[1] },
-        });
-      }
-
-      // 行内下标 (H~2~O)
-      const subRegex = /(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g;
-      while ((m = subRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "subscript",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1],
-        });
-      }
-
-      // 行内上标 (X^2^)
-      const supRegex = /\^([^\^\s\n][^\^\n]*?)\^/g;
-      while ((m = supRegex.exec(text)) !== null) {
-        tokens.push({
-          type: "superscript",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[1],
-        });
-      }
-
-      // 按位置排序并过滤重叠
-      tokens.sort((a, b) => a.start - b.start);
-      const validTokens: InlineToken[] = [];
-      let curLimit = prefixEnd;
-      for (const tok of tokens) {
-        if (tok.start >= curLimit) {
-          validTokens.push(tok);
-          curLimit = tok.end;
-        }
-      }
-
-      // 核心：Token 级高雅微观局部展开 (Typora 原生交互：移入时内容保留样式，两端淡化定界符)
-      for (const tok of validTokens) {
-        const s = line.from + tok.start;
-        const e = line.from + tok.end;
-
-        const isCursorInside = cursorHead >= s && cursorHead <= e;
-
-        if (tok.type === "task") {
+      if (tok.type === "task") {
+        if (!isCursorInside) {
           builder.add(
             s,
             e,
             Decoration.replace({
-              widget: new TaskWidget(tok.data.isChecked, line.from + tok.data.checkPos),
+              widget: new TaskWidget(
+                tok.data.isChecked,
+                line.from + tok.data.checkPos,
+                tok.data.indentLen
+              ),
             })
           );
-        } else if (tok.type === "image") {
-          if (!isCursorInside) {
-            builder.add(
-              s,
-              e,
-              Decoration.replace({
-                widget: new ImageWidget(
-                  tok.data.alt,
-                  tok.data.src,
-                  s,
-                  e,
-                  tok.data.width,
-                  tok.data.align
-                ),
-              })
-            );
-          }
-        } else if (tok.type === "bold_italic") {
-          if (!isCursorInside) {
-            builder.add(s, s + 3, Decoration.replace({}));
-            builder.add(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
-            builder.add(e - 3, e, Decoration.replace({}));
-          } else {
-            builder.add(s, s + 3, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
-            builder.add(e - 3, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "bold") {
-          if (!isCursorInside) {
-            builder.add(s, s + 2, Decoration.replace({}));
-            builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
-            builder.add(e - 2, e, Decoration.replace({}));
-          } else {
-            // 光标移入：加粗样式持续保留，两端 ** 显示为柔和浅灰
-            builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
-            builder.add(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "italic") {
-          if (!isCursorInside) {
-            builder.add(s, s + 1, Decoration.replace({}));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
-            builder.add(e - 1, e, Decoration.replace({}));
-          } else {
-            // 光标移入：斜体样式持续保留，两端 * 显示为柔和浅灰
-            builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
-            builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "strikethrough") {
-          if (!isCursorInside) {
-            builder.add(s, s + 2, Decoration.replace({}));
-            builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
-            builder.add(e - 2, e, Decoration.replace({}));
-          } else {
-            builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
-            builder.add(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "highlight") {
-          if (!isCursorInside) {
-            builder.add(s, s + 2, Decoration.replace({}));
-            builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
-            builder.add(e - 2, e, Decoration.replace({}));
-          } else {
-            builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
-            builder.add(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "subscript") {
-          if (!isCursorInside) {
-            builder.add(s, s + 1, Decoration.replace({}));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
-            builder.add(e - 1, e, Decoration.replace({}));
-          } else {
-            builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
-            builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "superscript") {
-          if (!isCursorInside) {
-            builder.add(s, s + 1, Decoration.replace({}));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
-            builder.add(e - 1, e, Decoration.replace({}));
-          } else {
-            builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
-            builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "footnote_ref") {
-          if (!isCursorInside) {
-            builder.add(
-              s,
-              e,
-              Decoration.replace({
-                widget: new FootnoteRefWidget(tok.data.label, s),
-              })
-            );
-          } else {
-            builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 2, e - 1, Decoration.mark({ class: "cm-footnote-ref" }));
-            builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "code") {
-          if (!isCursorInside) {
-            builder.add(s, s + 1, Decoration.replace({}));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
-            builder.add(e - 1, e, Decoration.replace({}));
-          } else {
-            builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
-            builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "link") {
-          const textLen = tok.data.text.length;
-          if (!isCursorInside) {
-            // 光标离开：仅显示蓝色下划线文字，隐藏 (url)
-            builder.add(s, s + 1, Decoration.replace({}));
-            builder.add(s + 1, s + 1 + textLen, Decoration.mark({
+        }
+      } else if (tok.type === "image") {
+        if (!isCursorInside) {
+          builder.add(
+            s,
+            e,
+            Decoration.replace({
+              widget: new ImageWidget(
+                tok.data.alt,
+                tok.data.src,
+                s,
+                e,
+                tok.data.width,
+                tok.data.align
+              ),
+            })
+          );
+        }
+      } else if (tok.type === "bold_italic") {
+        if (!isCursorInside) {
+          builder.add(s, s + 3, Decoration.replace({}));
+          builder.add(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
+          builder.add(e - 3, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 3, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
+          builder.add(e - 3, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "bold") {
+        if (!isCursorInside) {
+          builder.add(s, s + 2, Decoration.replace({}));
+          builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
+          builder.add(e - 2, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
+          builder.add(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "italic") {
+        if (!isCursorInside) {
+          builder.add(s, s + 1, Decoration.replace({}));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
+          builder.add(e - 1, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
+          builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "strikethrough") {
+        if (!isCursorInside) {
+          builder.add(s, s + 2, Decoration.replace({}));
+          builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
+          builder.add(e - 2, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
+          builder.add(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "highlight") {
+        if (!isCursorInside) {
+          builder.add(s, s + 2, Decoration.replace({}));
+          builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
+          builder.add(e - 2, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
+          builder.add(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "subscript") {
+        if (!isCursorInside) {
+          builder.add(s, s + 1, Decoration.replace({}));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
+          builder.add(e - 1, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
+          builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "superscript") {
+        if (!isCursorInside) {
+          builder.add(s, s + 1, Decoration.replace({}));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
+          builder.add(e - 1, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
+          builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "footnote_ref") {
+        if (!isCursorInside) {
+          builder.add(
+            s,
+            e,
+            Decoration.replace({
+              widget: new FootnoteRefWidget(tok.data.label, s),
+            })
+          );
+        } else {
+          builder.add(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 2, e - 1, Decoration.mark({ class: "cm-footnote-ref" }));
+          builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "code") {
+        if (!isCursorInside) {
+          builder.add(s, s + 1, Decoration.replace({}));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
+          builder.add(e - 1, e, Decoration.replace({}));
+        } else {
+          builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
+          builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "link") {
+        const textLen = tok.data.text.length;
+        const linkAttrs = {
+          "data-href": tok.data.url,
+          "data-text": tok.data.text,
+          "data-from": String(s),
+          "data-to": String(e),
+          title: `Ctrl+点击打开: ${tok.data.url}`,
+        };
+        if (!isCursorInside) {
+          // 光标离开：仅显示蓝色下划线文字，隐藏 (url)
+          builder.add(s, s + 1, Decoration.replace({}));
+          builder.add(
+            s + 1,
+            s + 1 + textLen,
+            Decoration.mark({
               class: "cm-link",
-              attributes: { "data-href": tok.data.url, title: `Ctrl+点击打开: ${tok.data.url}` },
-            }));
-            builder.add(s + 1 + textLen, e, Decoration.replace({}));
-          } else {
-            // 光标移入：文字保持蓝色链接，两端括号及 URL 展现为浅灰色供直接编辑
-            builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 1, s + 1 + textLen, Decoration.mark({
+              attributes: linkAttrs,
+            })
+          );
+          builder.add(s + 1 + textLen, e, Decoration.replace({}));
+        } else {
+          // 光标移入：文字保持蓝色链接，两端括号及 URL 展现为浅灰色供直接编辑
+          builder.add(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(
+            s + 1,
+            s + 1 + textLen,
+            Decoration.mark({
               class: "cm-link",
-              attributes: { "data-href": tok.data.url, title: `Ctrl+点击打开: ${tok.data.url}` },
-            }));
-            builder.add(s + 1 + textLen, s + 1 + textLen + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-            builder.add(s + 1 + textLen + 2, e - 1, Decoration.mark({ class: "cm-md-url" }));
-            builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-          }
-        } else if (tok.type === "math") {
-          if (!isCursorInside) {
-            builder.add(
-              s,
-              e,
-              Decoration.replace({
-                widget: new MathWidget(tok.content, false, s + 1),
-              })
-            );
-          }
+              attributes: linkAttrs,
+            })
+          );
+          builder.add(s + 1 + textLen, s + 1 + textLen + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+          builder.add(s + 1 + textLen + 2, e - 1, Decoration.mark({ class: "cm-md-url" }));
+          builder.add(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+        }
+      } else if (tok.type === "math") {
+        if (!isCursorInside) {
+          builder.add(
+            s,
+            e,
+            Decoration.replace({
+              widget: new MathWidget(tok.content, false, s + 1),
+            })
+          );
         }
       }
     }
-
-    return builder.finish();
   }
 
-  export const livePreviewPlugin = ViewPlugin.fromClass(
-    class {
-      decorations: DecorationSet;
+  return builder.finish();
+}
 
-      constructor(view: EditorView) {
-        this.decorations = buildDecorations(view);
-      }
+export const livePreviewPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
 
-      update(update: ViewUpdate) {
-        if (imeState.isComposing) {
-          // 拼音/中文输入法组合态输入时：对已有装饰器做坐标映射，绝不全篇回退为源码
-          this.decorations = this.decorations.map(update.changes);
-          return;
-        }
-
-        if (
-          update.docChanged ||
-          update.selectionSet ||
-          update.transactions.some((tr) => tr.effects.some((e) => e.is(forceRefreshEffect)))
-        ) {
-          this.decorations = buildDecorations(update.view);
-        }
-      }
-    },
-    {
-      decorations: (v) => v.decorations,
+    constructor(view: EditorView) {
+      this.decorations = buildDecorations(view);
     }
-  );
+
+    update(update: ViewUpdate) {
+      if (imeState.isComposing) {
+        // 拼音/中文输入法组合态输入时：对已有装饰器做坐标映射，绝不全篇回退为源码
+        this.decorations = this.decorations.map(update.changes);
+        return;
+      }
+
+      if (
+        update.docChanged ||
+        update.selectionSet ||
+        update.transactions.some((tr) => tr.effects.some((e) => e.is(forceRefreshEffect)))
+      ) {
+        this.decorations = buildDecorations(update.view);
+      }
+    }
+  },
+  {
+    decorations: (v) => v.decorations,
+  }
+);

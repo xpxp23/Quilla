@@ -3,6 +3,8 @@ import { undo, redo } from "@codemirror/commands";
 import { openShortcutGuide } from "./shortcut-guide";
 import { getRecentFiles, clearRecentFiles } from "./quick-open";
 import { handleOpenLink } from "../editor/index";
+import { smartToggleFormat } from "../editor/extensions/formatting-keymap";
+import { htmlToMarkdown } from "../editor/extensions/smart-paste";
 
 export interface MenuActions {
   onNewFile: () => void;
@@ -218,10 +220,10 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       contextMenu.innerHTML = `
         <div class="menu-section">
           <div class="menu-item-group-title">表格行列</div>
-          <div class="menu-item" data-action="tbl-row-above"><div class="menu-item-left"><span class="m-icon">⬆️</span><span>上方插入行</span></div></div>
-          <div class="menu-item" data-action="tbl-row-below"><div class="menu-item-left"><span class="m-icon">⬇️</span><span>下方插入行</span></div></div>
-          <div class="menu-item" data-action="tbl-col-left"><div class="menu-item-left"><span class="m-icon">⬅️</span><span>左侧插入列</span></div></div>
-          <div class="menu-item" data-action="tbl-col-right"><div class="menu-item-left"><span class="m-icon">➡️</span><span>右侧插入列</span></div></div>
+          <div class="menu-item" data-action="tbl-add-row-above"><div class="menu-item-left"><span class="m-icon">⬆️</span><span>上方插入行</span></div></div>
+          <div class="menu-item" data-action="tbl-add-row-below"><div class="menu-item-left"><span class="m-icon">⬇️</span><span>下方插入行</span></div></div>
+          <div class="menu-item" data-action="tbl-add-col-left"><div class="menu-item-left"><span class="m-icon">⬅️</span><span>左侧插入列</span></div></div>
+          <div class="menu-item" data-action="tbl-add-col-right"><div class="menu-item-left"><span class="m-icon">➡️</span><span>右侧插入列</span></div></div>
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
@@ -348,7 +350,7 @@ export function initMenus(view: EditorView, actions: MenuActions) {
         .closest(".cm-table-widget, .in-place-edit")
         ?.parentElement?.querySelector(`[data-act="${btnAct}"]`) as HTMLElement;
       if (tblToolbarBtn) {
-        tblToolbarBtn.click();
+        tblToolbarBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
       }
     } else if (act?.startsWith("img-") && currentContextTarget?.element) {
       const from = parseInt(currentContextTarget.element.dataset.from || "0", 10);
@@ -380,33 +382,61 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       }
     } else if (act === "link-open" && currentContextTarget?.element) {
       const href = currentContextTarget.element.dataset.href;
-      if (href) handleOpenLink(href);
+      if (href) handleOpenLink(href, actions.onOpenFileByPath);
     } else if (act === "link-copy" && currentContextTarget?.element) {
       const href = currentContextTarget.element.dataset.href;
       if (href) navigator.clipboard.writeText(href);
     } else if (act === "cut") document.execCommand("cut");
     else if (act === "copy") document.execCommand("copy");
-    else if (act === "paste" || act === "paste-plain") {
+    else if (act === "paste") {
+      if (navigator.clipboard.read) {
+        navigator.clipboard
+          .read()
+          .then(async (items) => {
+            for (const clipItem of items) {
+              if (clipItem.types.includes("text/html")) {
+                const blob = await clipItem.getType("text/html");
+                const html = await blob.text();
+                const md = htmlToMarkdown(html);
+                if (md && md.trim()) {
+                  const { from, to } = view.state.selection.main;
+                  view.dispatch({
+                    changes: { from, to, insert: md },
+                    selection: { anchor: from + md.length },
+                  });
+                  return;
+                }
+              }
+            }
+            const txt = await navigator.clipboard.readText();
+            const { from, to } = view.state.selection.main;
+            view.dispatch({ changes: { from, to, insert: txt }, selection: { anchor: from + txt.length } });
+          })
+          .catch(() => {
+            navigator.clipboard.readText().then((txt) => {
+              const { from, to } = view.state.selection.main;
+              view.dispatch({ changes: { from, to, insert: txt }, selection: { anchor: from + txt.length } });
+            });
+          });
+      } else {
+        navigator.clipboard.readText().then((txt) => {
+          const { from, to } = view.state.selection.main;
+          view.dispatch({ changes: { from, to, insert: txt }, selection: { anchor: from + txt.length } });
+        });
+      }
+    } else if (act === "paste-plain") {
       navigator.clipboard.readText().then((txt) => {
-        const pos = view.state.selection.main.head;
-        view.dispatch({ changes: { from: pos, insert: txt } });
+        const { from, to } = view.state.selection.main;
+        view.dispatch({ changes: { from, to, insert: txt }, selection: { anchor: from + txt.length } });
       });
     } else if (act === "bold") {
-      const sel = view.state.selection.main;
-      const txt = view.state.sliceDoc(sel.from, sel.to);
-      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: `**${txt}**` } });
+      smartToggleFormat(view, "**");
     } else if (act === "italic") {
-      const sel = view.state.selection.main;
-      const txt = view.state.sliceDoc(sel.from, sel.to);
-      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: `*${txt}*` } });
+      smartToggleFormat(view, "*");
     } else if (act === "highlight") {
-      const sel = view.state.selection.main;
-      const txt = view.state.sliceDoc(sel.from, sel.to);
-      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: `==${txt}==` } });
+      smartToggleFormat(view, "==");
     } else if (act === "code") {
-      const sel = view.state.selection.main;
-      const txt = view.state.sliceDoc(sel.from, sel.to);
-      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: `\`${txt}\`` } });
+      smartToggleFormat(view, "`");
     } else if (act === "link") {
       const sel = view.state.selection.main;
       const txt = view.state.sliceDoc(sel.from, sel.to);

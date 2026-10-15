@@ -3,7 +3,7 @@ import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 
 /**
  * 专注模式状态管理与段落级视差聚焦插件 (F8)
- * - 当前光标所在段落/列表项/标题：保持 100% 不透明度高清高亮
+ * - 当前光标所在段落/列表项/标题/代码块：保持 100% 不透明度高清高亮
  * - 其余所有非当前段落与行：平滑淡化至 28% 不透明度
  * - 完全对齐 Typora 专注模式手感
  */
@@ -28,11 +28,33 @@ const focusActiveLineDeco = Decoration.line({ class: "cm-focus-active-block" });
 
 /**
  * 精确计算当前光标所处的语义块 (Block) 范围：
+ * 0. 围栏代码块: 整体高亮整个代码块
  * 1. 标题: 独立单行
  * 2. 列表项: 独立列表项，不牵连其他项 (Typora 原生规范)
  * 3. 普通段落: 连续文本行
  */
 function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: number } {
+  // 0. 检查是否处于围栏代码块内部
+  let inFence = false;
+  let fenceStart = 1;
+  let fenceChar = "";
+  for (let i = 1; i <= doc.lines; i++) {
+    const trimmed = doc.line(i).text.trim();
+    if (/^(```+|~~~+)/.test(trimmed)) {
+      const marker = trimmed.startsWith("`") ? "`" : "~";
+      if (!inFence) {
+        inFence = true;
+        fenceStart = i;
+        fenceChar = marker;
+      } else if (marker === fenceChar) {
+        if (cursorLineNum >= fenceStart && cursorLineNum <= i) {
+          return { start: fenceStart, end: i };
+        }
+        inFence = false;
+      }
+    }
+  }
+
   const currentLine = doc.line(cursorLineNum);
   const text = currentLine.text;
   const trimmed = text.trim();

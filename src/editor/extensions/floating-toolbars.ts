@@ -1,8 +1,10 @@
 import { EditorView } from "@codemirror/view";
-import { invoke } from "@tauri-apps/api/core";
 import { handleOpenLink } from "../index";
 
-export function initFloatingToolbars(view: EditorView) {
+export function initFloatingToolbars(
+  view: EditorView,
+  onOpenFile?: (filePath: string) => void
+) {
   // 1. 创建图片微型悬浮工具栏 (Floating Image Toolbar)
   const imgToolbar = document.createElement("div");
   imgToolbar.className = "ty-image-toolbar hidden";
@@ -46,6 +48,9 @@ export function initFloatingToolbars(view: EditorView) {
   let activeLinkTarget: {
     elem: HTMLElement;
     url: string;
+    text: string;
+    from: number;
+    to: number;
   } | null = null;
 
   function positionToolbar(toolbar: HTMLElement, targetElem: HTMLElement) {
@@ -112,7 +117,10 @@ export function initFloatingToolbars(view: EditorView) {
     if (linkEl) {
       e.stopPropagation();
       const url = linkEl.getAttribute("data-href") || "";
-      activeLinkTarget = { elem: linkEl, url };
+      const text = linkEl.getAttribute("data-text") || linkEl.textContent || "";
+      const from = parseInt(linkEl.getAttribute("data-from") || "-1", 10);
+      const to = parseInt(linkEl.getAttribute("data-to") || "-1", 10);
+      activeLinkTarget = { elem: linkEl, url, text, from, to };
 
       const urlSpan = linkTooltip.querySelector("#ty-link-preview-url");
       if (urlSpan) urlSpan.textContent = url;
@@ -178,10 +186,10 @@ export function initFloatingToolbars(view: EditorView) {
     if (!btn || !activeLinkTarget) return;
 
     const action = btn.dataset.action;
-    const url = activeLinkTarget.url;
+    const { url, text, from, to } = activeLinkTarget;
 
     if (action === "open-link") {
-      handleOpenLink(url);
+      handleOpenLink(url, onOpenFile);
       hideAllToolbars();
     } else if (action === "copy-link") {
       navigator.clipboard.writeText(url).then(() => {
@@ -194,14 +202,18 @@ export function initFloatingToolbars(view: EditorView) {
     } else if (action === "edit-link") {
       hideAllToolbars();
       const newUrl = prompt("修改超链接 URL:", url);
-      if (newUrl !== null && newUrl !== url) {
-        // 在光标位置替换
-        const pos = view.state.selection.main.head;
-        const line = view.state.doc.lineAt(pos);
-        const lineText = line.text;
-        const replaced = lineText.replace(url, newUrl);
-        if (replaced !== lineText) {
-          view.dispatch({ changes: { from: line.from, to: line.to, insert: replaced } });
+      if (newUrl !== null && newUrl.trim() && newUrl !== url) {
+        if (from >= 0 && to > from && to <= view.state.doc.length) {
+          view.dispatch({
+            changes: { from, to, insert: `[${text}](${newUrl.trim()})` },
+          });
+        } else {
+          const pos = view.state.selection.main.head;
+          const line = view.state.doc.lineAt(pos);
+          const replaced = line.text.replace(`](${url})`, `](${newUrl.trim()})`);
+          if (replaced !== line.text) {
+            view.dispatch({ changes: { from: line.from, to: line.to, insert: replaced } });
+          }
         }
       }
     }

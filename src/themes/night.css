@@ -1,12 +1,13 @@
 /* ================= Typora Night 经典夜间主题 (night.css) ================= */
-:root {
-  --bg-color: #363b40;
-  --text-color: #b8bfc6;
-  --side-bar-bg-color: #2c3136;
+:root, body.theme-night {
+  --bg-color: #1e1e1e;
+  --text-color: #d4d4d4;
+  --side-bar-bg-color: #252526;
   --control-text-color: #8a9199;
-  --select-text-bg-color: #2d5c88;
-  --border-color: #474d54;
+  --select-text-bg-color: #264f78;
+  --border-color: rgba(255, 255, 255, 0.12);
   --item-hover-bg-color: rgba(255, 255, 255, 0.08);
+  --item-hover-text-color: #ffffff;
 }
 
 body.theme-night, body {
@@ -16,30 +17,30 @@ body.theme-night, body {
 }
 
 #write {
-  color: #b8bfc6;
-  max-width: 860px;
+  color: var(--text-color);
 }
 
-#write h1, #write h2, #write h3, #write h4, #write h5, #write h6, .cm-heading {
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
+.cm-line.cm-heading {
   color: #ffffff !important;
   font-weight: 600;
 }
 
-#write h1 {
+#write h1, .cm-line.cm-heading-1 {
   font-size: 2.2em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #474d54;
   margin-top: 1.2em;
 }
 
-#write h2 {
+#write h2, .cm-line.cm-heading-2 {
   font-size: 1.75em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #474d54;
   margin-top: 1.2em;
 }
 
-#write h3 {
+#write h3, .cm-line.cm-heading-3 {
   font-size: 1.4em;
   margin-top: 1em;
 }
@@ -50,7 +51,7 @@ body.theme-night, body {
   text-shadow: 0 0 1px rgba(255, 255, 255, 0.3);
 }
 
-#write blockquote, .cm-blockquote {
+#write blockquote, .cm-line.cm-blockquote {
   border-left: 4px solid #4ea1f3 !important;
   color: #9da5b4 !important;
   background-color: transparent !important;
@@ -60,13 +61,11 @@ body.theme-night, body {
 }
 
 #write .md-fences, #write pre,
-.cm-editor .cm-line.cm-fence-header,
-.cm-editor .cm-line.cm-fence-code,
-.cm-editor .cm-line.cm-fence-end {
+.cm-editor .cm-line.cm-code-block-first-line,
+.cm-editor .cm-line.cm-code-block-line,
+.cm-editor .cm-line.cm-code-block-last-line {
   background-color: #282c34 !important;
   color: #abb2bf !important;
-  border: 1px solid #3e4451 !important;
-  border-radius: 6px;
 }
 
 #write code, .cm-inline-code {
@@ -84,34 +83,26 @@ body.theme-night, body {
   text-decoration: none;
 }
 
-#write a:hover {
+#write a:hover, .cm-link:hover {
   text-decoration: underline;
 }
 
-#write hr {
-  height: 1px;
-  background-color: #474d54;
-  border: 0;
-  margin: 24px 0;
+#write hr, .md-hr {
+  border-top: 2px solid #474d54 !important;
 }
 
-.custom-table-root table {
-  border-collapse: collapse;
-  border-color: #474d54 !important;
-}
-
-.custom-table-root th {
+table.md-table th, .custom-table-root th {
   background-color: #2d3237 !important;
   color: #ffffff !important;
   border: 1px solid #474d54 !important;
   font-weight: 600;
 }
 
-.custom-table-root td {
+table.md-table td, .custom-table-root td {
   border: 1px solid #474d54 !important;
   color: #b8bfc6 !important;
 }
 
-.custom-table-root tr:nth-child(2n) td {
+table.md-table tr:nth-child(2n) td, .custom-table-root tr:nth-child(2n) td {
   background-color: rgba(255, 255, 255, 0.02) !important;
 }

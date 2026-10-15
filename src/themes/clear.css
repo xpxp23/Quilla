@@ -18,37 +18,37 @@ body {
 
 #write {
   color: #1e293b;
-  max-width: 860px;
 }
 
-#write h1, #write h2, #write h3, #write h4, #write h5, #write h6, .cm-heading {
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
+.cm-line.cm-heading {
   color: #0f172a !important;
   font-weight: 600;
 }
 
-#write h1 {
+#write h1, .cm-line.cm-heading-1 {
   font-size: 2.2em;
   padding-bottom: 0.3em;
-  border-bottom: 2px solid #0284c7;
+  border-bottom: 2px solid #0284c7 !important;
   color: #0284c7 !important;
   margin-top: 1.2em;
 }
 
-#write h2 {
+#write h2, .cm-line.cm-heading-2 {
   font-size: 1.65em;
   padding-bottom: 0.25em;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0 !important;
   color: #0369a1 !important;
   margin-top: 1.2em;
 }
 
-#write h3 {
+#write h3, .cm-line.cm-heading-3 {
   font-size: 1.35em;
   color: #0284c7 !important;
   margin-top: 1em;
 }
 
-#write blockquote, .cm-blockquote {
+#write blockquote, .cm-line.cm-blockquote {
   border-left: 4px solid #0284c7 !important;
   color: #334155 !important;
   background-color: transparent !important;
@@ -58,13 +58,11 @@ body {
 }
 
 #write .md-fences, #write pre,
-.cm-editor .cm-line.cm-fence-header,
-.cm-editor .cm-line.cm-fence-code,
-.cm-editor .cm-line.cm-fence-end {
+.cm-editor .cm-line.cm-code-block-first-line,
+.cm-editor .cm-line.cm-code-block-line,
+.cm-editor .cm-line.cm-code-block-last-line {
   background-color: #f8fafc !important;
   color: #0f172a !important;
-  border: 1px solid #e2e8f0 !important;
-  border-radius: 8px;
 }
 
 #write code, .cm-inline-code {
@@ -81,28 +79,18 @@ body {
   font-weight: 500;
 }
 
-#write hr {
-  height: 2px;
-  background-color: #e2e8f0;
-  border: 0;
-  margin: 24px 0;
+#write hr, .md-hr {
+  border-top: 2px solid #e2e8f0 !important;
 }
 
-.custom-table-root table {
-  border-collapse: collapse;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid #e2e8f0 !important;
-}
-
-.custom-table-root th {
+table.md-table th, .custom-table-root th {
   background-color: #f1f5f9 !important;
   color: #0f172a !important;
   border: 1px solid #e2e8f0 !important;
   font-weight: 600;
 }
 
-.custom-table-root td {
+table.md-table td, .custom-table-root td {
   border: 1px solid #e2e8f0 !important;
   color: #1e293b !important;
 }

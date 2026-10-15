@@ -18,34 +18,34 @@ body {
 
 #write {
   color: #333333;
-  max-width: 860px;
 }
 
-#write h1, #write h2, #write h3, #write h4, #write h5, #write h6, .cm-heading {
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
+.cm-line.cm-heading {
   color: #24292e;
   font-weight: 600;
 }
 
-#write h1 {
+#write h1, .cm-line.cm-heading-1 {
   font-size: 2.2em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #eaecef;
   margin-top: 1.2em;
 }
 
-#write h2 {
+#write h2, .cm-line.cm-heading-2 {
   font-size: 1.75em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #eaecef;
   margin-top: 1.2em;
 }
 
-#write h3 {
+#write h3, .cm-line.cm-heading-3 {
   font-size: 1.4em;
   margin-top: 1em;
 }
 
-#write blockquote, .cm-blockquote {
+#write blockquote, .cm-line.cm-blockquote {
   border-left: 4px solid #dfe2e5 !important;
   color: #6a737d;
   padding: 0 1em;
@@ -53,13 +53,11 @@ body {
 }
 
 #write .md-fences, #write pre,
-.cm-editor .cm-line.cm-fence-header,
-.cm-editor .cm-line.cm-fence-code,
-.cm-editor .cm-line.cm-fence-end {
+.cm-editor .cm-line.cm-code-block-first-line,
+.cm-editor .cm-line.cm-code-block-line,
+.cm-editor .cm-line.cm-code-block-last-line {
   background-color: #f6f8fa !important;
   color: #24292e;
-  border: 1px solid #e1e4e8;
-  border-radius: 6px;
 }
 
 #write code, .cm-inline-code {
@@ -76,34 +74,26 @@ body {
   text-decoration: none;
 }
 
-#write a:hover {
+#write a:hover, .cm-link:hover {
   text-decoration: underline;
 }
 
-#write hr {
-  height: 0.25em;
-  padding: 0;
-  margin: 24px 0;
-  background-color: #e1e4e8;
-  border: 0;
+#write hr, .md-hr {
+  border-top: 2px solid #e1e4e8 !important;
 }
 
-.custom-table-root table {
-  border-collapse: collapse;
-}
-
-.custom-table-root th {
+table.md-table th, .custom-table-root th {
   background-color: #f6f8fa !important;
   color: #24292e !important;
   border: 1px solid #dfe2e5 !important;
   font-weight: 600;
 }
 
-.custom-table-root td {
+table.md-table td, .custom-table-root td {
   border: 1px solid #dfe2e5 !important;
   color: #24292e !important;
 }
 
-.custom-table-root tr:nth-child(2n) td {
+table.md-table tr:nth-child(2n) td, .custom-table-root tr:nth-child(2n) td {
   background-color: #fcfcfc !important;
 }

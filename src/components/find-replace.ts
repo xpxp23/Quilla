@@ -4,6 +4,7 @@ import { setSearchMatchesEffect } from "../editor/extensions/search-highlighter"
 export interface FindReplaceController {
   open: (replaceMode?: boolean) => void;
   close: () => void;
+  notifyDocChanged: () => void;
 }
 
 export function initFindReplace(view: EditorView): FindReplaceController {
@@ -51,7 +52,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
   let matches: Array<{ from: number; to: number }> = [];
   let currentIndex = -1;
 
-  function performSearch() {
+  function performSearch(moveSelection: boolean = true) {
     const query = findInput.value;
     matches = [];
     currentIndex = -1;
@@ -80,7 +81,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
       let closestIdx = matches.findIndex((m) => m.from >= cursorPos);
       if (closestIdx === -1) closestIdx = 0;
       currentIndex = closestIdx;
-      highlightMatch(currentIndex);
+      highlightMatch(currentIndex, moveSelection);
     } else {
       findCount.textContent = "0/0";
       view.dispatch({
@@ -89,7 +90,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     }
   }
 
-  function highlightMatch(index: number) {
+  function highlightMatch(index: number, moveSelection: boolean = true) {
     if (matches.length === 0 || index < 0 || index >= matches.length) {
       findCount.textContent = "0/0";
       view.dispatch({
@@ -101,25 +102,33 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     findCount.textContent = `${currentIndex + 1}/${matches.length}`;
 
     const m = matches[currentIndex];
-    view.dispatch({
-      selection: { anchor: m.from, head: m.to },
-      scrollIntoView: true,
-      effects: [
-        setSearchMatchesEffect.of({ matches, currentIndex }),
-      ],
-    });
+    if (moveSelection) {
+      view.dispatch({
+        selection: { anchor: m.from, head: m.to },
+        scrollIntoView: true,
+        effects: [
+          setSearchMatchesEffect.of({ matches, currentIndex }),
+        ],
+      });
+    } else {
+      view.dispatch({
+        effects: [
+          setSearchMatchesEffect.of({ matches, currentIndex }),
+        ],
+      });
+    }
   }
 
   function nextMatch() {
     if (matches.length === 0) return;
     const nextIdx = (currentIndex + 1) % matches.length;
-    highlightMatch(nextIdx);
+    highlightMatch(nextIdx, true);
   }
 
   function prevMatch() {
     if (matches.length === 0) return;
     const prevIdx = (currentIndex - 1 + matches.length) % matches.length;
-    highlightMatch(prevIdx);
+    highlightMatch(prevIdx, true);
   }
 
   function replaceCurrent() {
@@ -130,7 +139,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
       changes: { from: m.from, to: m.to, insert: rep },
       selection: { anchor: m.from + rep.length },
     });
-    performSearch();
+    performSearch(true);
   }
 
   function replaceAll() {
@@ -138,11 +147,11 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     const rep = replaceInput.value;
     const changes = matches.map((m) => ({ from: m.from, to: m.to, insert: rep }));
     view.dispatch({ changes });
-    performSearch();
+    performSearch(true);
   }
 
   // 事件监听
-  findInput.addEventListener("input", performSearch);
+  findInput.addEventListener("input", () => performSearch(true));
 
   findInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -172,7 +181,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
   caseBtn.addEventListener("click", () => {
     isCaseSensitive = !isCaseSensitive;
     caseBtn.classList.toggle("active", isCaseSensitive);
-    performSearch();
+    performSearch(true);
   });
 
   toggleReplaceBtn.addEventListener("click", () => {
@@ -210,7 +219,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         findInput.select();
       }
 
-      performSearch();
+      performSearch(true);
     },
     close() {
       bar.classList.add("hidden");
@@ -218,6 +227,11 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         effects: [setSearchMatchesEffect.of(null)],
       });
       view.focus();
+    },
+    notifyDocChanged() {
+      if (!bar.classList.contains("hidden") && findInput.value) {
+        performSearch(false);
+      }
     },
   };
 

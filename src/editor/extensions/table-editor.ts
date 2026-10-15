@@ -2,6 +2,7 @@ import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { EditorView, KeyBinding, WidgetType, Decoration, DecorationSet } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import { centerElementInTypewriter } from "./typewriter-mode";
+import { forceRefreshEffect } from "./refresh-effect";
 
 /**
  * 判断一行是否为 Markdown 表格分隔线行 (如 | :--- | :---: | ---: |)
@@ -26,12 +27,14 @@ export interface TableBlock {
 }
 
 /**
- * 扫描文档中所有的 Markdown 表格块
+ * 扫描文档中所有的 Markdown 表格块 (自动跳过围栏代码块内部)
  */
 export function findTablesInDoc(state: EditorState): TableBlock[] {
   const doc = state.doc;
   const tables: TableBlock[] = [];
   let inTable = false;
+  let inFence = false;
+  let fenceChar = "";
   let startLine = 0;
   let from = 0;
   let lines: string[] = [];
@@ -39,6 +42,26 @@ export function findTablesInDoc(state: EditorState): TableBlock[] {
   for (let i = 1; i <= doc.lines; i++) {
     const line = doc.line(i);
     const trimmed = line.text.trim();
+
+    if (/^(```+|~~~+)/.test(trimmed)) {
+      const marker = trimmed.startsWith("`") ? "`" : "~";
+      if (!inFence) {
+        if (inTable && lines.length >= 2) {
+          const endLine = i - 1;
+          const to = doc.line(endLine).to;
+          tables.push({ startLine, endLine, from, to, lines });
+          inTable = false;
+          lines = [];
+        }
+        inFence = true;
+        fenceChar = marker;
+      } else if (marker === fenceChar) {
+        inFence = false;
+      }
+      continue;
+    }
+
+    if (inFence) continue;
 
     if (!inTable) {
       if (trimmed.includes("|") && i < doc.lines) {
@@ -82,10 +105,13 @@ export function serializeMarkdownTable(
   rows: string[][],
   alignments: Array<"left" | "center" | "right">
 ): string {
+  const escapePipe = (s: string) => s.replace(/(?<!\\)\|/g, "\\|");
   const colCount = Math.max(headers.length, ...rows.map((r) => r.length), 1);
-  const normalizedHeaders = new Array(colCount).fill("").map((_, i) => headers[i] || `列 ${i + 1}`);
+  const normalizedHeaders = new Array(colCount)
+    .fill("")
+    .map((_, i) => escapePipe(headers[i] || `列 ${i + 1}`));
   const normalizedRows = rows.map((r) =>
-    new Array(colCount).fill("").map((_, i) => (r[i] !== undefined ? r[i] : ""))
+    new Array(colCount).fill("").map((_, i) => escapePipe(r[i] !== undefined ? r[i] : ""))
   );
 
   const colWidths = new Array(colCount).fill(3);
@@ -200,6 +226,7 @@ class InteractiveTableWidget extends WidgetType {
   private currentHeaders: string[] = [];
   private currentRows: string[][] = [];
   private currentAlignments: Array<"left" | "center" | "right"> = [];
+  private trackedFromPos: number;
 
   constructor(
     readonly lines: string[],
@@ -207,6 +234,7 @@ class InteractiveTableWidget extends WidgetType {
     readonly toPos: number
   ) {
     super();
+    this.trackedFromPos = fromPos;
   }
 
   // 动态预估表格真实物理高度，彻底解决 CodeMirror 滚动脱节与鼠标向下偏移
@@ -220,9 +248,16 @@ class InteractiveTableWidget extends WidgetType {
     return true;
   }
 
-  // 返回 true 保证 CodeMirror 复用当前 DOM 节点，不在输入过程中销毁聚焦节点
-  updateDOM(_dom: HTMLElement): boolean {
-    return true;
+  // 仅当单元格正处于聚焦输入且非外部撤销变更时复用 DOM；若执行了 Ctrl+Z 撤销则重建 DOM 以刷新画面
+  updateDOM(dom: HTMLElement): boolean {
+    if (dom.dataset.forceRebuild === "1") {
+      delete dom.dataset.forceRebuild;
+      return false;
+    }
+    if (dom.contains(document.activeElement)) {
+      return true;
+    }
+    return false;
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -237,8 +272,10 @@ class InteractiveTableWidget extends WidgetType {
     const parseRowCells = (rowText: string): string[] => {
       let trimmed = rowText.trim();
       if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
-      if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
-      return trimmed.split("|").map((c) => c.trim());
+      if (trimmed.endsWith("|") && !trimmed.endsWith("\\|")) trimmed = trimmed.slice(0, -1);
+      return trimmed
+        .split(/(?<!\\)\|/)
+        .map((c) => c.trim().replace(/\\\|/g, "|"));
     };
 
     this.currentHeaders = parseRowCells(this.lines[0] || "");
@@ -285,17 +322,37 @@ class InteractiveTableWidget extends WidgetType {
       );
 
       try {
-        const curLine = view.state.doc.lineAt(Math.min(this.fromPos, view.state.doc.length));
-        let startLine = curLine.number;
-        while (startLine > 1 && view.state.doc.line(startLine - 1).text.trim().includes("|")) {
-          startLine--;
+        // 通过 findTablesInDoc 查找距离 trackedFromPos 最近的表格块，避免上方文档改动导致偏移错位
+        const allTables = findTablesInDoc(view.state);
+        let from = this.trackedFromPos;
+        let to = this.toPos;
+
+        if (allTables.length > 0) {
+          let best = allTables[0];
+          let minDiff = Math.abs(best.from - this.trackedFromPos);
+          for (const t of allTables) {
+            const diff = Math.abs(t.from - this.trackedFromPos);
+            if (diff < minDiff) {
+              best = t;
+              minDiff = diff;
+            }
+          }
+          from = best.from;
+          to = best.to;
+          this.trackedFromPos = from;
+        } else {
+          const curLine = view.state.doc.lineAt(Math.min(this.trackedFromPos, view.state.doc.length));
+          let startLine = curLine.number;
+          while (startLine > 1 && view.state.doc.line(startLine - 1).text.trim().includes("|")) {
+            startLine--;
+          }
+          let endLine = curLine.number;
+          while (endLine < view.state.doc.lines && view.state.doc.line(endLine + 1).text.trim().includes("|")) {
+            endLine++;
+          }
+          from = view.state.doc.line(startLine).from;
+          to = view.state.doc.line(endLine).to;
         }
-        let endLine = curLine.number;
-        while (endLine < view.state.doc.lines && view.state.doc.line(endLine + 1).text.trim().includes("|")) {
-          endLine++;
-        }
-        const from = view.state.doc.line(startLine).from;
-        const to = view.state.doc.line(endLine).to;
 
         view.dispatch({
           changes: { from, to, insert: newMarkdown },
@@ -391,10 +448,8 @@ class InteractiveTableWidget extends WidgetType {
 
         th.addEventListener("blur", () => {
           const val = formatHTMLToMarkdown(th);
-          if (this.currentHeaders[cIdx] !== val) {
-            this.currentHeaders[cIdx] = val;
-            syncToDoc();
-          }
+          this.currentHeaders[cIdx] = val;
+          syncToDoc();
         });
 
         trHead.appendChild(th);
@@ -432,10 +487,8 @@ class InteractiveTableWidget extends WidgetType {
 
           td.addEventListener("blur", () => {
             const val = formatHTMLToMarkdown(td);
-            if (this.currentRows[rIdx][cIdx] !== val) {
-              this.currentRows[rIdx][cIdx] = val;
-              syncToDoc();
-            }
+            this.currentRows[rIdx][cIdx] = val;
+            syncToDoc();
           });
 
           tr.appendChild(td);
@@ -512,6 +565,10 @@ class InteractiveTableWidget extends WidgetType {
     });
 
     const onMouseUp = () => {
+      if (!container.isConnected) {
+        window.removeEventListener("mouseup", onMouseUp);
+        return;
+      }
       isSelecting = false;
       selectStart = null;
     };
@@ -536,10 +593,11 @@ class InteractiveTableWidget extends WidgetType {
 
     // 单元格内键盘快捷导航与全局撤销/重做
     table.addEventListener("keydown", (e: KeyboardEvent) => {
-      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做
+      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做（标记 forceRebuild 使撤销后立即刷新表格视图）
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
+        container.dataset.forceRebuild = "1";
         undo(view);
         return;
       }
@@ -549,6 +607,7 @@ class InteractiveTableWidget extends WidgetType {
       ) {
         e.preventDefault();
         e.stopPropagation();
+        container.dataset.forceRebuild = "1";
         redo(view);
         return;
       }
@@ -616,26 +675,12 @@ class InteractiveTableWidget extends WidgetType {
       const r = parseInt(target.dataset.row || "0", 10);
       const c = parseInt(target.dataset.col || "0", 10);
       const cols = this.currentHeaders.length;
-      // 2.1 捕获表格内撤销/重做，统一接入 CodeMirror 全局历史栈
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.shiftKey) redo(view);
-        else undo(view);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        e.stopPropagation();
-        redo(view);
-        return;
-      }
 
       // 3. 边界方向键跳出表格
       if (e.key === "ArrowUp" && r === -1) {
         e.preventDefault();
         clearSelection();
-        const beforePos = Math.max(0, this.fromPos - 1);
+        const beforePos = Math.max(0, this.trackedFromPos - 1);
         view.dispatch({ selection: { anchor: beforePos }, scrollIntoView: true });
         view.focus();
         return;
@@ -656,7 +701,7 @@ class InteractiveTableWidget extends WidgetType {
         if (sel && sel.anchorOffset === 0) {
           e.preventDefault();
           clearSelection();
-          const beforePos = Math.max(0, this.fromPos - 1);
+          const beforePos = Math.max(0, this.trackedFromPos - 1);
           view.dispatch({ selection: { anchor: beforePos }, scrollIntoView: true });
           view.focus();
           return;
@@ -677,7 +722,7 @@ class InteractiveTableWidget extends WidgetType {
         }
       }
 
-      // 4. Tab / Shift+Tab 单元格跳转与自动续行
+      // 4. Tab / Shift+Tab 单元格跳格与自动续行
       if (e.key === "Tab") {
         e.preventDefault();
         clearSelection();
@@ -853,8 +898,6 @@ function computeTableDecorations(state: EditorState): DecorationSet {
 
   return builder.finish();
 }
-
-import { forceRefreshEffect } from "./refresh-effect";
 
 /**
  * 表格实时预览与可视化内联编辑 StateField

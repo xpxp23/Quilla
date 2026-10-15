@@ -17,44 +17,41 @@ body, #write, .cm-editor, .cm-editor .cm-content, .cm-editor .cm-line {
   line-height: 1.8;
 }
 
-#write {
-  max-width: 860px;
-}
-
 #write strong, .cm-strong, strong {
   font-family: "Georgia", "Cambria", "Times New Roman", "Source Han Serif SC", "Noto Serif CJK SC", "Microsoft YaHei", serif !important;
   font-weight: 700 !important;
   color: #000000 !important;
 }
 
-#write h1, #write h2, #write h3, #write h4, #write h5, #write h6, .cm-heading {
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
+.cm-line.cm-heading {
   font-family: "Georgia", "Cambria", "Times New Roman", "Source Han Serif SC", "Source Han Serif CN", serif !important;
   color: #000000 !important;
   font-weight: 700 !important;
 }
 
-#write h1 {
+#write h1, .cm-line.cm-heading-1 {
   font-size: 2.3em;
   text-align: center;
   padding-bottom: 0.4em;
-  border-bottom: 3px double #d8d2c4;
+  border-bottom: 3px double #d8d2c4 !important;
   margin-top: 1.4em;
   letter-spacing: -0.01em;
 }
 
-#write h2 {
+#write h2, .cm-line.cm-heading-2 {
   font-size: 1.7em;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid #d8d2c4;
+  border-bottom: 1px solid #d8d2c4 !important;
   margin-top: 1.2em;
 }
 
-#write h3 {
+#write h3, .cm-line.cm-heading-3 {
   font-size: 1.35em;
   margin-top: 1em;
 }
 
-#write blockquote, .cm-blockquote {
+#write blockquote, .cm-line.cm-blockquote {
   border-left: 3px solid #8b0000 !important;
   color: #444444 !important;
   background-color: transparent !important;
@@ -65,13 +62,11 @@ body, #write, .cm-editor, .cm-editor .cm-content, .cm-editor .cm-line {
 }
 
 #write .md-fences, #write pre,
-.cm-editor .cm-line.cm-fence-header,
-.cm-editor .cm-line.cm-fence-code,
-.cm-editor .cm-line.cm-fence-end {
+.cm-editor .cm-line.cm-code-block-first-line,
+.cm-editor .cm-line.cm-code-block-line,
+.cm-editor .cm-line.cm-code-block-last-line {
   background-color: #efeae0 !important;
   color: #222222 !important;
-  border: 1px solid #d8d2c4 !important;
-  border-radius: 4px;
 }
 
 #write code, .cm-inline-code {
@@ -90,14 +85,11 @@ body, #write, .cm-editor, .cm-editor .cm-content, .cm-editor .cm-line {
   text-underline-offset: 3px;
 }
 
-#write hr {
-  height: 1px;
-  border: 0;
-  background-image: linear-gradient(to right, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0));
-  margin: 28px 0;
+#write hr, .md-hr {
+  border-top: 2px solid #d8d2c4 !important;
 }
 
-.custom-table-root th {
+table.md-table th, .custom-table-root th {
   background-color: #eae4d6 !important;
   color: #000000 !important;
   border: 1px solid #d8d2c4 !important;
@@ -105,7 +97,7 @@ body, #write, .cm-editor, .cm-editor .cm-content, .cm-editor .cm-line {
   font-weight: 700;
 }
 
-.custom-table-root td {
+table.md-table td, .custom-table-root td {
   border: 1px solid #d8d2c4 !important;
   color: #111111 !important;
 }

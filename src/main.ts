@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import "katex/dist/katex.min.css";
+import katex from "katex";
 import {
   createEditor,
   toggleTypewriterMode,
@@ -9,20 +10,26 @@ import {
 } from "./editor";
 import { themeLoader, BUILTIN_THEMES } from "./themes/theme-loader";
 import { initTitlebar, updateWindowTitle } from "./components/titlebar";
-import { renderOutline, OutlineHeading, reorderDocumentHeading } from "./components/outline";
+import {
+  renderOutline,
+  OutlineHeading,
+  reorderDocumentHeading,
+  syncActiveOutlineHeading,
+} from "./components/outline";
 import { renderFileTree, FileItem, syncActiveTreeItem } from "./components/file-tree";
 import { initMenus } from "./components/menu";
 import { initQuickOpen, addRecentFile } from "./components/quick-open";
 import { initStatsPopover } from "./components/stats-popover";
 import { initFloatingToolbars } from "./editor/extensions/floating-toolbars";
 import { initSmartPaste } from "./editor/extensions/smart-paste";
-import { setActiveDocumentPath } from "./editor/extensions/live-preview";
+import { setActiveDocumentPath, clearImageCache } from "./editor/extensions/live-preview";
 import { forceRefreshEffect } from "./editor/extensions/refresh-effect";
-import { initFindReplace } from "./components/find-replace";
+import { initFindReplace, FindReplaceController } from "./components/find-replace";
 import { undo, redo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { pulseSearchMatch } from "./editor/extensions/search-highlighter";
 import { showSaveConfirmDialog } from "./components/save-dialog";
+import { isTableDelimiter } from "./editor/extensions/table-editor";
 import {
   saveRecoverySnapshot,
   clearRecoverySnapshot,
@@ -117,7 +124,8 @@ class App {
   private isModified: boolean = false;
   private savedContent: string = INITIAL_DEMO_DOC;
   private loadSequence: number = 0;
-  private editorView: any = null;
+  private editorView: EditorView | null = null;
+  private findReplaceCtrl: FindReplaceController | null = null;
   private currentHeadings: OutlineHeading[] = [];
 
   async init() {
@@ -140,12 +148,16 @@ class App {
       onChange: (content) => this.handleContentChange(content),
       onStatsUpdate: (words, chars) => this.updateStats(words, chars),
       onOutlineUpdate: (headings) => this.updateOutline(headings),
+      onCursorLineChange: (line) => {
+        const outlineContainer = document.getElementById("outline-content");
+        syncActiveOutlineHeading(outlineContainer, this.currentHeadings, line);
+      },
       onOpenFile: (filePath) => this.loadFile(filePath),
       onOpenWorkspace: (dirPath) => this.loadWorkspace(dirPath),
     });
 
     // 3.1 挂载顶部吸顶查找与替换浮动控制器 (Ctrl+F / Ctrl+H)
-    initFindReplace(this.editorView);
+    this.findReplaceCtrl = initFindReplace(this.editorView);
 
     // 3.2 挂载快速文件漫游、图片/链接微型浮层、富文本智能粘贴、字数阅读卡片
     const quickOpen = initQuickOpen({
@@ -153,7 +165,7 @@ class App {
       getWorkspaceFiles: async () => {
         if (!this.currentWorkspaceRoot) return [];
         try {
-          const res = await invoke<any[]>("list_workspace_files", { dirPath: this.currentWorkspaceRoot });
+          const res = await invoke<any[]>("list_workspace_files", { root: this.currentWorkspaceRoot });
           const paths: string[] = [];
           const traverse = (items: any[]) => {
             for (const item of items) {
@@ -170,7 +182,7 @@ class App {
     });
 
     initStatsPopover(this.editorView);
-    initFloatingToolbars(this.editorView);
+    initFloatingToolbars(this.editorView, (filePath) => this.loadFile(filePath));
     initSmartPaste(this.editorView);
 
     // 4. 底部状态栏事件
@@ -243,6 +255,9 @@ class App {
       if ((e.ctrlKey || e.metaKey) && e.key === "/") {
         e.preventDefault();
         toggleSourceMode();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        document.body.classList.toggle("pin-outline");
       } else if (e.key === "F9") {
         e.preventDefault();
         toggleTW();
@@ -392,7 +407,7 @@ class App {
 
     let isResizing = false;
 
-    resizer.addEventListener("mousedown", (e) => {
+    resizer.addEventListener("mousedown", () => {
       isResizing = true;
       resizer.classList.add("resizing");
       document.body.style.userSelect = "none";
@@ -490,6 +505,9 @@ class App {
       const success = await this.saveFile();
       return success ? "save" : "cancel";
     }
+    if (choice === "discard") {
+      clearRecoverySnapshot();
+    }
     return choice;
   }
 
@@ -546,6 +564,7 @@ class App {
       this.currentFilePath = targetPath;
       this.savedContent = content;
       this.isModified = false;
+      clearImageCache();
       setActiveDocumentPath(targetPath);
       addRecentFile(targetPath);
       clearRecoverySnapshot();
@@ -557,6 +576,12 @@ class App {
       if (saveStatus) {
         saveStatus.textContent = "已保存";
         saveStatus.style.color = "var(--control-text-color)";
+      }
+
+      if (this.editorView) {
+        this.editorView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
       }
 
       // 如果当前工作区包含了此文件，刷新文件树
@@ -581,6 +606,7 @@ class App {
     if (choice === "cancel") return;
 
     this.currentFilePath = null;
+    clearImageCache();
     setActiveDocumentPath(null);
     const initialText = "# Untitled\n\n";
     this.savedContent = initialText;
@@ -680,20 +706,271 @@ class App {
     }
   }
 
-  private exportHtml() {
+  private renderMarkdownToHtmlBody(md: string): string {
+    const lines = md.replace(/\r\n/g, "\n").split("\n");
+    const out: string[] = [];
+    let i = 0;
+
+    // 跳过顶部 YAML Front Matter
+    if (lines.length >= 3 && lines[0].trim() === "---") {
+      for (let k = 1; k < Math.min(lines.length, 35); k++) {
+        if (lines[k].trim() === "---" || lines[k].trim() === "...") {
+          i = k + 1;
+          break;
+        }
+      }
+    }
+
+    const renderInline = (raw: string): string => {
+      let s = this.escapeHtml(raw);
+      // 行内公式 $...$
+      s = s.replace(/\$([^$\n]+)\$/g, (_m, tex) => {
+        try {
+          return katex.renderToString(tex, { displayMode: false, throwOnError: false, output: "html" });
+        } catch {
+          return `<code>${tex}</code>`;
+        }
+      });
+      // 行内代码
+      s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+      // 图片
+      s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" style="max-width:100%;" />');
+      // 链接
+      s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      // 加粗斜体 / 加粗 / 斜体 / 删除线 / 高亮 / 上下标
+      s = s.replace(/(\*{3}|_{3})([^*_\n]+?)\1/g, "<strong><em>$2</em></strong>");
+      s = s.replace(/(\*{2}|_{2})([^*_\n]+?)\1/g, "<strong>$2</strong>");
+      s = s.replace(/(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g, "<em>$1$2</em>");
+      s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+      s = s.replace(/==([^=\n]+)==/g, "<mark>$1</mark>");
+      s = s.replace(/(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g, "<sub>$1</sub>");
+      s = s.replace(/\^([^\^\s\n][^\^\n]*?)\^/g, "<sup>$1</sup>");
+      return s;
+    };
+
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        i++;
+        continue;
+      }
+
+      // 1. 围栏代码块
+      const fenceMatch = trimmed.match(/^(```+|~~~+)\s*([^\s`~]*).*$/);
+      if (fenceMatch) {
+        const fenceChar = fenceMatch[1][0];
+        const lang = fenceMatch[2] || "";
+        const codeLines: string[] = [];
+        i++;
+        while (i < lines.length) {
+          const t = lines[i].trim();
+          if ((fenceChar === "`" && /^```+$/.test(t)) || (fenceChar === "~" && /^~~~+$/.test(t))) {
+            i++;
+            break;
+          }
+          codeLines.push(lines[i]);
+          i++;
+        }
+        out.push(
+          `<pre><code class="language-${this.escapeHtml(lang)}">${this.escapeHtml(codeLines.join("\n"))}</code></pre>`
+        );
+        continue;
+      }
+
+      // 2. 多行公式块 $$
+      if (trimmed === "$$") {
+        const mathLines: string[] = [];
+        i++;
+        while (i < lines.length && lines[i].trim() !== "$$") {
+          mathLines.push(lines[i]);
+          i++;
+        }
+        i++; // 跳过结束 $$
+        try {
+          const rendered = katex.renderToString(mathLines.join("\n"), {
+            displayMode: true,
+            throwOnError: false,
+            output: "html",
+          });
+          out.push(`<div class="md-math-block-preview">${rendered}</div>`);
+        } catch {
+          out.push(`<pre>${this.escapeHtml(mathLines.join("\n"))}</pre>`);
+        }
+        continue;
+      }
+
+      // 3. 单行公式块 $$ ... $$
+      const singleMath = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
+      if (singleMath) {
+        try {
+          const rendered = katex.renderToString(singleMath[1], {
+            displayMode: true,
+            throwOnError: false,
+            output: "html",
+          });
+          out.push(`<div class="md-math-block-preview">${rendered}</div>`);
+        } catch {
+          out.push(`<pre>${this.escapeHtml(singleMath[1])}</pre>`);
+        }
+        i++;
+        continue;
+      }
+
+      // 4. 表格块
+      if (trimmed.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
+        const parseCells = (rowStr: string) => {
+          let t = rowStr.trim();
+          if (t.startsWith("|")) t = t.slice(1);
+          if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
+          return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+        };
+        const headers = parseCells(lines[i]);
+        const delimParts = parseCells(lines[i + 1]);
+        const aligns = headers.map((_h, idx) => {
+          const d = delimParts[idx] || "";
+          if (d.startsWith(":") && d.endsWith(":")) return "center";
+          if (d.endsWith(":")) return "right";
+          return "left";
+        });
+        i += 2;
+        const bodyRows: string[][] = [];
+        while (i < lines.length && lines[i].trim().includes("|")) {
+          bodyRows.push(parseCells(lines[i]));
+          i++;
+        }
+        const thHtml = headers
+          .map((h, idx) => `<th style="text-align:${aligns[idx]}">${renderInline(h)}</th>`)
+          .join("");
+        const tbodyHtml = bodyRows
+          .map(
+            (r) =>
+              `<tr>${headers
+                .map((_h, idx) => `<td style="text-align:${aligns[idx]}">${renderInline(r[idx] || "")}</td>`)
+                .join("")}</tr>`
+          )
+          .join("");
+        out.push(`<table class="md-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbodyHtml}</tbody></table>`);
+        continue;
+      }
+
+      // 5. 水平分割线
+      if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        out.push("<hr />");
+        i++;
+        continue;
+      }
+
+      // 6. 标题
+      const hMatch = line.match(/^(#{1,6})\s+(.*)$/);
+      if (hMatch) {
+        const lvl = hMatch[1].length;
+        out.push(`<h${lvl}>${renderInline(hMatch[2].trim())}</h${lvl}>`);
+        i++;
+        continue;
+      }
+
+      // 7. 引用块
+      if (trimmed.startsWith(">")) {
+        const qLines: string[] = [];
+        while (i < lines.length && lines[i].trim().startsWith(">")) {
+          qLines.push(renderInline(lines[i].replace(/^\s*>\s?/, "")));
+          i++;
+        }
+        out.push(`<blockquote><p>${qLines.join("<br/>")}</p></blockquote>`);
+        continue;
+      }
+
+      // 8. 无序/任务列表
+      if (/^\s*[-*+]\s+/.test(line)) {
+        const items: string[] = [];
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+          const taskM = lines[i].match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
+          if (taskM) {
+            const checked = taskM[1].toLowerCase() === "x" ? " checked disabled" : " disabled";
+            items.push(`<li><input type="checkbox"${checked} /> ${renderInline(taskM[2])}</li>`);
+          } else {
+            const itemTxt = lines[i].replace(/^\s*[-*+]\s+/, "");
+            items.push(`<li>${renderInline(itemTxt)}</li>`);
+          }
+          i++;
+        }
+        out.push(`<ul>${items.join("")}</ul>`);
+        continue;
+      }
+
+      // 9. 有序列表
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const items: string[] = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+          const itemTxt = lines[i].replace(/^\s*\d+\.\s+/, "");
+          items.push(`<li>${renderInline(itemTxt)}</li>`);
+          i++;
+        }
+        out.push(`<ol>${items.join("")}</ol>`);
+        continue;
+      }
+
+      // 10. 普通段落
+      out.push(`<p>${renderInline(line)}</p>`);
+      i++;
+    }
+
+    return out.join("\n");
+  }
+
+  private async exportHtml() {
+    if (!this.editorView) return;
     const docText = this.editorView.state.doc.toString();
-    const blob = new Blob(
-      [
-        `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Export</title><style>body{font-family:sans-serif;max-width:800px;margin:40px auto;line-height:1.6;}</style></head><body><pre>${docText}</pre></body></html>`,
-      ],
-      { type: "text/html" }
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "document-export.html";
-    a.click();
-    URL.revokeObjectURL(url);
+    const title = this.currentFilePath
+      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : "document-export";
+    const themeCss = themeLoader.getThemeMeta().css;
+    const bodyHtml = this.renderMarkdownToHtmlBody(docText);
+
+    const fullHtml = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${this.escapeHtml(title)}</title>
+  <style>
+    ${themeCss}
+    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.7; }
+    table.md-table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; }
+    table.md-table th, table.md-table td { border: 1px solid #dfe2e5; padding: 8px 14px; }
+    table.md-table th { background-color: #f6f8fa; font-weight: 600; }
+    pre { padding: 14px 16px; border-radius: 6px; background: #f6f8fa; overflow-x: auto; }
+    blockquote { border-left: 4px solid #dfe2e5; margin: 1rem 0; padding: 2px 16px; color: #6a737d; }
+  </style>
+</head>
+<body id="write">
+${bodyHtml}
+</body>
+</html>`;
+
+    try {
+      const savePath: string | null = await invoke("select_export_html_path", {
+        defaultName: `${title}.html`,
+      });
+      if (savePath && savePath.trim()) {
+        await invoke("save_file_content", {
+          path: savePath.trim(),
+          content: fullHtml,
+        });
+      }
+      return;
+    } catch {
+      // 浏览器模式降级下载
+      const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
   }
 
   private handleContentChange(content: string) {
@@ -710,8 +987,12 @@ class App {
       saveStatus.style.color = isDirty ? "#e36209" : "var(--control-text-color)";
     }
 
+    this.findReplaceCtrl?.notifyDocChanged();
+
     if (isDirty) {
       saveRecoverySnapshot(this.currentFilePath, content, fileName);
+    } else {
+      clearRecoverySnapshot();
     }
   }
 
@@ -748,6 +1029,11 @@ class App {
         }
       }
     );
+
+    if (this.editorView) {
+      const curLine = this.editorView.state.doc.lineAt(this.editorView.state.selection.main.head).number;
+      syncActiveOutlineHeading(outlineContainer, headings, curLine);
+    }
   }
 
   private async openWorkspaceFolder() {
@@ -855,6 +1141,7 @@ class App {
       this.currentFilePath = filePath;
       this.savedContent = content;
       this.isModified = false;
+      clearImageCache();
       setActiveDocumentPath(filePath);
       addRecentFile(filePath);
 
@@ -913,7 +1200,7 @@ class App {
         item.className = "search-result-item";
         const fileName = m.file.split(/[\\/]/).pop() || m.file;
         item.innerHTML = `
-          <div class="search-result-file" title="${m.file}">${this.escapeHtml(fileName)}</div>
+          <div class="search-result-file" title="${this.escapeHtml(m.file)}">${this.escapeHtml(fileName)}</div>
           <div class="search-result-text"><span class="search-result-line">L${m.line}</span> ${this.escapeHtml(m.text)}</div>
         `;
         item.addEventListener("click", () => {

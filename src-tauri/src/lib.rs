@@ -27,6 +27,7 @@ pub fn run() {
         current_workspace: std::sync::Mutex::new(None),
         initial_file: std::sync::Mutex::new(initial_file),
         is_new_window: std::sync::Mutex::new(is_new_window),
+        document_buffer: std::sync::Mutex::new(buffer::DocumentBuffer::default()),
     };
 
     tauri::Builder::default()
@@ -48,6 +49,7 @@ pub fn run() {
             commands::search_workspace_content,
             commands::select_workspace_folder,
             commands::select_save_file_path,
+            commands::select_export_html_path,
             commands::select_open_file_path,
             commands::create_new_window,
             commands::get_cli_open_file,

@@ -16,7 +16,7 @@ export function normalizeAnchor(str: string): string {
 }
 
 /**
- * 在文档中定位目标锚点标题并平滑跳转置顶
+ * 在文档中定位目标锚点标题并平滑跳转置顶（自动忽略代码块内部注释）
  */
 export function navigateToAnchor(view: EditorView, rawAnchor: string): boolean {
   if (!rawAnchor) return false;
@@ -27,9 +27,24 @@ export function navigateToAnchor(view: EditorView, rawAnchor: string): boolean {
   let targetLinePos: number | null = null;
   let targetLineEnd: number | null = null;
 
-  // 1. 第一优先级：精确比对 Markdown 标题行 (# Header)
+  // 1. 第一优先级：精确比对 Markdown 标题行 (# Header)，跳过代码块
+  let inFence = false;
+  let fenceChar = "";
   for (let i = 1; i <= doc.lines; i++) {
     const line = doc.line(i);
+    const trimmed = line.text.trim();
+    if (/^(```+|~~~+)/.test(trimmed)) {
+      const marker = trimmed.startsWith("`") ? "`" : "~";
+      if (!inFence) {
+        inFence = true;
+        fenceChar = marker;
+      } else if (marker === fenceChar) {
+        inFence = false;
+      }
+      continue;
+    }
+    if (inFence) continue;
+
     const m = line.text.match(/^(#{1,6})\s+(.*)$/);
     if (m) {
       const headingClean = normalizeAnchor(m[2]);

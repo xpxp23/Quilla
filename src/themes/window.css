@@ -1563,20 +1563,21 @@ body.theme-night .quick-open-results::-webkit-scrollbar-thumb:hover {
    ========================================== */
 @media print {
   /* 隐藏所有窗口边框、侧边栏、状态栏、浮动工具栏与交互弹层 */
-  #titlebar,
-  #sidebar,
-  #statusbar,
-  #find-replace-container,
-  .quick-open-overlay,
-  .cm-floating-toolbar,
-  .table-bubble-menu,
-  .cm-table-row-ops,
-  .cm-table-col-ops,
-  .cm-table-quick-toolbar,
+  #top-titlebar,
+  #typora-sidebar,
+  #sidebar-resizer,
+  footer.ty-footer,
+  #ty-find-replace,
+  #ty-quick-open-overlay,
+  .ty-image-toolbar,
+  .ty-link-tooltip,
+  .table-floating-toolbar,
   .ty-dropdown-menu,
-  .shortcut-modal-overlay,
-  .stats-popover-overlay,
-  .table-cell-actions,
+  .ty-modal-overlay,
+  .ty-stats-popover,
+  .ty-recovery-banner,
+  .cm-block-handle,
+  .cm-block-drop-indicator,
   .cm-gutter,
   .cm-cursor,
   .cm-cursorLayer {
@@ -1586,9 +1587,10 @@ body.theme-night .quick-open-results::-webkit-scrollbar-thumb:hover {
   /* 解除应用容器与编辑区视口高度限制，恢复正常打印流排版 */
   html,
   body,
-  #app,
-  #main-container,
-  #editor-pane,
+  #layout-container,
+  #content,
+  #write-wrapper,
+  #write,
   .cm-editor,
   .cm-scroller {
     position: static !important;
@@ -1616,7 +1618,7 @@ body.theme-night .quick-open-results::-webkit-scrollbar-thumb:hover {
   }
 
   /* 打印分页保护：杜绝标题孤行分页 (Orphan Headings) */
-  h1, h2, h3, h4, h5, h6 {
+  h1, h2, h3, h4, h5, h6, .cm-line.cm-heading {
     page-break-after: avoid !important;
     break-after: avoid !important;
     color: #000000 !important;
@@ -1625,9 +1627,10 @@ body.theme-night .quick-open-results::-webkit-scrollbar-thumb:hover {
   /* 表格、公式块、图表、代码块、引用块及图片防止页面中间被横向撕裂截断 */
   table,
   pre,
-  .cm-math-block,
-  .cm-mermaid-container,
+  .md-math-block-card,
+  .md-mermaid-card,
   blockquote,
+  .cm-line.cm-blockquote,
   img,
   figure {
     page-break-inside: avoid !important;
@@ -1656,5 +1659,3 @@ body.theme-night .quick-open-results::-webkit-scrollbar-thumb:hover {
     background-color: transparent !important;
   }
 }
-
-

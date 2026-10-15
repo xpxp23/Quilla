@@ -1,17 +1,31 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, undo, redo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { livePreviewPlugin } from "./extensions/live-preview";
+import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { livePreviewPlugin, activeDocumentPath } from "./extensions/live-preview";
 import { imeGuardPlugin } from "./extensions/ime-guard";
 import { tableKeymap, tableLiveViewField } from "./extensions/table-editor";
 import { formattingKeymap } from "./extensions/formatting-keymap";
 import { setupImageAndDropHandlers } from "./extensions/image-handler";
+import { mermaidLiveViewField } from "./extensions/mermaid-extension";
+import { mathBlockLiveViewField } from "./extensions/math-block-extension";
+import { searchHighlightField } from "./extensions/search-highlighter";
+import { navigateToAnchor } from "./extensions/anchor-navigator";
+import { preciseCursorExtension, getExactPosAtCoords } from "./extensions/precise-cursor";
+import { typewriterModeExtension, toggleTypewriterMode, isTypewriterModeActive } from "./extensions/typewriter-mode";
+import { focusModeExtension, toggleFocusMode, isFocusModeActive } from "./extensions/focus-mode";
+import { boundaryTraversalExtension } from "./extensions/boundary-traversal";
+import { emojiAutocompletion } from "./extensions/emoji-autocomplete";
+import { smartAutopairExtension } from "./extensions/smart-autopair";
+import { blockHandlePlugin } from "./extensions/block-handle";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface EditorCallbacks {
   onChange: (content: string) => void;
   onStatsUpdate: (words: number, chars: number) => void;
   onOutlineUpdate: (headings: Array<{ level: number; text: string; line: number }>) => void;
+  onCursorLineChange?: (line: number) => void;
   onOpenFile?: (filePath: string) => void;
   onOpenWorkspace?: (dirPath: string) => void;
 }
@@ -34,27 +48,37 @@ const cleanFocusTheme = EditorView.theme({
   },
 });
 
-import { mermaidLiveViewField } from "./extensions/mermaid-extension";
-import { mathBlockLiveViewField } from "./extensions/math-block-extension";
-import { undo, redo } from "@codemirror/commands";
-
-import { searchHighlightField } from "./extensions/search-highlighter";
-import { navigateToAnchor } from "./extensions/anchor-navigator";
-import { preciseCursorExtension, getExactPosAtCoords } from "./extensions/precise-cursor";
-import { typewriterModeExtension, toggleTypewriterMode, isTypewriterModeActive } from "./extensions/typewriter-mode";
-import { focusModeExtension, toggleFocusMode, isFocusModeActive } from "./extensions/focus-mode";
-import { boundaryTraversalExtension } from "./extensions/boundary-traversal";
-import { emojiAutocompletion } from "./extensions/emoji-autocomplete";
-import { smartAutopairExtension } from "./extensions/smart-autopair";
-import { blockHandlePlugin } from "./extensions/block-handle";
-import { invoke } from "@tauri-apps/api/core";
+function resolveRelativeFilePath(baseDocPath: string | null, relHref: string): string {
+  const cleaned = decodeURIComponent(relHref.split("#")[0].split("?")[0]).trim();
+  if (!baseDocPath) return cleaned;
+  // 若已经是绝对路径（Windows 盘符或 Unix / 开头）
+  if (/^[a-zA-Z]:[\\/]/.test(cleaned) || cleaned.startsWith("/")) {
+    return cleaned;
+  }
+  const sep = baseDocPath.includes("\\") ? "\\" : "/";
+  const baseParts = baseDocPath.replace(/\\/g, "/").split("/");
+  baseParts.pop(); // 移除文件名
+  const relParts = cleaned.replace(/\\/g, "/").split("/");
+  for (const part of relParts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (baseParts.length > 1) baseParts.pop();
+    } else {
+      baseParts.push(part);
+    }
+  }
+  return baseParts.join(sep);
+}
 
 export function handleOpenLink(href: string, onOpenFile?: (filePath: string) => void) {
   const trimmed = href.trim();
   if (!trimmed) return;
 
   const isWebScheme = /^(https?:\/\/|mailto:|ftp:\/\/)/i.test(trimmed);
-  const isDomainPattern = /^(www\.|[a-zA-Z0-9-]+\.(com|cn|org|net|io|edu|gov|cc|me|app|dev|info|vip|xyz|tech|top))/i.test(trimmed);
+  const isDomainPattern =
+    /^(www\.|[a-zA-Z0-9-]+\.(com|cn|org|net|io|edu|gov|cc|me|app|dev|info|vip|xyz|tech|top))(\/|$)/i.test(
+      trimmed
+    );
 
   if (isWebScheme) {
     invoke("open_external_url", { url: trimmed }).catch((e) => {
@@ -68,8 +92,44 @@ export function handleOpenLink(href: string, onOpenFile?: (filePath: string) => 
       window.open(fullUrl, "_blank");
     });
   } else if (onOpenFile) {
-    onOpenFile(trimmed);
+    const resolved = resolveRelativeFilePath(activeDocumentPath, trimmed);
+    onOpenFile(resolved);
   }
+}
+
+export function extractOutlineHeadings(doc: {
+  lines: number;
+  line: (n: number) => { text: string };
+}): Array<{ level: number; text: string; line: number }> {
+  const headings: Array<{ level: number; text: string; line: number }> = [];
+  let inFence = false;
+  let fenceChar = "";
+
+  for (let i = 1; i <= doc.lines; i++) {
+    const lineText = doc.line(i).text;
+    const trimmed = lineText.trim();
+    if (/^(```+|~~~+)/.test(trimmed)) {
+      const marker = trimmed.startsWith("`") ? "`" : "~";
+      if (!inFence) {
+        inFence = true;
+        fenceChar = marker;
+      } else if (marker === fenceChar) {
+        inFence = false;
+      }
+      continue;
+    }
+    if (inFence) continue;
+
+    const match = lineText.match(/^(#{1,6})\s+(.*)$/);
+    if (match) {
+      headings.push({
+        level: match[1].length,
+        text: match[2].trim(),
+        line: i,
+      });
+    }
+  }
+  return headings;
 }
 
 export { toggleTypewriterMode, isTypewriterModeActive, toggleFocusMode, isFocusModeActive };
@@ -91,19 +151,8 @@ export function createEditor(
       const words = (text.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
       callbacks.onStatsUpdate(words, chars);
 
-      // 2. 提取大纲数据
-      const headings: Array<{ level: number; text: string; line: number }> = [];
-      for (let i = 1; i <= doc.lines; i++) {
-        const line = doc.line(i);
-        const match = line.text.match(/^(#{1,6})\s+(.*)$/);
-        if (match) {
-          headings.push({
-            level: match[1].length,
-            text: match[2],
-            line: i,
-          });
-        }
-      }
+      // 2. 提取大纲数据 (跳过代码块内注释)
+      const headings = extractOutlineHeadings(doc);
       callbacks.onOutlineUpdate(headings);
 
       // 3. 50ms 即时同步状态给上层应用
@@ -111,6 +160,11 @@ export function createEditor(
       debounceTimer = setTimeout(() => {
         callbacks.onChange(text);
       }, 50);
+    }
+
+    if ((update.selectionSet || update.docChanged) && callbacks.onCursorLineChange) {
+      const headLine = update.state.doc.lineAt(update.state.selection.main.head).number;
+      callbacks.onCursorLineChange(headLine);
     }
   });
 
@@ -120,6 +174,7 @@ export function createEditor(
       cleanFocusTheme,
       history(),
       markdown(),
+      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       imeGuardPlugin,
       ...smartAutopairExtension(),
       emojiAutocompletion,
@@ -197,9 +252,10 @@ export function createEditor(
     onOpenWorkspace: callbacks.onOpenWorkspace,
   });
 
-  // 初次触发一次统计
+  // 初次触发一次统计与大纲构建
   const words = (initialDoc.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
   callbacks.onStatsUpdate(words, initialDoc.length);
+  callbacks.onOutlineUpdate(extractOutlineHeadings(view.state.doc));
 
   return view;
 }

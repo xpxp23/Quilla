@@ -13,6 +13,12 @@ pub struct DocumentBuffer {
     is_dirty: bool,
 }
 
+impl Default for DocumentBuffer {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
 impl DocumentBuffer {
     pub fn new(initial_text: &str) -> Self {
         Self {
@@ -46,12 +52,31 @@ impl DocumentBuffer {
         self.is_dirty
     }
 
-    /// 高性能提取 Markdown 大纲 (# Headings)
+    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过代码块内部注释
     pub fn extract_headings(&self) -> Vec<HeadingItem> {
         let mut headings = Vec::new();
+        let mut in_fence = false;
+        let mut fence_marker = "";
+
         for (idx, line_slice) in self.rope.lines().enumerate() {
             let line_str = line_slice.to_string();
             let trimmed = line_str.trim();
+
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                let marker = if trimmed.starts_with("```") { "```" } else { "~~~" };
+                if !in_fence {
+                    in_fence = true;
+                    fence_marker = marker;
+                } else if trimmed.starts_with(fence_marker) {
+                    in_fence = false;
+                }
+                continue;
+            }
+
+            if in_fence {
+                continue;
+            }
+
             if trimmed.starts_with('#') {
                 let mut level = 0;
                 for ch in trimmed.chars() {
@@ -61,7 +86,7 @@ impl DocumentBuffer {
                         break;
                     }
                 }
-                if level >= 1 && level <= 6 && trimmed.chars().nth(level) == Some(' ') {
+                if (1..=6).contains(&level) && trimmed.chars().nth(level) == Some(' ') {
                     let text = trimmed[level..].trim().to_string();
                     headings.push(HeadingItem {
                         level,
@@ -95,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_heading_extraction() {
-        let content = "# Header 1\nSome paragraph\n## Subheader 2\n### Subheader 3\nNot # A Header";
+        let content = "# Header 1\nSome paragraph\n```python\n# Code comment\n```\n## Subheader 2\n### Subheader 3\nNot # A Header";
         let buf = DocumentBuffer::new(content);
         let headings = buf.extract_headings();
 

@@ -36,6 +36,7 @@ export function renderOutline(
     el.title = `${heading.text} (可拖拽重排整章)`;
     el.draggable = true;
     el.dataset.index = String(idx);
+    el.dataset.line = String(heading.line);
 
     const tag = document.createElement("span");
     tag.className = "outline-tag";
@@ -108,6 +109,30 @@ export function renderOutline(
     }
 
     container.appendChild(el);
+  });
+}
+
+/**
+ * 根据当前光标或视口顶部所在行，自动同步大纲面板的高亮项 (Scroll Spy)
+ */
+export function syncActiveOutlineHeading(
+  container: HTMLElement | null,
+  headings: OutlineHeading[],
+  currentLine: number
+) {
+  if (!container || headings.length === 0) return;
+  let activeIdx = -1;
+  for (let i = 0; i < headings.length; i++) {
+    if (headings[i].line <= currentLine) {
+      activeIdx = i;
+    } else {
+      break;
+    }
+  }
+
+  const items = container.querySelectorAll<HTMLElement>(".outline-item");
+  items.forEach((item, idx) => {
+    item.classList.toggle("active", idx === activeIdx);
   });
 }
 
