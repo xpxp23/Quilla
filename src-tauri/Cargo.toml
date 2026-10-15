@@ -1,0 +1,32 @@
+[package]
+name = "quilla"
+version = "0.1.0"
+description = "Quilla (羽墨) - A lightweight, high-performance Markdown editor rewritten in Rust with Tauri v2"
+authors = ["Quilla Team"]
+edition = "2021"
+
+[lib]
+name = "quilla_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["custom-protocol"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ropey = "1.6"
+notify = "6.1"
+rayon = "1.10"
+ignore = "0.4"
+tempfile = "3.14"
+base64 = "0.22"
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

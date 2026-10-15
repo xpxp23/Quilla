@@ -1,0 +1,465 @@
+use crate::safe_io::SafeIO;
+use crate::search::{SearchEngine, SearchMatch};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+use std::sync::Mutex;
+use tauri::State;
+
+#[derive(Default)]
+pub struct AppState {
+    pub current_workspace: Mutex<Option<String>>,
+    pub initial_file: Mutex<Option<String>>,
+    pub is_new_window: Mutex<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileItem {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub children: Option<Vec<FileItem>>,
+}
+
+#[tauri::command]
+pub fn save_file_content(path: String, content: String) -> Result<(), String> {
+    SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))
+}
+
+#[tauri::command]
+pub fn read_file_content(path: String) -> Result<String, String> {
+    fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))
+}
+
+#[tauri::command]
+pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
+    const MAX_DEPTH: usize = 8;
+    const MAX_ITEMS: usize = 3500;
+    static BLACKLIST: &[&str] = &[
+        ".git", ".svn", ".hg", "node_modules", "target", "dist", "build", "out",
+        "bin", "obj", ".vs", ".idea", ".vscode", "AppData", "Windows", "System32",
+        "Library", "vendor", "cache", ".cache", "$RECYCLE.BIN", "System Volume Information",
+    ];
+
+    fn is_text_file(path: &Path) -> bool {
+        path.extension().map_or(false, |ext| {
+            let ext_str = ext.to_string_lossy();
+            ext_str.eq_ignore_ascii_case("md")
+                || ext_str.eq_ignore_ascii_case("markdown")
+                || ext_str.eq_ignore_ascii_case("txt")
+        })
+    }
+
+    fn build_tree(dir: &Path, depth: usize, count: &mut usize) -> Vec<FileItem> {
+        if depth > MAX_DEPTH || *count >= MAX_ITEMS {
+            return Vec::new();
+        }
+
+        let mut items = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if *count >= MAX_ITEMS {
+                    break;
+                }
+                let path = entry.path();
+                let file_name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+
+                // 过滤隐藏文件与黑名单巨型/二进制目录
+                if file_name.starts_with('.') || BLACKLIST.iter().any(|&b| file_name.eq_ignore_ascii_case(b)) {
+                    continue;
+                }
+
+                if path.is_dir() {
+                    let children = build_tree(&path, depth + 1, count);
+                    // 智能后序剪枝：若文件夹内部没有任何文本文件，则直接不展示该文件夹
+                    if !children.is_empty() {
+                        *count += 1;
+                        items.push(FileItem {
+                            name: file_name,
+                            path: path.to_string_lossy().to_string(),
+                            is_dir: true,
+                            children: Some(children),
+                        });
+                    }
+                } else if is_text_file(&path) {
+                    *count += 1;
+                    items.push(FileItem {
+                        name: file_name,
+                        path: path.to_string_lossy().to_string(),
+                        is_dir: false,
+                        children: None,
+                    });
+                }
+            }
+        }
+        // 目录在前，文件在后排序
+        items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        items
+    }
+
+    let mut count = 0;
+    Ok(build_tree(Path::new(&root), 0, &mut count))
+}
+
+#[tauri::command]
+pub fn search_workspace_content(
+    keyword: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SearchMatch>, String> {
+    let workspace = state.current_workspace.lock().unwrap();
+    if let Some(ref root) = *workspace {
+        Ok(SearchEngine::search_workspace(root, &keyword))
+    } else {
+        Err("当前未设置工作区目录".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn select_workspace_folder(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let folder = rfd::FileDialog::new()
+        .set_title("选择工作区文件夹 (Typora)")
+        .pick_folder();
+
+    if let Some(path) = folder {
+        let path_str = path.to_string_lossy().to_string();
+        let mut ws = state.current_workspace.lock().unwrap();
+        *ws = Some(path_str.clone());
+        Ok(Some(path_str))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn select_save_file_path(default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("保存 Markdown 文档")
+        .add_filter("Markdown 文件 (*.md)", &["md", "markdown"])
+        .add_filter("文本文档 (*.txt)", &["txt"])
+        .add_filter("所有文件 (*.*)", &["*"]);
+
+    if let Some(name) = default_name {
+        dialog = dialog.set_file_name(&name);
+    }
+
+    let file = dialog.save_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn select_open_file_path() -> Result<Option<String>, String> {
+    let file = rfd::FileDialog::new()
+        .set_title("打开 Markdown 文档")
+        .add_filter("Markdown 文件 (*.md)", &["md", "markdown", "txt"])
+        .add_filter("所有文件 (*.*)", &["*"])
+        .pick_file();
+
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+use base64::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[tauri::command]
+pub fn save_image_asset(
+    doc_path: Option<String>,
+    filename: String,
+    base64_data: String,
+) -> Result<String, String> {
+    let clean_base64 = if let Some(idx) = base64_data.find(',') {
+        &base64_data[idx + 1..]
+    } else {
+        &base64_data
+    };
+
+    let bytes = BASE64_STANDARD
+        .decode(clean_base64.trim())
+        .map_err(|e| format!("Base64 解码失败: {}", e))?;
+
+    let base_dir = if let Some(ref dp) = doc_path {
+        Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        Path::new(".").to_path_buf()
+    };
+
+    let assets_dir = base_dir.join("assets");
+    if !assets_dir.exists() {
+        fs::create_dir_all(&assets_dir).map_err(|e| format!("创建 assets 目录失败: {}", e))?;
+    }
+
+    let target_file = assets_dir.join(&filename);
+    fs::write(&target_file, bytes).map_err(|e| format!("写入图片失败: {}", e))?;
+
+    Ok(format!("assets/{}", filename))
+}
+
+#[tauri::command]
+pub fn copy_image_to_assets(
+    doc_path: Option<String>,
+    source_path: String,
+) -> Result<String, String> {
+    let src = Path::new(&source_path);
+    if !src.exists() {
+        return Err("源图片文件不存在".to_string());
+    }
+
+    let ext = src
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("png");
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let file_stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("image");
+
+    let new_filename = format!("{}-{}.{}", file_stem, timestamp, ext);
+
+    let base_dir = if let Some(ref dp) = doc_path {
+        Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        Path::new(".").to_path_buf()
+    };
+
+    let assets_dir = base_dir.join("assets");
+    if !assets_dir.exists() {
+        fs::create_dir_all(&assets_dir).map_err(|e| format!("创建 assets 目录失败: {}", e))?;
+    }
+
+    let target_file = assets_dir.join(&new_filename);
+    fs::copy(src, &target_file).map_err(|e| format!("复制图片失败: {}", e))?;
+
+    Ok(format!("assets/{}", new_filename))
+}
+
+#[tauri::command]
+pub fn read_image_base64(
+    doc_path: Option<String>,
+    rel_path: String,
+) -> Result<String, String> {
+    let path = if Path::new(&rel_path).is_absolute() {
+        Path::new(&rel_path).to_path_buf()
+    } else {
+        let base_dir = if let Some(ref dp) = doc_path {
+            Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
+        } else {
+            Path::new(".").to_path_buf()
+        };
+        base_dir.join(&rel_path)
+    };
+
+    if !path.exists() {
+        return Err(format!("图片不存在: {:?}", path));
+    }
+
+    let bytes = fs::read(&path).map_err(|e| format!("读取图片失败: {}", e))?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        _ => "image/png",
+    };
+
+    let encoded = BASE64_STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
+#[tauri::command]
+pub fn window_minimize(window: tauri::Window) {
+    let _ = window.minimize();
+}
+
+#[tauri::command]
+pub fn window_toggle_maximize(window: tauri::Window) {
+    if let Ok(is_max) = window.is_maximized() {
+        if is_max {
+            let _ = window.unmaximize();
+        } else {
+            let _ = window.maximize();
+        }
+    }
+}
+
+#[tauri::command]
+pub fn window_close(window: tauri::Window) {
+    let _ = window.close();
+}
+
+#[tauri::command]
+pub fn window_set_always_on_top(window: tauri::Window, on_top: bool) -> Result<bool, String> {
+    window.set_always_on_top(on_top).map_err(|e| e.to_string())?;
+    Ok(on_top)
+}
+
+#[tauri::command]
+pub fn create_file(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+    if !p.exists() {
+        fs::write(p, "# Untitled\n\n").map_err(|e| format!("创建文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_folder(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    fs::create_dir_all(p).map_err(|e| format!("创建文件夹失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
+    let old_p = Path::new(&old_path);
+    let new_p = Path::new(&new_path);
+    if !old_p.exists() {
+        return Err("源文件或目录不存在".to_string());
+    }
+    fs::rename(old_p, new_p).map_err(|e| format!("重命名失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_path(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Ok(());
+    }
+    if p.is_dir() {
+        fs::remove_dir_all(p).map_err(|e| format!("删除文件夹失败: {}", e))?;
+    } else {
+        fs::remove_file(p).map_err(|e| format!("删除文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+        let normalized = path.replace('/', "\\");
+        Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", normalized))
+            .spawn()
+            .map_err(|e| format!("打开文件资源管理器失败: {}", e))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 跨平台备用
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_cli_open_file(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let mut init = state.initial_file.lock().unwrap();
+    Ok(init.take())
+}
+
+#[tauri::command]
+pub fn is_blank_new_window(state: State<'_, AppState>) -> Result<bool, String> {
+    let nw = state.is_new_window.lock().unwrap();
+    Ok(*nw)
+}
+
+#[tauri::command]
+pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<(), String> {
+    // 优先通过独立进程拉起全新的 Typora 实例（对齐 Typora 独立进程模型，保证崩溃隔离与独立窗口生命周期）
+    if let Ok(current_exe) = std::env::current_exe() {
+        let mut cmd = std::process::Command::new(current_exe);
+        if let Some(ref path) = file_path {
+            cmd.arg(path);
+        } else {
+            cmd.arg("--new-window");
+        }
+        if let Ok(_) = cmd.spawn() {
+            return Ok(());
+        }
+    }
+
+    // 备用机制：通过 Tauri WebviewWindowBuilder 在同一进程内动态创建窗口
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let label = format!("window-{}", timestamp);
+
+    let url = if let Some(ref path) = file_path {
+        let normalized = path.replace('\\', "/");
+        tauri::WebviewUrl::App(format!("index.html?open={}", normalized).into())
+    } else {
+        tauri::WebviewUrl::App("index.html?new=1".into())
+    };
+
+    tauri::WebviewWindowBuilder::new(&app, &label, url)
+        .title("Quilla")
+        .inner_size(1080.0, 760.0)
+        .min_inner_size(640.0, 480.0)
+        .decorations(false)
+        .transparent(false)
+        .center()
+        .build()
+        .map_err(|e| format!("创建新窗口失败: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let target = url.trim();
+    if target.is_empty() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", target])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("打开系统浏览器失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败: {}", e))?;
+    }
+
+    Ok(())
+}
+

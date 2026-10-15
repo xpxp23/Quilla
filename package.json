@@ -1,0 +1,34 @@
+{
+  "name": "quilla",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Quilla (羽墨) - Modern WYSIWYG Markdown Editor rewritten in Rust",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.18.4",
+    "@codemirror/commands": "^6.8.0",
+    "@codemirror/lang-markdown": "^6.3.2",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.4",
+    "@lezer/highlight": "^1.2.1",
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-fs": "^2.2.0",
+    "katex": "^0.16.21",
+    "mermaid": "^12.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.4",
+    "@types/katex": "^0.16.7",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

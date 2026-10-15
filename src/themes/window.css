@@ -1,0 +1,1660 @@
+/* ================= 窗口布局与组件控制 (window.css) ================= */
+
+/* 1. 顶部自定义标题栏 */
+#top-titlebar {
+  height: var(--title-bar-height);
+  background-color: var(--bg-color);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  user-select: none;
+  -webkit-app-region: drag;
+  z-index: 1000;
+  box-sizing: border-box;
+}
+
+#w-titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#w-menu-btn {
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 14px;
+}
+
+.ty-menu-btn-bar {
+  height: 2px;
+  background-color: var(--control-text-color);
+  border-radius: 1px;
+}
+
+.title-text {
+  font-size: 12px;
+  color: var(--control-text-color);
+  font-weight: 500;
+}
+
+#w-traffic-lights {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toolbar-icon.btn {
+  background: transparent;
+  border: none;
+  color: var(--control-text-color);
+  width: 28px;
+  height: 24px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background-color 0.15s;
+}
+
+.toolbar-icon.btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--item-hover-text-color);
+}
+
+#w-pin.pinned {
+  background-color: rgba(9, 105, 218, 0.16) !important;
+  color: #0969da !important;
+  border: 1px solid rgba(9, 105, 218, 0.45) !important;
+  box-shadow: 0 0 6px rgba(9, 105, 218, 0.25);
+  font-weight: bold;
+}
+
+#w-close:hover {
+  background-color: #e81123 !important;
+  color: #ffffff !important;
+}
+
+/* 2. 核心布局框架 (侧栏 + 内容) */
+#layout-container {
+  display: flex;
+  height: calc(100% - var(--title-bar-height) - var(--footer-height));
+  width: 100%;
+  position: relative;
+}
+
+#typora-sidebar {
+  width: var(--sidebar-width);
+  height: 100%;
+  background-color: var(--side-bar-bg-color);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  transition: margin-left 0.2s ease;
+  user-select: none;
+  position: relative;
+}
+
+body:not(.pin-outline) #typora-sidebar {
+  margin-left: calc(-1 * var(--sidebar-width));
+}
+
+/* 侧边栏边缘拖拽缩放把手 */
+.sidebar-resizer {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-width) - 2px);
+  z-index: 100;
+  transition: background-color 0.15s;
+}
+
+body:not(.pin-outline) .sidebar-resizer {
+  display: none;
+}
+
+.sidebar-resizer:hover, .sidebar-resizer.resizing {
+  background-color: #0969da;
+}
+
+/* 2.1 顶部标签栏 (Typora 经典 Files / Outline / Search) */
+.info-panel-tab-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--side-bar-bg-color);
+  padding: 0 4px;
+  height: 38px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.info-panel-tab {
+  flex: 1;
+  text-align: center;
+  padding: 8px 0;
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.info-panel-tab-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--control-text-color);
+  transition: color 0.15s;
+}
+
+.info-panel-tab:hover .info-panel-tab-title {
+  color: var(--text-color);
+}
+
+.info-panel-tab.active .info-panel-tab-title {
+  color: #0366d6;
+  font-weight: 600;
+}
+
+.info-panel-tab-border {
+  position: absolute;
+  bottom: 0;
+  left: 20%;
+  width: 60%;
+  height: 3px;
+  background-color: transparent;
+  border-radius: 2px;
+  transition: background-color 0.2s ease;
+}
+
+.info-panel-tab.active .info-panel-tab-border {
+  background-color: #0366d6;
+}
+
+/* 2.2 核心内容面板 */
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  position: relative;
+}
+
+.panel-view {
+  display: none;
+  height: 100%;
+}
+
+.panel-view.active {
+  display: block;
+}
+
+/* 2.2.1 空状态卡片 */
+.sidebar-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 80%;
+  padding: 30px 20px;
+  text-align: center;
+  box-sizing: border-box;
+  color: var(--control-text-color);
+}
+
+.empty-state-icon {
+  margin-bottom: 14px;
+  color: #9aa0a6;
+  opacity: 0.8;
+}
+
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-color);
+  margin-bottom: 8px;
+}
+
+.empty-state-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--control-text-color);
+  margin-bottom: 20px;
+}
+
+.ty-btn-primary {
+  background-color: #0969da;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.ty-btn-primary:hover {
+  background-color: #085fc4;
+}
+
+/* 2.2.2 工作区标题与快捷操作 */
+.workspace-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+  background-color: rgba(0, 0, 0, 0.02);
+  border-radius: 4px;
+}
+
+.workspace-folder-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  flex: 1;
+}
+
+.workspace-folder-icon {
+  font-size: 13px;
+}
+
+.workspace-folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-icon-btn {
+  background: transparent;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  color: var(--control-text-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.sidebar-icon-btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--text-color);
+}
+
+/* 2.2.3 文件树项 (Typora 视觉标准) */
+.file-library-tree {
+  padding-bottom: 20px;
+}
+
+.tree-node-wrapper {
+  margin: 1px 0;
+}
+
+.tree-item {
+  padding: 4px 6px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+  color: var(--text-color);
+  transition: background-color 0.1s;
+}
+
+.tree-item:hover {
+  background-color: var(--item-hover-bg-color);
+}
+
+.tree-item.active {
+  background-color: #e1e4e8;
+  font-weight: 600;
+  color: #0366d6;
+}
+
+body.theme-night .tree-item.active {
+  background-color: #2b3b52;
+  color: #58a6ff;
+}
+
+.tree-toggle {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--control-text-color);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tree-toggle:hover {
+  color: var(--text-color);
+}
+
+.tree-toggle svg {
+  transition: transform 0.15s ease;
+}
+
+.tree-toggle.expanded svg {
+  transform: rotate(90deg);
+}
+
+.tree-spacer {
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.tree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  color: #57606a;
+}
+
+.tree-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 2.2.4 大纲视图 */
+.outline-filter-bar {
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 6px;
+}
+
+.outline-content {
+  padding: 0 2px 20px 2px;
+}
+
+.outline-item {
+  padding: 5px 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-color);
+  transition: all 0.12s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.outline-item:hover {
+  background-color: var(--item-hover-bg-color);
+  color: #0366d6;
+}
+
+.outline-item.active {
+  background-color: #e1e4e8;
+  font-weight: 600;
+  color: #0366d6;
+}
+
+.outline-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--control-text-color);
+  opacity: 0.6;
+  width: 16px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.outline-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outline-h1 { padding-left: 6px; font-weight: 600; }
+.outline-h2 { padding-left: 16px; }
+.outline-h3 { padding-left: 26px; }
+.outline-h4 { padding-left: 36px; color: var(--control-text-color); font-size: 12px; }
+.outline-h5 { padding-left: 46px; color: var(--control-text-color); font-size: 11.5px; }
+.outline-h6 { padding-left: 56px; color: var(--control-text-color); font-size: 11px; }
+
+/* 2.2.5 全文搜索面板 */
+.search-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.search-input-icon {
+  position: absolute;
+  left: 8px;
+  color: var(--control-text-color);
+  pointer-events: none;
+}
+
+#workspace-search-input {
+  width: 100%;
+  padding: 6px 10px 6px 26px;
+  font-size: 12.5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+
+#workspace-search-input:focus {
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.15);
+}
+
+.workspace-search-results {
+  padding-bottom: 20px;
+}
+
+.search-result-item {
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 4px;
+  transition: background-color 0.15s;
+}
+
+.search-result-item:hover {
+  background-color: var(--item-hover-bg-color);
+}
+
+.search-result-file {
+  font-weight: 600;
+  color: var(--text-color);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-text {
+  color: var(--control-text-color);
+  font-family: var(--monospace);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-line {
+  color: #0969da;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+/* 2.3 底部操作栏 */
+.ty-sidebar-footer {
+  height: 32px;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--side-bar-bg-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  box-sizing: border-box;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.sidebar-footer-btn {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: var(--control-text-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.sidebar-footer-btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--text-color);
+}
+
+.sidebar-footer-btn span {
+  font-size: 13px;
+}
+
+
+
+/* 3. 主编辑视口 (单滚动视口架构：由 CodeMirror .cm-scroller 独占滚动驱动，杜绝光标坐标漂移) */
+#content {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  background-color: var(--bg-color);
+}
+
+#write-wrapper {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* 4. 底部状态栏 */
+footer.ty-footer {
+  height: var(--footer-height);
+  background-color: var(--bg-color);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--control-text-color);
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.footer-left, .footer-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-btn {
+  cursor: pointer;
+}
+.footer-btn:hover {
+  color: var(--text-color);
+}
+
+.save-status {
+  color: #28a745;
+  font-weight: 500;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* ================= 快捷键速查指南高雅浮层 (Typora 极简毛玻璃) ================= */
+.ty-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+
+.ty-modal-overlay.hidden {
+  display: none !important;
+}
+
+.ty-modal-card {
+  width: 720px;
+  max-width: 92vw;
+  max-height: 85vh;
+  background-color: var(--bg-color);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modalScaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.ty-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.modal-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  background-color: rgba(9, 105, 218, 0.1);
+  color: #0969da;
+  border-radius: 10px;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  color: var(--control-text-color);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.modal-close-btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--text-color);
+}
+
+.shortcut-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: rgba(0, 0, 0, 0.02);
+  color: var(--control-text-color);
+}
+
+.shortcut-search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  color: var(--text-color);
+}
+
+.shortcut-categories-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.shortcut-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--control-text-color);
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+  border-bottom: 1px dashed var(--border-color);
+  padding-bottom: 4px;
+}
+
+.shortcut-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+}
+
+@media (max-width: 600px) {
+  .shortcut-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: rgba(0, 0, 0, 0.02);
+  transition: background-color 0.12s;
+}
+
+.shortcut-row:hover {
+  background-color: var(--item-hover-bg-color);
+}
+
+.shortcut-name-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shortcut-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-color);
+}
+
+.shortcut-desc {
+  font-size: 11px;
+  color: var(--control-text-color);
+  opacity: 0.8;
+}
+
+.shortcut-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.shortcut-keys kbd, .footer-tip kbd {
+  display: inline-block;
+  padding: 3px 6px;
+  font-family: var(--monospace);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-color);
+  background-color: var(--bg-color);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1);
+}
+
+body.theme-night .shortcut-keys kbd, body.theme-night .footer-tip kbd {
+  background-color: #21262d;
+  border-color: #30363d;
+  color: #c9d1d9;
+}
+
+.key-plus {
+  font-size: 10px;
+  color: var(--control-text-color);
+}
+
+.shortcut-empty {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--control-text-color);
+}
+
+.ty-modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.footer-tip {
+  font-size: 11.5px;
+  color: var(--control-text-color);
+}
+
+.modal-confirm-btn {
+  background-color: #0969da;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.modal-confirm-btn:hover {
+  background-color: #085fc4;
+}
+
+/* ================= 保存确认弹窗 (Typora / Word 标准设计) ================= */
+.save-confirm-dialog {
+  width: 440px !important;
+  max-width: 90vw;
+  background-color: var(--bg-color);
+  border-radius: 8px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+  animation: modalScaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.save-confirm-dialog .save-dialog-header {
+  padding: 16px 20px 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.save-confirm-dialog .save-dialog-body {
+  padding: 8px 20px 22px;
+}
+
+.save-confirm-dialog .save-dialog-primary-text {
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--text-color);
+  margin-bottom: 6px;
+}
+
+.save-confirm-dialog .save-dialog-secondary-text {
+  font-size: 13px;
+  color: var(--control-text-color);
+  line-height: 1.5;
+}
+
+.save-confirm-dialog .save-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background-color: rgba(0, 0, 0, 0.02);
+  border-top: 1px solid var(--border-color);
+}
+
+.save-dialog-footer .save-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.save-dialog-btn {
+  padding: 7px 18px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.save-dialog-btn.btn-save {
+  background-color: #3b82f6;
+  color: #ffffff;
+  border: 1px solid #2563eb;
+  font-weight: 500;
+}
+
+.save-dialog-btn.btn-save:hover {
+  background-color: #2563eb;
+}
+
+.save-dialog-btn.btn-discard {
+  background-color: transparent;
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+}
+
+.save-dialog-btn.btn-discard:hover {
+  background-color: var(--item-hover-bg-color);
+}
+
+.save-dialog-btn.btn-cancel {
+  background-color: transparent;
+  color: var(--text-color);
+  border: 1px solid transparent;
+}
+
+.save-dialog-btn.btn-cancel:hover {
+  background-color: var(--item-hover-bg-color);
+  border-color: var(--border-color);
+}
+
+body.theme-night .save-confirm-dialog {
+  background-color: #252526;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+body.theme-night .save-confirm-dialog .save-dialog-footer {
+  background-color: rgba(255, 255, 255, 0.02);
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+body.theme-night .save-dialog-btn.btn-discard {
+  border-color: rgba(255, 255, 255, 0.15);
+  color: #e0e0e0;
+}
+
+body.theme-night .save-dialog-btn.btn-discard:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+body.theme-night .save-dialog-btn.btn-cancel {
+  color: #c0c0c0;
+}
+
+body.theme-night .save-dialog-btn.btn-cancel:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* ================= 打字机模式 (Typewriter Mode, F9) ================= */
+.cm-editor.typewriter-mode .cm-scroller {
+  padding-top: calc(50vh - 60px) !important;
+  padding-bottom: calc(50vh - 60px) !important;
+}
+
+/* ================= 专注模式 (Focus Mode, F8) ================= */
+body.focus-mode-active #write .cm-line,
+body.focus-mode-active .cm-editor .cm-line,
+.cm-editor.focus-mode .cm-line {
+  opacity: 0.28 !important;
+  filter: blur(0.12px);
+  transition: opacity 0.22s ease-out, filter 0.22s ease-out !important;
+}
+
+body.focus-mode-active #write .cm-line.cm-focus-active-block,
+body.focus-mode-active .cm-editor .cm-line.cm-focus-active-block,
+.cm-editor.focus-mode .cm-line.cm-focus-active-block {
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+/* 状态栏激活指示 */
+.footer-btn.active-mode {
+  color: #0969da;
+  font-weight: 600;
+}
+
+/* ================= 快速文件漫游 (Quick Open, Ctrl+P) ================= */
+.ty-quick-open-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background-color: rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(3px);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 50px;
+}
+
+.ty-quick-open-overlay.hidden {
+  display: none !important;
+}
+
+.ty-quick-open-box {
+  width: 580px;
+  max-width: 90vw;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn 0.12s ease-out;
+}
+
+.quick-open-search-bar {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+  gap: 10px;
+}
+
+.quick-open-icon {
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+#quick-open-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 14px;
+  color: var(--text-color);
+  font-family: inherit;
+}
+
+.quick-open-kbd {
+  font-size: 11px;
+  color: var(--control-text-color);
+  background: var(--side-bar-bg-color);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+}
+
+.quick-open-results {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.quick-open-results::-webkit-scrollbar {
+  width: 5px;
+}
+
+.quick-open-results::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.quick-open-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.quick-open-item:hover,
+.quick-open-item.active {
+  background-color: #0969da;
+  color: #ffffff !important;
+}
+
+.quick-open-item .item-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.quick-open-item .file-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.quick-open-item .file-info {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-open-item .file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: inherit;
+}
+
+.quick-open-item .file-path {
+  font-size: 11px;
+  color: var(--control-text-color);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-open-item:hover .file-path,
+.quick-open-item.active .file-path {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.quick-open-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.quick-open-badge.recent {
+  background: rgba(9, 105, 218, 0.12);
+  color: #0969da;
+}
+
+.quick-open-badge.ws {
+  background: rgba(100, 100, 100, 0.12);
+  color: var(--control-text-color);
+}
+
+.quick-open-item:hover .quick-open-badge,
+.quick-open-item.active .quick-open-badge {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.quick-open-empty {
+  padding: 30px 16px;
+  text-align: center;
+  color: var(--control-text-color);
+  font-size: 13px;
+}
+
+.quick-open-footer {
+  display: flex;
+  gap: 16px;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--control-text-color);
+  background: var(--side-bar-bg-color);
+  border-top: 1px solid var(--border-color);
+}
+
+/* ================= 二级子菜单 (Flyout Submenus) ================= */
+.ty-dropdown-menu {
+  overflow: visible !important;
+}
+
+.menu-item.has-submenu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.menu-item.has-submenu .menu-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.menu-item .submenu-arrow {
+  font-size: 12px;
+  margin-left: auto;
+  padding-left: 10px;
+  opacity: 0.6;
+}
+
+.ty-submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  min-width: 190px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 4px 0;
+  z-index: 10001;
+}
+
+.menu-item.has-submenu:hover > .ty-submenu,
+.menu-item.has-submenu.open > .ty-submenu {
+  display: block;
+}
+
+/* ================= 侧边栏大纲拖拽重排 (Outline Drag & Drop) ================= */
+.outline-item[draggable="true"] {
+  cursor: grab;
+  position: relative;
+}
+
+.outline-item.dragging {
+  opacity: 0.45;
+  background-color: var(--item-hover-bg-color);
+}
+
+.outline-drop-indicator-top {
+  border-top: 2px solid #0969da !important;
+}
+
+.outline-drop-indicator-bottom {
+  border-bottom: 2px solid #0969da !important;
+}
+
+/* ================= 图片快速编辑浮层 (Image Toolbar) ================= */
+.ty-image-toolbar {
+  position: fixed;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 3px 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  user-select: none;
+  font-size: 11px;
+}
+
+.ty-image-toolbar.hidden {
+  display: none !important;
+}
+
+.ty-toolbar-btn {
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  color: var(--text-color);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  transition: background-color 0.1s;
+}
+
+.ty-toolbar-btn:hover {
+  background-color: var(--item-hover-bg-color);
+}
+
+.ty-toolbar-btn.active {
+  background-color: rgba(9, 105, 218, 0.15);
+  color: #0969da;
+  font-weight: 600;
+}
+
+.ty-toolbar-divider {
+  width: 1px;
+  height: 14px;
+  background-color: var(--border-color);
+  margin: 0 3px;
+}
+
+/* ================= 超链接微型浮层 (Link Tooltip) ================= */
+.ty-link-tooltip {
+  position: fixed;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+  user-select: none;
+  font-size: 11px;
+  max-width: 380px;
+}
+
+.ty-link-tooltip.hidden {
+  display: none !important;
+}
+
+.ty-link-tooltip .link-url-text {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0969da;
+}
+
+/* ================= 字数与阅读时间悬浮详情卡片 (Stats Card) ================= */
+.ty-stats-popover {
+  position: fixed;
+  z-index: 9999;
+  width: 250px;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  padding: 12px 14px;
+  user-select: none;
+  font-size: 12px;
+  animation: fadeIn 0.12s ease-out;
+}
+
+.ty-stats-popover.hidden {
+  display: none !important;
+}
+
+.ty-stats-popover-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-color);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ty-stats-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 0;
+  color: var(--control-text-color);
+}
+
+.ty-stats-row .stats-val {
+  font-weight: 500;
+  color: var(--text-color);
+}
+
+.ty-stats-row.highlight {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+  color: #0969da;
+}
+
+.ty-stats-row.highlight .stats-val {
+  color: #0969da;
+  font-weight: 600;
+}
+
+/* Typora 风格段落/块级左侧拖拽手柄 */
+.cm-block-handle {
+  position: absolute;
+  width: 18px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--control-text-color, #8c959f);
+  cursor: grab;
+  z-index: 25;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+}
+
+.cm-block-handle:hover {
+  background-color: var(--item-hover-bg-color, rgba(0, 0, 0, 0.06));
+  color: #0969da;
+}
+
+.cm-block-handle.dragging {
+  cursor: grabbing;
+  opacity: 0.9 !important;
+  color: #0969da;
+}
+
+/* 拖拽重排指示线 */
+.cm-block-drop-indicator {
+  position: absolute;
+  height: 2px;
+  background-color: #0969da;
+  box-shadow: 0 0 4px rgba(9, 105, 218, 0.5);
+  z-index: 30;
+  pointer-events: none;
+  border-radius: 1px;
+}
+
+/* 自动恢复通知横幅 */
+.ty-recovery-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background-color: #fff8c5;
+  color: #573a08;
+  border-bottom: 1px solid #d4a72c;
+  font-size: 13px;
+  z-index: 50;
+  animation: slideDown 0.2s ease-out;
+}
+
+body.theme-night .ty-recovery-banner {
+  background-color: #3b2e04;
+  color: #ffdf5d;
+  border-bottom-color: #bb8009;
+}
+
+.recovery-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recovery-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recovery-btn {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.recovery-btn.btn-restore {
+  background-color: #1f883d;
+  color: #ffffff;
+  border: 1px solid #1a7f37;
+}
+
+.recovery-btn.btn-restore:hover {
+  background-color: #1a7f37;
+}
+
+.recovery-btn.btn-discard {
+  background-color: transparent;
+  color: inherit;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.recovery-btn.btn-discard:hover {
+  background-color: rgba(0, 0, 0, 0.08);
+}
+
+body.theme-night .recovery-btn.btn-discard {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+body.theme-night .recovery-btn.btn-discard:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ==========================================
+   ✨ 悬浮覆盖式平滑自动隐藏滚动条 (Overlay Auto-hide)
+   ========================================== */
+.cm-scroller::-webkit-scrollbar,
+#file-library-tree::-webkit-scrollbar,
+#outline-content::-webkit-scrollbar,
+.quick-open-results::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+
+.cm-scroller::-webkit-scrollbar-track,
+#file-library-tree::-webkit-scrollbar-track,
+#outline-content::-webkit-scrollbar-track,
+.quick-open-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cm-scroller::-webkit-scrollbar-thumb,
+#file-library-tree::-webkit-scrollbar-thumb,
+#outline-content::-webkit-scrollbar-thumb,
+.quick-open-results::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 10px;
+  transition: background-color 0.25s ease;
+}
+
+.cm-scroller:hover::-webkit-scrollbar-thumb,
+#file-library-tree:hover::-webkit-scrollbar-thumb,
+#outline-content:hover::-webkit-scrollbar-thumb,
+.quick-open-results:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(140, 140, 140, 0.35);
+}
+
+.cm-scroller::-webkit-scrollbar-thumb:hover,
+#file-library-tree::-webkit-scrollbar-thumb:hover,
+#outline-content::-webkit-scrollbar-thumb:hover,
+.quick-open-results::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(140, 140, 140, 0.65);
+}
+
+body.theme-night .cm-scroller:hover::-webkit-scrollbar-thumb,
+body.theme-night #file-library-tree:hover::-webkit-scrollbar-thumb,
+body.theme-night #outline-content:hover::-webkit-scrollbar-thumb,
+body.theme-night .quick-open-results:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(200, 200, 200, 0.25);
+}
+
+body.theme-night .cm-scroller::-webkit-scrollbar-thumb:hover,
+body.theme-night #file-library-tree::-webkit-scrollbar-thumb:hover,
+body.theme-night #outline-content::-webkit-scrollbar-thumb:hover,
+body.theme-night .quick-open-results::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(200, 200, 200, 0.55);
+}
+
+/* ==========================================
+   🖨️ 无损出版级 PDF 与打印样式表 (@media print)
+   ========================================== */
+@media print {
+  /* 隐藏所有窗口边框、侧边栏、状态栏、浮动工具栏与交互弹层 */
+  #titlebar,
+  #sidebar,
+  #statusbar,
+  #find-replace-container,
+  .quick-open-overlay,
+  .cm-floating-toolbar,
+  .table-bubble-menu,
+  .cm-table-row-ops,
+  .cm-table-col-ops,
+  .cm-table-quick-toolbar,
+  .ty-dropdown-menu,
+  .shortcut-modal-overlay,
+  .stats-popover-overlay,
+  .table-cell-actions,
+  .cm-gutter,
+  .cm-cursor,
+  .cm-cursorLayer {
+    display: none !important;
+  }
+
+  /* 解除应用容器与编辑区视口高度限制，恢复正常打印流排版 */
+  html,
+  body,
+  #app,
+  #main-container,
+  #editor-pane,
+  .cm-editor,
+  .cm-scroller {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #1a1a1a !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .cm-content {
+    max-width: 100% !important;
+    padding: 20px !important;
+    margin: 0 auto !important;
+    box-sizing: border-box !important;
+  }
+
+  .cm-line {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  /* 打印分页保护：杜绝标题孤行分页 (Orphan Headings) */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    color: #000000 !important;
+  }
+
+  /* 表格、公式块、图表、代码块、引用块及图片防止页面中间被横向撕裂截断 */
+  table,
+  pre,
+  .cm-math-block,
+  .cm-mermaid-container,
+  blockquote,
+  img,
+  figure {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* 表格打印质感优化 */
+  table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+  }
+  th, td {
+    border: 1px solid #d0d7de !important;
+    padding: 6px 12px !important;
+  }
+  th {
+    background-color: #f6f8fa !important;
+    font-weight: 600 !important;
+  }
+
+  /* 消除焦点外框与选区视觉干扰 */
+  .cm-focused {
+    outline: none !important;
+  }
+  .cm-activeLine {
+    background-color: transparent !important;
+  }
+}
+
+

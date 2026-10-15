@@ -1,0 +1,28 @@
+# Rust build artifacts
+target/
+src-tauri/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node.js dependencies & build outputs
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Executables, archives & release binaries
+*.exe
+*.zip
+release/
+out.txt
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

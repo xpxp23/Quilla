@@ -1,0 +1,872 @@
+:root {
+  --bg-color: #ffffff;
+  --text-color: #333333;
+  --side-bar-bg-color: #f8f9fa;
+  --control-text-color: #777777;
+  --select-text-bg-color: #b5d6fc;
+  --select-text-font-color: auto;
+  --item-hover-bg-color: #ebeef2;
+  --item-hover-text-color: #000000;
+  --monospace: "Fira Code", "Cascadia Code", Consolas, "Courier New", monospace;
+  --sidebar-width: 260px;
+  --title-bar-height: 28px;
+  --footer-height: 26px;
+  --border-color: rgba(0, 0, 0, 0.08);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  -webkit-font-smoothing: antialiased;
+  font-size: 15px;
+}
+
+/* ================= 核心编辑区与 Markdown 元素样式 (#write) ================= */
+#write {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  outline: none;
+  overflow: hidden;
+}
+
+/* 彻底清除 CodeMirror 编辑器外框虚线与选中框，恢复纯净排版画布 */
+.cm-editor,
+.cm-editor.cm-focused,
+.cm-editor:focus,
+.cm-editor *:focus,
+.cm-scroller,
+.cm-scroller:focus,
+.cm-content,
+.cm-content:focus,
+#write,
+#write:focus,
+#write-wrapper,
+#write-wrapper:focus,
+#content,
+#content:focus {
+  outline: none !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* CodeMirror 容器与排版无缝对齐：单一滚动视口架构 */
+.cm-editor {
+  height: 100% !important;
+  width: 100% !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+}
+
+.cm-editor .cm-scroller {
+  font-family: inherit !important;
+  line-height: 1.7 !important;
+  height: 100% !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+.cm-editor .cm-content {
+  max-width: 860px !important;
+  margin: 0 auto !important;
+  padding: 30px 40px 140px !important;
+  box-sizing: border-box !important;
+  min-height: 100% !important;
+}
+
+.cm-editor .cm-line {
+  padding: 0 !important;
+}
+
+/* 标题规范 (LineDecoration 与 HTML 原生标签统一) */
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
+.cm-line.cm-heading {
+  font-weight: 700;
+  color: var(--text-color);
+  padding-top: 0.8rem !important;
+  padding-bottom: 0.3rem !important;
+  line-height: 1.4;
+}
+
+.cm-line.cm-heading-1 {
+  font-size: 2.1rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.3em;
+}
+
+.cm-line.cm-heading-2 {
+  font-size: 1.65rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.25em;
+}
+
+.cm-line.cm-heading-3 { font-size: 1.35rem; }
+.cm-line.cm-heading-4 { font-size: 1.15rem; }
+.cm-line.cm-heading-5 { font-size: 1rem; }
+.cm-line.cm-heading-6 { font-size: 0.9rem; color: var(--control-text-color); }
+
+/* 段落与列表 */
+p, .cm-paragraph {
+  margin: 0.8rem 0;
+}
+
+/* 引用块 (Typora 经典风格: 优雅浅灰左竖线，无底色，文字柔和灰) */
+blockquote, .cm-line.cm-blockquote {
+  border-left: 4px solid #dfe2e5 !important;
+  padding: 2px 0 2px 16px !important;
+  background-color: transparent !important;
+  color: #6a737d !important;
+  border-radius: 0 !important;
+  margin: 0.15rem 0 !important;
+  line-height: 1.6;
+}
+
+/* 水平分割线 (--- / *** / ___) */
+hr, .md-hr {
+  border: none !important;
+  border-top: 2px solid #e1e4e8 !important;
+  margin: 1.5rem 0 !important;
+  height: 0 !important;
+  width: 100% !important;
+  display: block !important;
+  box-sizing: border-box;
+}
+
+/* 行内代码胶囊 (对齐 Typora 典雅纯灰风格) */
+code, .cm-inline-code {
+  font-family: var(--monospace);
+  background-color: #f3f4f4;
+  color: #24292e;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 88%;
+  border: 1px solid #e7eaed;
+}
+
+/* Token 微观展开：定界符淡化规范 (核心交互亮点) */
+.cm-md-delimiter {
+  opacity: 0.45 !important;
+  color: #8a8a8a !important;
+  font-weight: normal !important;
+  font-style: normal !important;
+  text-decoration: none !important;
+  font-family: inherit;
+}
+
+.cm-md-url {
+  opacity: 0.65;
+  color: #57606a;
+  font-family: var(--monospace);
+  font-size: 88%;
+  text-decoration: none !important;
+}
+
+/* 代码块 */
+pre, .cm-code-block {
+  font-family: var(--monospace);
+  background-color: #f6f8fa;
+  border-radius: 6px;
+  padding: 16px;
+  margin: 1.2rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+}
+
+/* 链接与加粗/斜体/删除线/高亮 */
+a, .cm-link {
+  color: #4183c4;
+  text-decoration: underline;
+  cursor: pointer;
+}
+a:hover { color: #0969da; }
+
+strong, .cm-strong { font-weight: 700; color: #111; }
+em, .cm-emphasis {
+  font-style: italic !important;
+  font-family: Georgia, "Times New Roman", "KaiTi", "楷体", "STKaiti", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+}
+.cm-strikethrough { text-decoration: line-through; color: #6a737d; }
+.cm-highlight { background-color: #fff8c5; color: #24292f; padding: 1px 3px; border-radius: 2px; }
+
+/* 全文档搜索高亮 (对齐 Typora 经典双层搜索高亮) */
+.cm-search-match {
+  background-color: #fff176 !important;
+  color: #1a1a1a !important;
+  border-radius: 2px !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.cm-search-match-selected {
+  background-color: #ff9800 !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: 0 0 0 2px #e65100 !important;
+  z-index: 10 !important;
+}
+
+/* 搜索结果定位与平滑脉冲高亮 */
+.cm-search-match-pulse {
+  background-color: #ffe066 !important;
+  color: #111 !important;
+  border-radius: 3px;
+  box-shadow: 0 0 0 4px rgba(255, 215, 0, 0.55);
+  animation: searchPulseGlow 1.8s ease-out forwards;
+}
+
+@keyframes searchPulseGlow {
+  0% {
+    box-shadow: 0 0 0 6px rgba(255, 215, 0, 0.85);
+  }
+  60% {
+    box-shadow: 0 0 0 3px rgba(255, 215, 0, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 215, 0, 0);
+  }
+}
+
+/* 任务列表复选框 */
+.task-list-item-checkbox {
+  margin-right: 6px;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+/* 数学公式预览容器 */
+.md-inline-math-preview {
+  display: inline-block;
+  padding: 0 4px;
+  vertical-align: baseline;
+  user-select: text;
+}
+
+.md-math-block-preview {
+  display: block;
+  text-align: center;
+  margin: 1.2rem 0;
+  padding: 10px;
+  overflow-x: auto;
+  user-select: text;
+}
+
+/* 多行独立数学公式居中卡片 (Typora 优雅矢量卡片) */
+.md-math-block-card {
+  margin: 1.4rem auto;
+  padding: 14px 20px;
+  text-align: center;
+  overflow-x: auto;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background-color: var(--bg-color);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.md-math-block-card:hover {
+  background-color: #f8fafc;
+  border-color: var(--border-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+body.theme-night .md-math-block-card:hover {
+  background-color: #262626;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.math-card-rendered {
+  display: inline-block;
+  user-select: text;
+}
+
+.math-error {
+  color: #cf222e;
+  font-size: 13px;
+  font-family: var(--monospace);
+}
+
+/* 表格卡片与可视化内联编辑规范 */
+figure.table-figure {
+  margin: 1.4rem 0;
+  padding: 0;
+  width: 100%;
+  overflow-x: auto;
+  position: relative;
+}
+
+figure.table-figure.interactive-table {
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  padding: 4px;
+  background-color: var(--bg-color);
+  transition: box-shadow 0.2s ease;
+}
+
+figure.table-figure.interactive-table:hover,
+figure.table-figure.interactive-table.focused {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.table-floating-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  background: var(--side-bar-bg-color);
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+
+figure.table-figure:hover .table-floating-toolbar,
+figure.table-figure.focused .table-floating-toolbar {
+  opacity: 1;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.toolbar-sep {
+  width: 1px;
+  height: 14px;
+  background-color: var(--border-color);
+  margin: 0 4px;
+}
+
+.tbl-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--control-text-color);
+  transition: all 0.15s;
+}
+
+.tbl-btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--item-hover-text-color);
+  border-color: var(--border-color);
+}
+
+.tbl-btn.danger:hover {
+  background-color: #ffeef0;
+  color: #cf222e;
+}
+
+table.md-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+table.md-table th,
+table.md-table td {
+  border: 1px solid #dfe2e5;
+  padding: 8px 14px;
+  font-size: 14px;
+  line-height: 1.6;
+  outline: none;
+}
+
+table.md-table th {
+  background-color: #f6f8fa;
+  font-weight: 600;
+  color: var(--text-color);
+  border-bottom: 2px solid #d0d7de;
+}
+
+table.md-table tr:nth-child(2n) {
+  background-color: #fafbfc;
+}
+
+table.md-table th:focus,
+table.md-table td:focus {
+  background-color: #f0f7ff !important;
+  box-shadow: inset 0 0 0 2px #0969da;
+}
+
+/* 表格跨单元格框选样式 (对齐 Typora 经典矩形深色高亮选区) */
+table.md-table th.cell-range-selected,
+table.md-table td.cell-range-selected {
+  background-color: #5a626a !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px #484f56 !important;
+}
+
+table.md-table th.cell-range-selected *,
+table.md-table td.cell-range-selected * {
+  color: #ffffff !important;
+}
+
+/* 多语言代码块卡片与实时行样式 */
+.cm-line.cm-code-block-first-line {
+  background-color: #f6f8fa;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  border-top: 1px solid var(--border-color);
+  padding: 4px 16px !important;
+  font-family: var(--monospace);
+  font-size: 13.5px;
+  color: #57606a;
+  margin-top: 1.2rem;
+}
+
+.code-block-header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 12px;
+  background-color: #eaeef2;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  user-select: none;
+}
+
+.code-lang-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: #57606a;
+  letter-spacing: 0.5px;
+}
+
+.code-copy-btn {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--control-text-color);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.code-copy-btn:hover {
+  background-color: #f3f4f6;
+  color: #0969da;
+}
+
+.cm-line.cm-code-block-line {
+  background-color: #f6f8fa;
+  font-family: var(--monospace);
+  font-size: 13.5px;
+  padding: 2px 16px !important;
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  color: #24292f;
+}
+
+.cm-line.cm-code-block-last-line {
+  background-color: #f6f8fa;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  padding: 2px 16px !important;
+  font-family: var(--monospace);
+  font-size: 13.5px;
+  color: #57606a;
+  margin-bottom: 1.2rem;
+  min-height: 8px;
+}
+
+.md-code-block-card {
+  margin: 1.4rem 0;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background-color: #f6f8fa;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+}
+
+/* 图片渲染卡片规范 */
+.md-image-card {
+  margin: 1.2rem auto;
+  text-align: center;
+  user-select: none;
+}
+
+.md-image-card img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+
+.md-image-card img:hover {
+  transform: scale(1.005);
+}
+
+.md-image-card figcaption {
+  font-size: 12px;
+  color: var(--control-text-color);
+  margin-top: 6px;
+}
+
+/* 拖拽悬浮提示 */
+.drag-hover {
+  background-color: rgba(9, 105, 218, 0.03) !important;
+  box-shadow: inset 0 0 0 2px #0969da !important;
+}
+
+/* Mermaid 流程图卡片规范 (参考 Typora 优雅图表风格) */
+.md-mermaid-card {
+  margin: 1.4rem 0;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.md-mermaid-card:hover {
+  border-color: #0969da;
+  box-shadow: 0 2px 8px rgba(9, 105, 218, 0.08);
+}
+
+.mermaid-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  background-color: #f6f8fa;
+  border-bottom: 1px solid var(--border-color);
+  user-select: none;
+}
+
+.mermaid-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #57606a;
+  letter-spacing: 0.5px;
+}
+
+.mermaid-edit-btn {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--control-text-color);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mermaid-edit-btn:hover {
+  background-color: #f3f4f6;
+  color: #0969da;
+}
+
+.mermaid-chart-box {
+  padding: 24px 16px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow-x: auto;
+  min-height: 80px;
+  background-color: var(--bg-color);
+}
+
+.mermaid-chart-box svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-loading {
+  font-size: 13px;
+  color: var(--control-text-color);
+}
+
+.mermaid-error {
+  padding: 12px;
+  color: #cf222e;
+  font-size: 13px;
+  width: 100%;
+}
+
+.mermaid-error .err-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.mermaid-error .err-detail {
+  font-family: var(--monospace);
+  font-size: 12px;
+  background: #ffeef0;
+  padding: 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+/* 吸顶极简查找与替换浮动框 (Typora 原生交互) */
+.ty-find-replace-bar {
+  position: fixed;
+  top: 38px;
+  right: 28px;
+  z-index: 9000;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 330px;
+  backdrop-filter: blur(8px);
+  animation: slideDown 0.15s ease-out;
+}
+
+.ty-find-replace-bar.hidden {
+  display: none !important;
+}
+
+.find-row, .replace-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.find-input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.find-input, .replace-input {
+  width: 100%;
+  padding: 5px 44px 5px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.replace-input {
+  padding-right: 8px;
+}
+
+.find-input:focus, .replace-input:focus {
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.15);
+}
+
+.find-count {
+  position: absolute;
+  right: 8px;
+  font-size: 11px;
+  color: var(--control-text-color);
+  pointer-events: none;
+}
+
+.find-actions, .replace-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.find-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--control-text-color);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.find-btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--item-hover-text-color);
+  border-color: var(--border-color);
+}
+
+.find-btn.active {
+  background-color: #0969da;
+  color: #ffffff;
+}
+
+.find-btn.text-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color);
+}
+
+.find-btn.close-btn:hover {
+  color: #cf222e;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 现代汉堡菜单与右键悬浮菜单 */
+.ty-dropdown-menu {
+  position: fixed;
+  z-index: 9999;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  min-width: 200px;
+  padding: 4px 0;
+  user-select: none;
+  animation: fadeIn 0.1s ease-out;
+}
+
+.ty-dropdown-menu.hidden {
+  display: none !important;
+}
+
+.menu-section {
+  padding: 2px 0;
+}
+
+.menu-item-group-title {
+  padding: 4px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  text-transform: uppercase;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text-color);
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.menu-item:hover {
+  background-color: #0969da;
+  color: #ffffff;
+}
+
+.menu-item:hover .shortcut {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.m-icon {
+  margin-right: 8px;
+  font-size: 12px;
+}
+
+.shortcut {
+  font-size: 11px;
+  color: var(--control-text-color);
+  margin-left: 16px;
+}
+
+.menu-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 4px 0;
+}
+
+/* 夜间深色模式 (Night Theme) 变量重载 */
+body.theme-night {
+  --bg-color: #1e1e1e;
+  --text-color: #d4d4d4;
+  --side-bar-bg-color: #252526;
+  --control-text-color: #858585;
+  --select-text-bg-color: #264f78;
+  --item-hover-bg-color: #2a2d2e;
+  --item-hover-text-color: #ffffff;
+  --border-color: rgba(255, 255, 255, 0.12);
+}
+
+body.theme-night .md-code-block-card {
+  background-color: #181818;
+}
+
+body.theme-night .code-block-header {
+  background-color: #222222;
+}
+
+body.theme-night .code-block-content {
+  color: #d4d4d4;
+}
+
+body.theme-night table.md-table th {
+  background-color: #2d2d2d;
+  color: #e0e0e0;
+}
+
+body.theme-night table.md-table tr:nth-child(2n) {
+  background-color: #252525;
+}
+
+body.theme-night .md-mermaid-card {
+  background-color: #1e1e1e;
+}
+
+body.theme-night .mermaid-header {
+  background-color: #252526;
+}
+
+body.theme-night .mermaid-edit-btn {
+  background-color: #2a2d2e;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+body.theme-night .mermaid-chart-box {
+  background-color: #1e1e1e;
+}
+
+body.theme-night blockquote,
+body.theme-night .cm-line.cm-blockquote {
+  border-left-color: #444c56 !important;
+  color: #8b949e !important;
+}
+
+body.theme-night hr,
+body.theme-night .md-hr {
+  border-top-color: #30363d !important;
+}
+
+body.theme-night .cm-search-match {
+  background-color: #997300 !important;
+  color: #ffffff !important;
+}
+
+body.theme-night .cm-search-match-selected {
+  background-color: #f57c00 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 2px #ffb74d !important;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
