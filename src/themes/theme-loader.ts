@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import githubCss from "./github.css?raw";
 import nightCss from "./night.css?raw";
@@ -21,8 +22,8 @@ export const BUILTIN_THEMES: Record<string, ThemeMeta> = {
 
 /**
  * 主题加载与热重载管理器
- * - 内置 5 套 Typora 原生同款主题（直接内联打包注入，0ms 无网络延迟、无 404 路径丢失问题）
- * - 支持工作区/外部 base.user.css 样式热覆盖
+ * - 内置 5 套 Typora 原生同款主题（直接内联打包注入）
+ * - 支持通过 Rust 后端读取外部或工作区内的 base.user.css 实现自定义样式热重载
  */
 export class ThemeLoader {
   private currentTheme: string = "github";
@@ -35,6 +36,7 @@ export class ThemeLoader {
 
   public init() {
     this.setTheme(this.currentTheme);
+    this.reloadCustomCss();
   }
 
   public getTheme(): string {
@@ -52,7 +54,6 @@ export class ThemeLoader {
     this.currentTheme = themeName;
     localStorage.setItem("typora_theme", themeName);
 
-    // 1. 动态注入/更新 <style id="app-theme-style">
     let styleEl = document.getElementById("app-theme-style") as HTMLStyleElement;
     if (!styleEl) {
       styleEl = document.createElement("style");
@@ -61,49 +62,60 @@ export class ThemeLoader {
     }
     styleEl.textContent = BUILTIN_THEMES[themeName].css;
 
-    // 2. 状态类名切换
     if (themeName === "night") {
       document.body.classList.add("theme-night");
     } else {
       document.body.classList.remove("theme-night");
     }
 
-    // 移除旧主题类并添加新主题类 (如 theme-newsprint)
     Object.keys(BUILTIN_THEMES).forEach((t) => {
       document.body.classList.remove(`theme-${t}`);
     });
     document.body.classList.add(`theme-${themeName}`);
 
-    // 3. 底部状态栏与菜单指示更新
     const themeBtn = document.getElementById("footer-theme-selector");
     if (themeBtn) {
-      themeBtn.innerHTML = `🎨 ${BUILTIN_THEMES[themeName].label.split(" ")[0]}`;
+      const labelSpan = themeBtn.querySelector(".footer-btn-label");
+      const shortName = BUILTIN_THEMES[themeName].label.split(" ")[0];
+      if (labelSpan) {
+        labelSpan.textContent = shortName;
+      } else {
+        themeBtn.textContent = shortName;
+      }
       themeBtn.title = `当前主题: ${BUILTIN_THEMES[themeName].label} (点击切换)`;
     }
 
     window.dispatchEvent(new CustomEvent("app-theme-changed", { detail: { theme: themeName } }));
   }
 
-  public reloadCustomCss() {
-    const userCssLink = document.getElementById("base_user_css") as HTMLLinkElement;
-    const rawHref = userCssLink?.getAttribute("href");
-    if (userCssLink && rawHref && rawHref.trim().length > 0) {
-      const url = new URL(rawHref, window.location.href);
-      url.searchParams.set("t", Date.now().toString());
-      userCssLink.href = url.toString();
+  public async reloadCustomCss() {
+    try {
+      const customCss = await invoke<string>("read_custom_theme_css");
+      let userStyleEl = document.getElementById("base-user-custom-style") as HTMLStyleElement;
+      if (!userStyleEl) {
+        userStyleEl = document.createElement("style");
+        userStyleEl.id = "base-user-custom-style";
+        document.head.appendChild(userStyleEl);
+      }
+      userStyleEl.textContent = customCss || "";
+    } catch {
+      const userCssLink = document.getElementById("base_user_css") as HTMLLinkElement;
+      const rawHref = userCssLink?.getAttribute("href");
+      if (userCssLink && rawHref && rawHref.trim().length > 0) {
+        const url = new URL(rawHref, window.location.href);
+        url.searchParams.set("t", Date.now().toString());
+        userCssLink.href = url.toString();
+      }
     }
   }
 
   private listenToThemeUpdates() {
     const onThemeUpdate = () => {
-      console.log("[Theme] 检测到本地 CSS 样式变更，正在热重载...");
       this.reloadCustomCss();
       this.setTheme(this.currentTheme);
     };
     window.addEventListener("tauri://theme-updated" as any, onThemeUpdate);
-    listen("theme-updated", onThemeUpdate).catch(() => {
-      // 非 Tauri 容器环境下静默降级
-    });
+    listen("theme-updated", onThemeUpdate).catch(() => {});
   }
 }
 

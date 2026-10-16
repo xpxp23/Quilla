@@ -33,11 +33,13 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .setup(|app| {
-            // 启动主题目录监听器
+            // 启动主题目录监听器（同时兼容开发环境 src/themes 与生产环境可执行文件同级目录）
             if let Ok(current_dir) = std::env::current_dir() {
-                let themes_dir = current_dir.join("src").join("themes");
-                if themes_dir.exists() {
-                    watcher::ThemeWatcher::start_theme_watcher(themes_dir, app.handle().clone());
+                let dev_themes = current_dir.join("src").join("themes");
+                if dev_themes.exists() {
+                    watcher::ThemeWatcher::start_theme_watcher(dev_themes, app.handle().clone());
+                } else {
+                    watcher::ThemeWatcher::start_theme_watcher(current_dir, app.handle().clone());
                 }
             }
             Ok(())
@@ -57,6 +59,7 @@ pub fn run() {
             commands::save_image_asset,
             commands::copy_image_to_assets,
             commands::read_image_base64,
+            commands::read_custom_theme_css,
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_close,

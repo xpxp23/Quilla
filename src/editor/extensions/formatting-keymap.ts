@@ -1,4 +1,5 @@
 import { EditorView, KeyBinding } from "@codemirror/view";
+import { ChangeSpec } from "@codemirror/state";
 
 /**
  * 转义正则特殊字符
@@ -8,10 +9,14 @@ function escapeRegex(str: string): string {
 }
 
 /**
- * 包装或插入定界符 (如 **bold**, *italic*, `code`, ~~del~~)
- * 智能支持反选 (再次按下快捷键取消格式，包括光标处于词内时的自动探测解包)
+ * 包装或插入定界符 (如 **bold**, *italic*, `code`, ~~del~~, ==mark==)
+ * 智能支持反选 (再次按下快捷键取消格式，包括光标处于词内时的精确探测解包及 *** 复合解包)
  */
-export function smartToggleFormat(view: EditorView, before: string, after: string = before): boolean {
+export function smartToggleFormat(
+  view: EditorView,
+  before: string,
+  after: string = before
+): boolean {
   const selection = view.state.selection.main;
   const from = selection.from;
   const to = selection.to;
@@ -19,9 +24,17 @@ export function smartToggleFormat(view: EditorView, before: string, after: strin
 
   if (selectedText.length > 0) {
     // 1. 检查选中文本是否已被定界符包裹，若已包裹则解开
-    if (selectedText.startsWith(before) && selectedText.endsWith(after) && selectedText.length >= before.length + after.length) {
+    if (
+      selectedText.startsWith(before) &&
+      selectedText.endsWith(after) &&
+      selectedText.length >= before.length + after.length
+    ) {
       view.dispatch({
-        changes: { from, to, insert: selectedText.slice(before.length, selectedText.length - after.length) },
+        changes: {
+          from,
+          to,
+          insert: selectedText.slice(before.length, selectedText.length - after.length),
+        },
         selection: { anchor: from, head: to - before.length - after.length },
       });
       return true;
@@ -54,15 +67,48 @@ export function smartToggleFormat(view: EditorView, before: string, after: strin
   const relPos = from - line.from;
   const lineText = line.text;
 
+  // 优先处理 ***加粗斜体*** 内部切换 ** 或 *
+  if (before === "**" || before === "*") {
+    const tripleRegex = /\*\*\*([^*]+?)\*\*\*/g;
+    let tm: RegExpExecArray | null;
+    while ((tm = tripleRegex.exec(lineText)) !== null) {
+      const mStart = tm.index;
+      const mEnd = tm.index + tm[0].length;
+      if (relPos >= mStart && relPos <= mEnd) {
+        const inner = tm[1];
+        const remainDelim = before === "**" ? "*" : "**";
+        const replacement = `${remainDelim}${inner}${remainDelim}`;
+        const startInDoc = line.from + mStart;
+        const endInDoc = line.from + mEnd;
+        const newCursorPos = Math.min(
+          Math.max(startInDoc + remainDelim.length, from - before.length),
+          startInDoc + remainDelim.length + inner.length
+        );
+        view.dispatch({
+          changes: { from: startInDoc, to: endInDoc, insert: replacement },
+          selection: { anchor: newCursorPos },
+        });
+        return true;
+      }
+    }
+  }
+
   const escB = escapeRegex(before);
   const escA = escapeRegex(after);
-  const regex = new RegExp(`${escB}(.+?)${escA}`, "g");
-  let m: RegExpExecArray | null;
+  const singleChar = before.length === 1 ? escapeRegex(before[0]) : "";
+  const regex =
+    before === "*"
+      ? /(?<!\*)\*([^*]+?)\*(?!\*)/g
+      : before === "**"
+      ? /(?<!\*)\*\*([^*]+?)\*\*(?!\*)/g
+      : singleChar
+      ? new RegExp(`(?<!${singleChar})${escB}([^${singleChar}]+?)${escA}(?!${singleChar})`, "g")
+      : new RegExp(`${escB}(.+?)${escA}`, "g");
 
+  let m: RegExpExecArray | null;
   while ((m = regex.exec(lineText)) !== null) {
     const matchStart = m.index;
     const matchEnd = m.index + m[0].length;
-    // 如果光标在该匹配区间内部 (包括定界符自身边缘)
     if (relPos >= matchStart && relPos <= matchEnd) {
       const innerContent = m[1];
       const startInDoc = line.from + matchStart;
@@ -88,26 +134,26 @@ export function smartToggleFormat(view: EditorView, before: string, after: strin
 }
 
 /**
- * 列表智能回车续行与退出状态机 (Typora 原生交互: 支持多级缩进逐级退出)
+ * 列表智能回车续行与退出状态机 (Typora 原生交互: 支持多级缩进逐级退出、前缀防劈裂、有序列表自动重编号)
  */
 export function handleListEnter(view: EditorView): boolean {
   const selection = view.state.selection.main;
   if (!selection.empty) return false;
 
-  const line = view.state.doc.lineAt(selection.head);
+  const doc = view.state.doc;
+  const line = doc.lineAt(selection.head);
   const text = line.text;
 
-  // 1. 匹配任务列表: ^(\s*)([-*+]\s+\[[ xX]\]\s*)(.*)$
-  const taskMatch = text.match(/^(\s*)([-*+]\s+\[[ xX]\]\s*)(.*)$/);
+  // 1. 匹配任务列表: ^(\s*)([-*+]\s+\[[ xX]\]\s+)(.*)$
+  const taskMatch = text.match(/^(\s*)([-*+]\s+\[[ xX]\]\s+)(.*)$/);
   if (taskMatch) {
     const indent = taskMatch[1];
     const prefix = taskMatch[2];
     const content = taskMatch[3];
+    const prefixEndPos = line.from + indent.length + prefix.length;
 
-    // 如果任务项内容为空
     if (content.trim() === "") {
       if (indent.length >= 2) {
-        // 多级缩进：回车逐级减少缩进
         const newIndent = indent.slice(2);
         view.dispatch({
           changes: { from: line.from, to: line.to, insert: `${newIndent}${prefix}` },
@@ -115,7 +161,6 @@ export function handleListEnter(view: EditorView): boolean {
         });
         return true;
       }
-      // 顶层空任务项：再次按回车清除标记退出列表
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: "" },
         selection: { anchor: line.from },
@@ -123,8 +168,17 @@ export function handleListEnter(view: EditorView): boolean {
       return true;
     }
 
-    // 自动续行下一任务项 - [ ]
-    const nextPrefix = `${indent}- [ ] `;
+    // 若光标位于任务前缀内部或之前，在行首上方插入空行，严防把 `- [ ]` 劈成两半
+    if (selection.head < prefixEndPos) {
+      view.dispatch({
+        changes: { from: line.from, insert: "\n" },
+        selection: { anchor: selection.head + 1 },
+      });
+      return true;
+    }
+
+    const bulletChar = prefix.trim()[0] || "-";
+    const nextPrefix = `${indent}${bulletChar} [ ] `;
     view.dispatch({
       changes: { from: selection.head, insert: `\n${nextPrefix}` },
       selection: { anchor: selection.head + 1 + nextPrefix.length },
@@ -132,17 +186,19 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 2. 匹配有序列表: ^(\s*)(\d+)\.\s+(.*)$
-  const orderedMatch = text.match(/^(\s*)(\d+)\.\s+(.*)$/);
+  // 2. 匹配有序列表: ^(\s*)(\d+)(\.\s+)(.*)$
+  const orderedMatch = text.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
   if (orderedMatch) {
     const indent = orderedMatch[1];
     const num = parseInt(orderedMatch[2], 10);
-    const content = orderedMatch[3];
+    const dotSpace = orderedMatch[3];
+    const content = orderedMatch[4];
+    const prefixEndPos = line.from + indent.length + orderedMatch[2].length + dotSpace.length;
 
     if (content.trim() === "") {
       if (indent.length >= 2) {
         const newIndent = indent.slice(2);
-        const newPrefix = `${newIndent}${num}. `;
+        const newPrefix = `${newIndent}1. `;
         view.dispatch({
           changes: { from: line.from, to: line.to, insert: newPrefix },
           selection: { anchor: line.from + newPrefix.length },
@@ -156,20 +212,56 @@ export function handleListEnter(view: EditorView): boolean {
       return true;
     }
 
-    const nextPrefix = `${indent}${num + 1}. `;
+    if (selection.head < prefixEndPos) {
+      view.dispatch({
+        changes: { from: line.from, insert: "\n" },
+        selection: { anchor: selection.head + 1 },
+      });
+      return true;
+    }
+
+    const nextNum = num + 1;
+    const nextPrefix = `${indent}${nextNum}. `;
+    const changes: ChangeSpec[] = [{ from: selection.head, insert: `\n${nextPrefix}` }];
+
+    // 自动递增后续同级有序列表项的编号
+    let expectedNum = nextNum + 1;
+    for (let ln = line.number + 1; ln <= doc.lines; ln++) {
+      const nextLine = doc.line(ln);
+      const m = nextLine.text.match(/^(\s*)(\d+)\.\s+/);
+      if (!m) {
+        if (nextLine.text.trim() === "") break;
+        if ((nextLine.text.match(/^\s*/)?.[0].length || 0) > indent.length) continue;
+        break;
+      }
+      if (m[1].length < indent.length) break;
+      if (m[1].length === indent.length) {
+        const oldNumStr = m[2];
+        const numFrom = nextLine.from + m[1].length;
+        changes.push({
+          from: numFrom,
+          to: numFrom + oldNumStr.length,
+          insert: String(expectedNum),
+        });
+        expectedNum++;
+      }
+    }
+
     view.dispatch({
-      changes: { from: selection.head, insert: `\n${nextPrefix}` },
+      changes,
       selection: { anchor: selection.head + 1 + nextPrefix.length },
     });
     return true;
   }
 
-  // 3. 匹配无序列表: ^(\s*)([-*+])\s+(.*)$
-  const bulletMatch = text.match(/^(\s*)([-*+])\s+(.*)$/);
+  // 3. 匹配无序列表: ^(\s*)([-*+])(\s+)(.*)$
+  const bulletMatch = text.match(/^(\s*)([-*+])(\s+)(.*)$/);
   if (bulletMatch) {
     const indent = bulletMatch[1];
     const bullet = bulletMatch[2];
-    const content = bulletMatch[3];
+    const space = bulletMatch[3];
+    const content = bulletMatch[4];
+    const prefixEndPos = line.from + indent.length + bullet.length + space.length;
 
     if (content.trim() === "") {
       if (indent.length >= 2) {
@@ -188,6 +280,14 @@ export function handleListEnter(view: EditorView): boolean {
       return true;
     }
 
+    if (selection.head < prefixEndPos) {
+      view.dispatch({
+        changes: { from: line.from, insert: "\n" },
+        selection: { anchor: selection.head + 1 },
+      });
+      return true;
+    }
+
     const nextPrefix = `${indent}${bullet} `;
     view.dispatch({
       changes: { from: selection.head, insert: `\n${nextPrefix}` },
@@ -196,13 +296,23 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 4. 匹配引用块: ^(\s*>)\s*(.*)$
-  const quoteMatch = text.match(/^(\s*>)\s*(.*)$/);
+  // 4. 匹配引用块: ^(\s*(?:>\s*)+)(.*)$
+  const quoteMatch = text.match(/^(\s*(?:>\s*)+)(.*)$/);
   if (quoteMatch) {
-    const prefix = quoteMatch[1];
+    const rawPrefix = quoteMatch[1];
     const content = quoteMatch[2];
+    const normalizedPrefix = rawPrefix.trimEnd() + " ";
 
     if (content.trim() === "") {
+      const quoteDepth = (rawPrefix.match(/>/g) || []).length;
+      if (quoteDepth > 1) {
+        const reducedPrefix = "> ".repeat(quoteDepth - 1);
+        view.dispatch({
+          changes: { from: line.from, to: line.to, insert: reducedPrefix },
+          selection: { anchor: line.from + reducedPrefix.length },
+        });
+        return true;
+      }
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: "" },
         selection: { anchor: line.from },
@@ -210,10 +320,9 @@ export function handleListEnter(view: EditorView): boolean {
       return true;
     }
 
-    const nextPrefix = `${prefix} `;
     view.dispatch({
-      changes: { from: selection.head, insert: `\n${nextPrefix}` },
-      selection: { anchor: selection.head + 1 + nextPrefix.length },
+      changes: { from: selection.head, insert: `\n${normalizedPrefix}` },
+      selection: { anchor: selection.head + 1 + normalizedPrefix.length },
     });
     return true;
   }
@@ -231,21 +340,22 @@ export function handleListBackspace(view: EditorView): boolean {
   const line = view.state.doc.lineAt(selection.head);
   const text = line.text;
 
-  // 仅当整行全为列表标记且光标正处于标记末尾时触发
-  const match = text.match(/^(\s*)([-*+]\s+\[[ xX]\]\s*|[-*+]\s+|\d+\.\s+|> )/);
+  const match = text.match(/^(\s*)([-*+]\s+\[[ xX]\]\s*|[-*+]\s+|\d+\.\s+|(?:>\s*)+)/);
   if (match && selection.head === line.from + match[0].length) {
     const indent = match[1];
     const prefix = match[2];
     if (indent.length >= 2) {
-      // 减一层缩进
       const newIndent = indent.slice(2);
       view.dispatch({
-        changes: { from: line.from, to: line.from + match[0].length, insert: `${newIndent}${prefix}` },
+        changes: {
+          from: line.from,
+          to: line.from + match[0].length,
+          insert: `${newIndent}${prefix}`,
+        },
         selection: { anchor: line.from + newIndent.length + prefix.length },
       });
       return true;
     } else {
-      // 清空整行列表符号
       view.dispatch({
         changes: { from: line.from, to: line.from + match[0].length, insert: "" },
         selection: { anchor: line.from },
@@ -268,7 +378,6 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
   if (!isListLine) return false;
 
   if (isShift) {
-    // 反缩进：若行首有空格，去除最多 2 个空格
     if (text.startsWith("  ")) {
       view.dispatch({
         changes: { from: line.from, to: line.from + 2, insert: "" },
@@ -281,7 +390,6 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       return true;
     }
   } else {
-    // 缩进：在行首增加 2 个空格
     view.dispatch({
       changes: { from: line.from, insert: "  " },
     });
@@ -294,7 +402,7 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
 /**
  * 切换当前行的标题层级 (H1 ~ H6)
  */
-function toggleHeadingLevel(view: EditorView, level: number): boolean {
+export function toggleHeadingLevel(view: EditorView, level: number): boolean {
   const selection = view.state.selection.main;
   const line = view.state.doc.lineAt(selection.head);
   const text = line.text;
@@ -305,18 +413,19 @@ function toggleHeadingLevel(view: EditorView, level: number): boolean {
   if (currentMatch) {
     const currentLevel = currentMatch[1].length;
     if (currentLevel === level || level === 0) {
-      // 级别相同或为 0：取消标题，恢复普通段落
       view.dispatch({
         changes: { from: line.from, to: line.from + currentMatch[0].length, insert: "" },
       });
     } else {
-      // 切换为目标标题层级
       view.dispatch({
-        changes: { from: line.from, to: line.from + currentMatch[0].length, insert: targetPrefix },
+        changes: {
+          from: line.from,
+          to: line.from + currentMatch[0].length,
+          insert: targetPrefix,
+        },
       });
     }
   } else if (level > 0) {
-    // 当前为普通段落：在行首插入 #
     view.dispatch({
       changes: { from: line.from, insert: targetPrefix },
     });
@@ -325,7 +434,6 @@ function toggleHeadingLevel(view: EditorView, level: number): boolean {
 }
 
 export const formattingKeymap: KeyBinding[] = [
-  // 列表回车智能续行与缩进 (Typora 核心交互状态机)
   {
     key: "Enter",
     run: handleListEnter,
@@ -380,7 +488,6 @@ export const formattingKeymap: KeyBinding[] = [
       const to = selection.to;
       const text = view.state.sliceDoc(from, to);
 
-      // 检查选区是否已经是完整链接 [text](url) -> 解开为 text
       const linkMatch = text.match(/^\[(.*?)\]\((.*?)\)$/);
       if (linkMatch) {
         view.dispatch({
@@ -390,7 +497,6 @@ export const formattingKeymap: KeyBinding[] = [
         return true;
       }
 
-      // 检查光标所在位置是否在链接内部 -> 解开为 text
       if (from === to) {
         const line = view.state.doc.lineAt(from);
         const relPos = from - line.from;
@@ -420,41 +526,53 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 5. 插入图片 (Ctrl-Shift-I)
+  // 5. 插入图片 (Ctrl-Shift-I) - 保留选中文本作为 alt 说明
   {
     key: "Ctrl-Shift-i",
     run: (view) => {
       const selection = view.state.selection.main;
-      const insertStr = `![图片说明](url)`;
+      const selectedAlt = view.state.sliceDoc(selection.from, selection.to).trim() || "图片说明";
+      const insertStr = `![${selectedAlt}](url)`;
+      const urlStart = selection.from + 4 + selectedAlt.length;
       view.dispatch({
         changes: { from: selection.from, to: selection.to, insert: insertStr },
-        selection: { anchor: selection.from + 9, head: selection.from + insertStr.length - 1 },
+        selection: { anchor: urlStart, head: urlStart + 3 },
       });
       return true;
     },
   },
-  // 6. 插入多行代码块 (Ctrl-Shift-K)
+  // 6. 插入多行代码块 (Ctrl-Shift-K) - 定位至行尾避免截断当前句子
   {
     key: "Ctrl-Shift-k",
     run: (view) => {
       const selection = view.state.selection.main;
-      const insertStr = `\n\`\`\`javascript\n\n\`\`\`\n`;
+      const line = view.state.doc.lineAt(selection.head);
+      const isLineEmpty = line.text.trim().length === 0;
+      const prefix = isLineEmpty ? "" : "\n";
+      const insertPos = isLineEmpty ? line.from : line.to;
+      const insertStr = `${prefix}\`\`\`\n\n\`\`\`\n`;
+      const cursorOffset = prefix.length + 4;
       view.dispatch({
-        changes: { from: selection.head, insert: insertStr },
-        selection: { anchor: selection.head + 15 },
+        changes: { from: insertPos, to: line.to, insert: insertStr },
+        selection: { anchor: insertPos + cursorOffset },
       });
       return true;
     },
   },
-  // 7. 插入数学公式块 (Ctrl-Shift-M)
+  // 7. 插入数学公式块 (Ctrl-Shift-M) - 定位至行尾避免截断当前句子
   {
     key: "Ctrl-Shift-m",
     run: (view) => {
       const selection = view.state.selection.main;
-      const insertStr = `\n$$\n\n$$\n`;
+      const line = view.state.doc.lineAt(selection.head);
+      const isLineEmpty = line.text.trim().length === 0;
+      const prefix = isLineEmpty ? "" : "\n";
+      const insertPos = isLineEmpty ? line.from : line.to;
+      const insertStr = `${prefix}$$\n\n$$\n`;
+      const cursorOffset = prefix.length + 3;
       view.dispatch({
-        changes: { from: selection.head, insert: insertStr },
-        selection: { anchor: selection.head + 4 },
+        changes: { from: insertPos, to: line.to, insert: insertStr },
+        selection: { anchor: insertPos + cursorOffset },
       });
       return true;
     },

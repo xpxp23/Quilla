@@ -6,12 +6,25 @@ pub struct SafeIO;
 
 impl SafeIO {
     /// 原子写入文件：
-    /// 1. 写入同目录下的 .filename.tmp 文件
-    /// 2. 调用 sync_all() 确保物理落盘
-    /// 3. 原子重命名覆盖原文件，绝不截断或损坏原文件
+    /// 1. 写入同目录下的 .filename.tmp 文件并调用 sync_all() 确保物理落盘
+    /// 2. 原子重命名覆盖原文件；若目标为符号链接或遇同步盘瞬时锁冲突，自动回退为安全覆写并清理临时文件
     pub fn atomic_write<P: AsRef<Path>>(path: P, content: &str) -> io::Result<()> {
         let path = path.as_ref();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // 若目标为软链接 (Symlink)，直接写入目标文件以保持链接关系不断裂
+        if let Ok(meta) = fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                let mut f = File::create(path)?;
+                f.write_all(content.as_bytes())?;
+                f.sync_all()?;
+                return Ok(());
+            }
+        }
+
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
         let tmp_path = parent.join(format!(".{}.tmp", file_name));
 
@@ -21,19 +34,19 @@ impl SafeIO {
             tmp_file.sync_all()?;
         }
 
-        // Windows 下如果目标文件存在，直接 rename 可能会报错，先确保替换原子性
         if path.exists() {
             let backup_path = parent.join(format!(".{}.bak", file_name));
-            // 快速备份
             let _ = fs::rename(path, &backup_path);
-            if let Err(e) = fs::rename(&tmp_path, path) {
-                // 如果替换失败，回滚备份
+            if let Err(_e) = fs::rename(&tmp_path, path) {
                 let _ = fs::rename(&backup_path, path);
-                return Err(e);
+                // 同步盘文件锁冲突降级方案：直接复制内容并移除临时文件
+                fs::copy(&tmp_path, path)?;
+                let _ = fs::remove_file(&tmp_path);
             }
             let _ = fs::remove_file(backup_path);
-        } else {
-            fs::rename(&tmp_path, path)?;
+        } else if let Err(_e) = fs::rename(&tmp_path, path) {
+            fs::copy(&tmp_path, path)?;
+            let _ = fs::remove_file(&tmp_path);
         }
 
         Ok(())

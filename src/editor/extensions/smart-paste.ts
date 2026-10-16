@@ -1,15 +1,17 @@
 import { EditorView } from "@codemirror/view";
 
 /**
- * 递归解析 HTML DOM 节点为标准优雅的 Markdown 格式 (Typora 级别 Smart Paste)
+ * 递归解析 HTML DOM 节点为标准优雅的 Markdown 格式 (支持多级嵌套列表、保留空表头、代码块与内联样式)
  */
 export function htmlToMarkdown(htmlString: string): string {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlString, "text/html");
-  return processNode(doc.body).trim().replace(/\n{3,}/g, "\n\n");
+  return processNode(doc.body, 0)
+    .trim()
+    .replace(/\n{3,}/g, "\n\n");
 }
 
-function processNode(node: Node): string {
+function processNode(node: Node, listDepth: number = 0): string {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.textContent || "";
   }
@@ -21,15 +23,14 @@ function processNode(node: Node): string {
   const el = node as HTMLElement;
   const tag = el.tagName.toLowerCase();
 
-  // 忽略不可视标签
   if (["script", "style", "meta", "link", "noscript"].includes(tag)) {
     return "";
   }
 
-  const getChildrenText = () => {
+  const getChildrenText = (depth: number = listDepth) => {
     let res = "";
     el.childNodes.forEach((child) => {
-      res += processNode(child);
+      res += processNode(child, depth);
     });
     return res;
   };
@@ -48,7 +49,7 @@ function processNode(node: Node): string {
     case "h6":
       return `\n\n###### ${getChildrenText().trim()}\n\n`;
     case "p":
-      return `\n\n${getChildrenText().trim()}\n\n`;
+      return listDepth > 0 ? `${getChildrenText().trim()} ` : `\n\n${getChildrenText().trim()}\n\n`;
     case "br":
       return "\n";
     case "hr":
@@ -69,6 +70,18 @@ function processNode(node: Node): string {
       const t = getChildrenText().trim();
       return t ? `~~${t}~~` : "";
     }
+    case "mark": {
+      const t = getChildrenText().trim();
+      return t ? `==${t}==` : "";
+    }
+    case "sub": {
+      const t = getChildrenText().trim();
+      return t ? `~${t}~` : "";
+    }
+    case "sup": {
+      const t = getChildrenText().trim();
+      return t ? `^${t}^` : "";
+    }
     case "code": {
       if (el.parentElement?.tagName.toLowerCase() === "pre") {
         return getChildrenText();
@@ -78,7 +91,7 @@ function processNode(node: Node): string {
     }
     case "pre": {
       const codeChild = el.querySelector("code");
-      const lang = codeChild?.className.match(/language-(\w+)/)?.[1] || "";
+      const lang = codeChild?.className.match(/language-([\w+-]+)/)?.[1] || "";
       const text = (codeChild ? codeChild.textContent : el.textContent) || "";
       return `\n\n\`\`\`${lang}\n${text.trim()}\n\`\`\`\n\n`;
     }
@@ -108,20 +121,30 @@ function processNode(node: Node): string {
       }
       return src ? `![${alt}](${src})` : "";
     }
-    case "ul": {
-      let res = "\n\n";
-      el.querySelectorAll(":scope > li").forEach((li) => {
-        res += `- ${processNode(li).trim()}\n`;
-      });
-      return `${res}\n`;
-    }
+    case "ul":
     case "ol": {
-      let res = "\n\n";
-      let i = 1;
-      el.querySelectorAll(":scope > li").forEach((li) => {
-        res += `${i++}. ${processNode(li).trim()}\n`;
+      const isOrdered = tag === "ol";
+      const indent = "  ".repeat(listDepth);
+      let res = listDepth === 0 ? "\n\n" : "\n";
+      let idx = 1;
+      Array.from(el.children).forEach((child) => {
+        if (child.tagName.toLowerCase() !== "li") return;
+        let inlineContent = "";
+        let nestedListContent = "";
+        child.childNodes.forEach((liChild) => {
+          if (
+            liChild.nodeType === Node.ELEMENT_NODE &&
+            ["ul", "ol"].includes((liChild as HTMLElement).tagName.toLowerCase())
+          ) {
+            nestedListContent += processNode(liChild, listDepth + 1);
+          } else {
+            inlineContent += processNode(liChild, listDepth + 1);
+          }
+        });
+        const prefix = isOrdered ? `${idx++}. ` : "- ";
+        res += `${indent}${prefix}${inlineContent.trim()}${nestedListContent}\n`;
       });
-      return `${res}\n`;
+      return listDepth === 0 ? `${res}\n` : res.trimEnd();
     }
     case "li":
       return getChildrenText();
@@ -130,20 +153,25 @@ function processNode(node: Node): string {
       el.querySelectorAll("tr").forEach((tr) => {
         const row: string[] = [];
         tr.querySelectorAll("th, td").forEach((cell) => {
-          row.push(processNode(cell).trim().replace(/\|/g, "\\|").replace(/\n/g, " "));
+          row.push(
+            processNode(cell)
+              .trim()
+              .replace(/\|/g, "\\|")
+              .replace(/\r?\n/g, "<br>")
+          );
         });
         if (row.length > 0) rows.push(row);
       });
 
       if (rows.length === 0) return "";
       const colCount = Math.max(...rows.map((r) => r.length));
-      const headers = rows[0].map((h, i) => h || `列 ${i + 1}`);
-      while (headers.length < colCount) headers.push(`列 ${headers.length + 1}`);
+      const headers = rows[0].map((h) => h || "");
+      while (headers.length < colCount) headers.push("");
 
       let md = `\n\n| ${headers.join(" | ")} |\n`;
-      md += `| ${new Array(colCount).fill("---").join(" | ")} |\n`;
+      md += `| ${new Array(colCount).fill(":---").join(" | ")} |\n`;
       for (let r = 1; r < rows.length; r++) {
-        const row = rows[r];
+        const row = [...rows[r]];
         while (row.length < colCount) row.push("");
         md += `| ${row.join(" | ")} |\n`;
       }
@@ -167,46 +195,55 @@ window.addEventListener("keyup", (e) => {
  * 若按下 Ctrl+Shift+V，则保留浏览器原生纯文本粘贴
  */
 export function initSmartPaste(view: EditorView) {
-  view.dom.addEventListener("paste", (e: ClipboardEvent) => {
-    // 若用户按了 Shift (Ctrl+Shift+V)，则执行纯文本粘贴
-    if (isShiftDown) return;
+  view.dom.addEventListener(
+    "paste",
+    (e: ClipboardEvent) => {
+      if (isShiftDown) return;
 
-    const clipboardData = e.clipboardData;
-    if (!clipboardData) return;
-
-    // 如果剪贴板含有图片文件，优先由已有的本地图片资产落盘管道 (image-handler) 处理
-    if (clipboardData.files && clipboardData.files.length > 0) {
-      for (let i = 0; i < clipboardData.files.length; i++) {
-        if (clipboardData.files[i].type.startsWith("image/")) {
-          return;
-        }
+      // 若焦点在表格单元格内部，交由表格单元格专用粘贴处理器处理
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest(".in-place-edit")) {
+        return;
       }
-    }
 
-    const html = clipboardData.getData("text/html");
-    const plainText = clipboardData.getData("text/plain");
+      const clipboardData = e.clipboardData;
+      if (!clipboardData) return;
 
-    if (html && html.trim().length > 0) {
-      // 检验 HTML 是否包含富文本结构 (避免无意义的纯 span 嵌套)
-      const hasStructure = /<(h[1-6]|p|table|ul|ol|li|blockquote|pre|strong|b|em|i|del|a|img)[^>]*>/i.test(html);
-      if (hasStructure) {
-        try {
-          const md = htmlToMarkdown(html);
-          if (md && md.trim().length > 0) {
-            e.preventDefault();
-            e.stopPropagation();
-            const { from, to } = view.state.selection.main;
-            view.dispatch({
-              changes: { from, to, insert: md },
-              selection: { anchor: from + md.length },
-              userEvent: "input.paste.markdown",
-            });
+      if (clipboardData.files && clipboardData.files.length > 0) {
+        for (let i = 0; i < clipboardData.files.length; i++) {
+          if (clipboardData.files[i].type.startsWith("image/")) {
             return;
           }
-        } catch (err) {
-          console.warn("Smart paste HTML 转 Markdown 容错回退纯文本:", err);
         }
       }
-    }
-  }, true);
+
+      const html = clipboardData.getData("text/html");
+
+      if (html && html.trim().length > 0) {
+        const hasStructure =
+          /<(h[1-6]|p|table|ul|ol|li|blockquote|pre|strong|b|em|i|del|mark|sub|sup|a|img)[^>]*>/i.test(
+            html
+          );
+        if (hasStructure) {
+          try {
+            const md = htmlToMarkdown(html);
+            if (md && md.trim().length > 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              const { from, to } = view.state.selection.main;
+              view.dispatch({
+                changes: { from, to, insert: md },
+                selection: { anchor: from + md.length },
+                userEvent: "input.paste.markdown",
+              });
+              return;
+            }
+          } catch (err) {
+            console.warn("Smart paste HTML 转 Markdown 容错回退纯文本:", err);
+          }
+        }
+      }
+    },
+    true
+  );
 }

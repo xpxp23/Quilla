@@ -12,8 +12,15 @@ export type HeadingReorderHandler = (
   insertAfter: boolean
 ) => void;
 
+// 记录大纲中折叠的标题行号（或标题键）
+const collapsedOutlineKeys = new Set<string>();
+
+function getHeadingKey(h: OutlineHeading, idx: number): string {
+  return `${h.level}:${h.text}:${idx}`;
+}
+
 /**
- * 渲染侧边栏大纲树，支持鼠标点击快速定位与原生 HTML5 拖拽重排章节 (闭包子树整体迁移)
+ * 渲染侧边栏大纲树，支持多级折叠/展开、鼠标点击快速定位与原生 HTML5 拖拽重排章节 (闭包子树整体迁移)
  */
 export function renderOutline(
   container: HTMLElement,
@@ -30,13 +37,71 @@ export function renderOutline(
 
   let draggedIndex: number | null = null;
 
+  // 计算每个标题是否拥有下属子标题，以及是否被祖先标题折叠隐藏
+  const hasChildren: boolean[] = new Array(headings.length).fill(false);
+  for (let i = 0; i < headings.length; i++) {
+    if (i + 1 < headings.length && headings[i + 1].level > headings[i].level) {
+      hasChildren[i] = true;
+    }
+  }
+
+  const updateVisibility = () => {
+    const itemEls = container.querySelectorAll<HTMLElement>(".outline-item");
+    let hiddenBelowLevel: number | null = null;
+
+    headings.forEach((h, i) => {
+      const el = itemEls[i];
+      if (!el) return;
+
+      if (hiddenBelowLevel !== null) {
+        if (h.level > hiddenBelowLevel) {
+          el.style.display = "none";
+          return;
+        } else {
+          hiddenBelowLevel = null;
+        }
+      }
+
+      el.style.display = "flex";
+      const key = getHeadingKey(h, i);
+      if (hasChildren[i] && collapsedOutlineKeys.has(key)) {
+        hiddenBelowLevel = h.level;
+      }
+    });
+  };
+
   headings.forEach((heading, idx) => {
+    const key = getHeadingKey(heading, idx);
+    const isCollapsed = collapsedOutlineKeys.has(key);
+
     const el = document.createElement("div");
     el.className = `outline-item outline-h${heading.level}`;
-    el.title = `${heading.text} (可拖拽重排整章)`;
+    el.title = `${heading.text} (点击跳转，拖拽重排整章)`;
     el.draggable = true;
     el.dataset.index = String(idx);
     el.dataset.line = String(heading.line);
+
+    const caret = document.createElement("span");
+    caret.className = `outline-caret ${hasChildren[idx] ? "has-children" : "empty"} ${
+      isCollapsed ? "collapsed" : "expanded"
+    }`;
+    if (hasChildren[idx]) {
+      caret.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
+      caret.title = "折叠/展开子章节";
+      caret.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (collapsedOutlineKeys.has(key)) {
+          collapsedOutlineKeys.delete(key);
+          caret.classList.remove("collapsed");
+          caret.classList.add("expanded");
+        } else {
+          collapsedOutlineKeys.add(key);
+          caret.classList.add("collapsed");
+          caret.classList.remove("expanded");
+        }
+        updateVisibility();
+      });
+    }
 
     const tag = document.createElement("span");
     tag.className = "outline-tag";
@@ -46,17 +111,16 @@ export function renderOutline(
     title.className = "outline-title";
     title.textContent = heading.text;
 
+    el.appendChild(caret);
     el.appendChild(tag);
     el.appendChild(title);
 
-    // 单击快速定位
     el.addEventListener("click", () => {
       container.querySelectorAll(".outline-item").forEach((item) => item.classList.remove("active"));
       el.classList.add("active");
       onHeadingClick(heading.line);
     });
 
-    // 拖拽重排
     if (onHeadingReorder) {
       el.addEventListener("dragstart", (e) => {
         draggedIndex = idx;
@@ -110,6 +174,8 @@ export function renderOutline(
 
     container.appendChild(el);
   });
+
+  updateVisibility();
 }
 
 /**
@@ -132,12 +198,13 @@ export function syncActiveOutlineHeading(
 
   const items = container.querySelectorAll<HTMLElement>(".outline-item");
   items.forEach((item, idx) => {
-    item.classList.toggle("active", idx === activeIdx);
+    const isAct = idx === activeIdx;
+    item.classList.toggle("active", isAct);
   });
 }
 
 /**
- * 根据大纲树节点索引，执行 CodeMirror 文档层面的章节原子重排 (闭包识别下属段落与子标题)
+ * 根据大纲树节点索引，执行 CodeMirror 文档层面的章节原子重排 (闭包识别下属段落与子标题，并确保章节间空行)
  */
 export function reorderDocumentHeading(
   view: EditorView,
@@ -168,7 +235,6 @@ export function reorderDocumentHeading(
   // 2. 计算目标位置的行号
   let targetInsertLine = targetHeading.line;
   if (insertAfter) {
-    // 插入在目标章节闭包之后
     let targetEndLine = doc.lines;
     for (let k = toIndex + 1; k < headings.length; k++) {
       if (headings[k].level <= targetHeading.level) {
@@ -183,12 +249,10 @@ export function reorderDocumentHeading(
   let delFrom = doc.line(sourceStartLine).from;
   const isSourceAtDocEnd = sourceEndLine >= doc.lines;
   let delTo = isSourceAtDocEnd ? doc.line(sourceEndLine).to : doc.line(sourceEndLine).to + 1;
-  let sourceText = view.state.sliceDoc(delFrom, delTo);
+  let sourceText = view.state.sliceDoc(delFrom, delTo).trimEnd();
 
-  // 如果源块位于文档末尾且不是从第0位置开始，把前置换行一并删除，避免文档末尾留下空行
   if (isSourceAtDocEnd && delFrom > 0) {
     delFrom -= 1;
-    sourceText = view.state.sliceDoc(delFrom + 1, delTo);
   }
 
   // 4. 计算插入目标坐标
@@ -199,21 +263,17 @@ export function reorderDocumentHeading(
     insertPos = doc.line(targetInsertLine).from;
   }
 
-  // 避免将自身移动到自身范围内部的无效操作
   if (insertPos >= delFrom && insertPos <= delTo) {
     return;
   }
 
-  // 5. 规范化插入文本换行
-  let finalInsertText = sourceText;
-  if (!finalInsertText.endsWith("\n") && insertPos < doc.length) {
-    finalInsertText += "\n";
-  }
-  if (insertPos === doc.length && !finalInsertText.startsWith("\n") && doc.length > 0) {
-    finalInsertText = "\n" + finalInsertText;
+  // 5. 规范化插入文本换行与段落间距保护
+  let finalInsertText = sourceText + "\n\n";
+  if (insertPos === doc.length && doc.length > 0) {
+    const prevChar = view.state.sliceDoc(doc.length - 1, doc.length);
+    finalInsertText = (prevChar === "\n" ? "\n" : "\n\n") + sourceText + "\n";
   }
 
-  // 6. 严格按坐标升序排序 changes，满足 CodeMirror 6 事务铁律
   const changes = [
     { from: delFrom, to: delTo, insert: "" },
     { from: insertPos, insert: finalInsertText },

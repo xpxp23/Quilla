@@ -5,6 +5,8 @@
   --side-bar-bg-color: #f8f8f8;
   --control-text-color: #6a737d;
   --select-text-bg-color: #cce5ff;
+  --primary-color: #0969da;
+  --primary-bg-subtle: rgba(9, 105, 218, 0.1);
   --border-color: #e1e4e8;
   --item-hover-bg-color: rgba(0, 0, 0, 0.04);
 }
@@ -70,7 +72,7 @@ body {
 }
 
 #write a, .cm-link {
-  color: #0366d6 !important;
+  color: #0969da !important;
   text-decoration: none;
 }
 

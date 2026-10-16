@@ -3,7 +3,7 @@
  */
 
 interface ShortcutItem {
-  category: "常用操作" | "文本排版" | "标题层级" | "段落与图表" | "视图切换";
+  category: "常用操作" | "文本排版" | "标题层级" | "表格与图表" | "视图切换";
   name: string;
   keys: string[];
   desc?: string;
@@ -12,21 +12,23 @@ interface ShortcutItem {
 const SHORTCUT_LIST: ShortcutItem[] = [
   // 常用操作
   { category: "常用操作", name: "新建文档", keys: ["Ctrl", "N"] },
+  { category: "常用操作", name: "新建独立窗口", keys: ["Ctrl", "Shift", "N"] },
   { category: "常用操作", name: "打开文件", keys: ["Ctrl", "O"] },
   { category: "常用操作", name: "保存文档", keys: ["Ctrl", "S"] },
-  { category: "常用操作", name: "撤销操作", keys: ["Ctrl", "Z"] },
-  { category: "常用操作", name: "重做操作", keys: ["Ctrl", "Y"], desc: "或 Ctrl+Shift+Z" },
-  { category: "常用操作", name: "查找内容", keys: ["Ctrl", "F"] },
-  { category: "常用操作", name: "查找与替换", keys: ["Ctrl", "H"] },
+  { category: "常用操作", name: "另存为", keys: ["Ctrl", "Shift", "S"] },
+  { category: "常用操作", name: "快速文件漫游", keys: ["Ctrl", "P"] },
+  { category: "常用操作", name: "撤销 / 重做", keys: ["Ctrl", "Z"], desc: "重做 Ctrl+Y" },
+  { category: "常用操作", name: "查找 / 替换", keys: ["Ctrl", "F"], desc: "替换 Ctrl+H" },
+  { category: "常用操作", name: "打印 / 导出 PDF", keys: ["Ctrl", "Shift", "P"] },
 
   // 文本排版
-  { category: "文本排版", name: "加粗", keys: ["Ctrl", "B"], desc: "**文本** 或 __文本__" },
-  { category: "文本排版", name: "斜体", keys: ["Ctrl", "I"], desc: "*文本* 或 _文本_" },
-  { category: "文本排版", name: "行内代码", keys: ["Ctrl", "E"], desc: "`代码`" },
+  { category: "文本排版", name: "加粗", keys: ["Ctrl", "B"], desc: "**文本** (支持智能反解)" },
+  { category: "文本排版", name: "斜体", keys: ["Ctrl", "I"], desc: "*文本* (支持智能反解)" },
+  { category: "文本排版", name: "行内代码", keys: ["Ctrl", "E"], desc: "或 Ctrl+`" },
   { category: "文本排版", name: "删除线", keys: ["Ctrl", "Shift", "X"], desc: "~~删除文本~~" },
-  { category: "文本排版", name: "高亮标记", keys: ["Ctrl", "Shift", "H"], desc: "==高亮==" },
+  { category: "文本排版", name: "荧光高亮", keys: ["Ctrl", "Shift", "H"], desc: "==高亮==" },
   { category: "文本排版", name: "插入超链接", keys: ["Ctrl", "K"], desc: "[文字](链接)" },
-  { category: "文本排版", name: "插入图片", keys: ["Ctrl", "Shift", "I"], desc: "![说明](路径)" },
+  { category: "文本排版", name: "插入图片", keys: ["Ctrl", "Shift", "I"], desc: "保留选中文本为说明" },
 
   // 标题层级
   { category: "标题层级", name: "一级标题 (H1)", keys: ["Ctrl", "1"], desc: "支持 Ctrl+Alt+1" },
@@ -35,21 +37,22 @@ const SHORTCUT_LIST: ShortcutItem[] = [
   { category: "标题层级", name: "四级标题 (H4)", keys: ["Ctrl", "4"], desc: "支持 Ctrl+Alt+4" },
   { category: "标题层级", name: "五级标题 (H5)", keys: ["Ctrl", "5"], desc: "支持 Ctrl+Alt+5" },
   { category: "标题层级", name: "六级标题 (H6)", keys: ["Ctrl", "6"], desc: "支持 Ctrl+Alt+6" },
-  { category: "标题层级", name: "清除标题(正文)", keys: ["Ctrl", "0"], desc: "支持 Ctrl+Alt+0" },
+  { category: "标题层级", name: "清除标题 (正文)", keys: ["Ctrl", "0"], desc: "支持 Ctrl+Alt+0" },
 
-  // 段落与图表
-  { category: "段落与图表", name: "插入表格", keys: ["Ctrl", "Alt", "T"], desc: "自动插入 3x3 交互表格" },
-  { category: "段落与图表", name: "插入代码块", keys: ["Ctrl", "Shift", "K"], desc: "```语言" },
-  { category: "段落与图表", name: "插入数学公式块", keys: ["Ctrl", "Shift", "M"], desc: "$$ 公式 $$" },
-  { category: "段落与图表", name: "流程图渲染", keys: ["```mermaid"], desc: "自动生成矢量流程图" },
-  { category: "段落与图表", name: "表格单元格跳格", keys: ["Tab"], desc: "末格回车自动加行" },
+  // 表格与图表
+  { category: "表格与图表", name: "插入表格", keys: ["Ctrl", "Alt", "T"], desc: "插入可视化交互表格" },
+  { category: "表格与图表", name: "表格下方插入行", keys: ["Ctrl", "Enter"], desc: "末格 Tab/Enter 自动加行" },
+  { category: "表格与图表", name: "表格删除当前行", keys: ["Ctrl", "Shift", "Backspace"] },
+  { category: "表格与图表", name: "单元格内换行", keys: ["Shift", "Enter"], desc: "自动插入安全 <br>" },
+  { category: "表格与图表", name: "插入代码块", keys: ["Ctrl", "Shift", "K"], desc: "点击右上角切换语言" },
+  { category: "表格与图表", name: "插入数学公式块", keys: ["Ctrl", "Shift", "M"], desc: "$$ 独立公式块 $$" },
 
   // 视图切换
-  { category: "视图切换", name: "打字机模式", keys: ["F9"], desc: "视线垂直软居中锁定，滚轮自由浏览" },
-  { category: "视图切换", name: "专注模式", keys: ["F8"], desc: "段落级视差聚焦，淡化无关文本" },
-  { category: "视图切换", name: "切换源码模式", keys: ["Ctrl", "/"], desc: "即时切换所见即所得/源码" },
-  { category: "视图切换", name: "展开/收拢侧边栏", keys: ["Ctrl", "Shift", "L"], desc: "或点击底部状态栏" },
-  { category: "视图切换", name: "快捷键速查指南", keys: ["F1"], desc: "即刻呼出本指南" },
+  { category: "视图切换", name: "打字机模式", keys: ["F9"], desc: "当前行平滑锁频居中" },
+  { category: "视图切换", name: "专注模式", keys: ["F8"], desc: "当前块高清高亮，其余淡化" },
+  { category: "视图切换", name: "切换源码模式", keys: ["Ctrl", "/"], desc: "所见即所得 / 源码切换" },
+  { category: "视图切换", name: "展开/收拢侧边栏", keys: ["Ctrl", "Shift", "L"] },
+  { category: "视图切换", name: "快捷键速查指南", keys: ["F1"] },
 ];
 
 let guideModalEl: HTMLElement | null = null;
@@ -66,7 +69,6 @@ export function openShortcutGuide() {
     return;
   }
 
-  // 首次创建浮层
   guideModalEl = document.createElement("div");
   guideModalEl.id = "shortcut-guide-modal";
   guideModalEl.className = "ty-modal-overlay";
@@ -74,9 +76,9 @@ export function openShortcutGuide() {
     <div class="ty-modal-card">
       <div class="ty-modal-header">
         <div class="modal-title">
-          <span class="modal-icon">⌨️</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6.01" y2="8"></line><line x1="10" y1="8" x2="10.01" y2="8"></line><line x1="14" y1="8" x2="14.01" y2="8"></line><line x1="18" y1="8" x2="18.01" y2="8"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>
           <span>快捷键速查指南</span>
-          <span class="modal-badge">Quilla Pro</span>
+          <span class="modal-badge">Quilla</span>
         </div>
         <button type="button" class="modal-close-btn" title="关闭 (Esc)">✕</button>
       </div>
@@ -92,7 +94,7 @@ export function openShortcutGuide() {
       <div class="shortcut-categories-container" id="shortcut-items-grid"></div>
 
       <div class="ty-modal-footer">
-        <span class="footer-tip">💡 提示：在表格中按 <kbd>Tab</kbd> 可快速跳格，按 <kbd>Esc</kbd> 随时退出指南</span>
+        <span class="footer-tip">提示：在表格中支持四向方向键与 <kbd>Tab</kbd> 跳格，按 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 快速插入新行</span>
         <button type="button" class="modal-confirm-btn">我知道了</button>
       </div>
     </div>
@@ -152,7 +154,6 @@ function renderShortcutGrid(items: ShortcutItem[]) {
     return;
   }
 
-  // 按分类分组
   const categories: Record<string, ShortcutItem[]> = {};
   items.forEach((item) => {
     if (!categories[item.category]) {
@@ -216,7 +217,6 @@ function renderShortcutGrid(items: ShortcutItem[]) {
   });
 }
 
-// 绑定全局 Esc 关闭指南弹窗与 F1 开启
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (guideModalEl && !guideModalEl.classList.contains("hidden")) {

@@ -15,8 +15,14 @@ export function setupImageAndDropHandlers(
   callbacks?: DragDropCallbacks
 ) {
   const dom = view.dom;
+  let lastDroppedPathTime = 0;
 
   const handleDroppedPath = async (filePath: string, insertPos: number) => {
+    // 防止 Tauri onDragDropEvent 与浏览器原生 drop 事件在极短时间内重复触发同一次拖放
+    const now = Date.now();
+    if (now - lastDroppedPathTime < 250) return;
+    lastDroppedPathTime = now;
+
     const lowerName = filePath.toLowerCase();
     const fileName = filePath.split(/[\\/]/).pop() || "image.png";
 
@@ -104,21 +110,26 @@ export function setupImageAndDropHandlers(
       const webview = getCurrentWebview();
       webview.onDragDropEvent((event) => {
         if (event.payload.type === "drop") {
+          dom.classList.remove("drag-hover");
           const paths = event.payload.paths;
           if (!paths || paths.length === 0) return;
           const sel = view.state.selection.main;
           paths.forEach((filePath) => {
             handleDroppedPath(filePath, sel.head);
           });
+        } else if (event.payload.type === "leave") {
+          dom.classList.remove("drag-hover");
         }
       });
     })
     .catch(() => {
-      console.log("Running in standard browser mode (fallback drop enabled)");
+      // 标准浏览器环境静默降级
     });
 
-  // 3. 浏览器原生 drag/drop 事件兜底
+  // 3. 浏览器原生外部文件 drag/drop 事件兜底（严格过滤内部段落手柄与大纲拖拽）
   dom.addEventListener("dragover", (e: DragEvent) => {
+    const types = e.dataTransfer?.types;
+    if (!types || !Array.from(types).includes("Files")) return;
     e.preventDefault();
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = "copy";
@@ -126,19 +137,22 @@ export function setupImageAndDropHandlers(
     dom.classList.add("drag-hover");
   });
 
-  dom.addEventListener("dragleave", () => {
-    dom.classList.remove("drag-hover");
+  dom.addEventListener("dragleave", (e: DragEvent) => {
+    if (!dom.contains(e.relatedTarget as Node | null)) {
+      dom.classList.remove("drag-hover");
+    }
   });
 
   dom.addEventListener("drop", async (e: DragEvent) => {
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
     e.preventDefault();
     e.stopPropagation();
     dom.classList.remove("drag-hover");
 
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
-
-    const dropPos = view.posAtCoords({ x: e.clientX, y: e.clientY }) ?? view.state.selection.main.head;
+    const dropPos =
+      view.posAtCoords({ x: e.clientX, y: e.clientY }) ?? view.state.selection.main.head;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];

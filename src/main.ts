@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import "katex/dist/katex.min.css";
 import katex from "katex";
+import mermaid from "mermaid";
 import {
   createEditor,
+  resetEditorDocument,
   toggleTypewriterMode,
   isTypewriterModeActive,
   toggleFocusMode,
@@ -16,19 +18,28 @@ import {
   reorderDocumentHeading,
   syncActiveOutlineHeading,
 } from "./components/outline";
-import { renderFileTree, FileItem, syncActiveTreeItem } from "./components/file-tree";
+import {
+  renderFileTree,
+  FileItem,
+  syncActiveTreeItem,
+  triggerInlineCreateInTree,
+} from "./components/file-tree";
 import { initMenus } from "./components/menu";
 import { initQuickOpen, addRecentFile } from "./components/quick-open";
 import { initStatsPopover } from "./components/stats-popover";
 import { initFloatingToolbars } from "./editor/extensions/floating-toolbars";
 import { initSmartPaste } from "./editor/extensions/smart-paste";
-import { setActiveDocumentPath, clearImageCache } from "./editor/extensions/live-preview";
+import {
+  setActiveDocumentPath,
+  clearImageCache,
+  stripInlineMarkdown,
+} from "./editor/extensions/live-preview";
 import { forceRefreshEffect } from "./editor/extensions/refresh-effect";
 import { initFindReplace, FindReplaceController } from "./components/find-replace";
 import { undo, redo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { pulseSearchMatch } from "./editor/extensions/search-highlighter";
-import { showSaveConfirmDialog } from "./components/save-dialog";
+import { showSaveConfirmDialog, showToast } from "./components/save-dialog";
 import { isTableDelimiter } from "./editor/extensions/table-editor";
 import {
   saveRecoverySnapshot,
@@ -36,24 +47,24 @@ import {
   checkAndPromptRecovery,
 } from "./components/auto-recovery";
 
-const INITIAL_DEMO_DOC = `# ✍️ 欢迎使用 Quilla (羽墨)
+const INITIAL_DEMO_DOC = `# 欢迎使用 Quilla (羽墨)
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6** 打造的极速、现代化的 Markdown 所见即所得编辑器。
 
-## 🌟 核心特色与沉浸式体验
+## 核心特色与沉浸式体验
 
 - **Token 级微观局部展开 (Micro-expansion)**：光标仅在进入特定单词标记（如 **加粗**、*优雅斜体*、***加粗斜体***、\`行内代码\`、公式 $E = mc^2$）内部时才展开源码，同行其他元素各自保持优雅渲染！
-- **可视化表格内联编辑 (In-Place Table Editor)**：告别 ASCII 乱码！表格自始至终是标准表格，点击单元格直接打字，按 \`Tab\` 跳格，聚焦时浮出工具条一键增减行列与对齐！
-- **Mermaid 流程图矢量渲染**：支持 \`\`\`mermaid 语法自动生成优雅流程图，编辑时上方显示代码，下方实时保留渲染图表！
+- **可视化表格内联编辑 (In-Place Table Editor)**：表格自始至终是标准排版表格，点击任意单元格直接打字，支持四向方向键导航、\`Tab\` 跳格、\`Ctrl+Enter\` 续行，聚焦时浮出工具条一键增删行列、切换对齐与删除整表！
+- **Mermaid 流程图矢量渲染**：支持 \`\`\`mermaid 语法自动生成矢量流程图，编辑时上方显示源码，下方实时保留渲染预览，移出后平滑收起为无边框画布！
 - **多行 LaTeX 数学公式块**：内置矢量 KaTeX 引擎，编辑时实时双向渲染。
-- **多语言代码块卡片**：支持主流语言语法高亮、右上角语言标签与【一键复制代码】。
+- **多语言代码块卡片**：支持右上角点击搜索切换语言标签与一键复制代码。
 - **全链路图片资产与拖放管道**：支持截图 \`Ctrl+V\` 自动在本地 \`assets/\` 落盘并插入，外部图片/文件直接拖入编辑器即可导入！
 
 ---
 
-## 📐 体验 1：可视化交互表格 (点击即可直接输入)
+## 体验 1：可视化交互表格 (点击即可直接输入)
 
-点击任意单元格直接打字；按 \`Tab\` 键自动跳往下一格，在最后一格按 \`Tab\` 自动新增一行：
+点击任意单元格直接打字；按 \`Tab\` 或方向键自由跳格，在最后一格按 \`Tab\` 自动新增一行：
 
 | 模块名称 | 核心语言 | 职责说明 | 性能指标 |
 | :--- | :---: | :--- | ---: |
@@ -64,21 +75,21 @@ const INITIAL_DEMO_DOC = `# ✍️ 欢迎使用 Quilla (羽墨)
 
 ---
 
-## 📊 体验 2：Mermaid 流程图渲染 (实时边写边预览)
+## 体验 2：Mermaid 流程图渲染 (实时边写边预览)
 
 \`\`\`mermaid
 flowchart TD
-    Start["🚀 启动 Quilla (羽墨)"] --> Parse["⚡ CodeMirror 6 极速排版"]
+    Start["启动 Quilla (羽墨)"] --> Parse["CodeMirror 6 极速排版"]
     Parse --> Mode{"视图模式?"}
-    Mode -->|"实时预览"| Live["🎨 所见即所得渲染 (表格/公式/流程图)"]
-    Mode -->|"源码模式"| Source["📝 极简纯文本编辑"]
-    Live --> Edit["✏️ 点击流程图展开源码微观编辑"]
+    Mode -->|"实时预览"| Live["所见即所得渲染 (表格/公式/流程图)"]
+    Mode -->|"源码模式"| Source["极简纯文本编辑"]
+    Live --> Edit["双击或点击右上角图标进入源码编辑"]
     Edit --> Live
 \`\`\`
 
 ---
 
-## 📐 体验 3：多语言代码块卡片 (右上角一键复制)
+## 体验 3：多语言代码块卡片 (右上角切换语言与复制)
 
 \`\`\`rust
 fn main() {
@@ -90,7 +101,7 @@ fn main() {
 
 ---
 
-## 📐 体验 4：数学公式与行内排版
+## 体验 4：数学公式与行内排版
 
 - 质能方程：$E = mc^2$
 - 行内斜体测试：*星号斜体 (Italic)* 与 _下划线斜体 (Underline Italic)_ 与 ***加粗斜体 (Bold Italic)***
@@ -101,21 +112,14 @@ $$
 
 ---
 
-## 📌 体验 5：优雅引用块与快捷操作
+## 体验 5：优雅引用块与快捷操作
 
-> 游戏核心定位:
-> 一款以“商业视讯勘察、口供搜证填表、双轨逻辑质询、击破老板执念”为核心体验的黑色幽默直播打假/救市 Rogue-lite 策略游戏。
-
-> 快捷操作指南:
-> - 打字机模式：按 \`F9\` 或点击底部状态栏【🖮 打字机】，光标垂直软居中锁频，滚轮可自由翻阅
-> - 专注模式：按 \`F8\` 或点击底部状态栏【🎯 专注】，当前段落聚焦高亮，其余文本平滑淡化
-> - 5 套官方同款主题：点击左上角 ☰ 菜单，一键在 GitHub、Night、Newsprint、Clear、Whitey 之间自由切换
+> **快捷操作指南**
+> - 打字机模式：按 \`F9\` 或点击底部状态栏【打字机】，光标垂直软居中锁频，滚轮可自由翻阅
+> - 专注模式：按 \`F8\` 或点击底部状态栏【专注】，当前段落聚焦高亮，其余文本平滑淡化
+> - 5 套内置主题：点击底部状态栏【主题】，一键在 GitHub、Night、Newsprint、Clear、Whitey 之间自由切换
 > - 列表智能状态机：按 \`Enter\` 智能续行编号与任务框，按 \`Tab\` / \`Shift+Tab\` 缩进与降级，空项按 \`Enter\` 或 \`Backspace\` 智能退出
-> - 成对格式智能反解：按 \`Ctrl+B / Ctrl+I / Ctrl+E / Ctrl+K\` 选区包裹，光标处于词内时再次按下即刻智能解包
-> - 快捷键速查指南：按 \`F1\` 随时呼出全量快捷键指南卡片
-> - 标题快速切换：按 \`Ctrl+1~6\` 或 \`Ctrl+Alt+1~6\` 快速切换标题，按 \`Ctrl+0\` 恢复正文
-> - 保存与另存为：按 \`Ctrl+S\` 保存当前文档，按 \`Ctrl+Shift+S\` 另存为新文件
-> - 打开文件与新建窗口：按 \`Ctrl+O\` 打开文件，按 \`Ctrl+Shift+N\` 唤出独立新窗口
+> - 选中文本气泡栏：鼠标划选任意文字自动浮出快捷格式化气泡工具条
 `;
 
 class App {
@@ -129,20 +133,16 @@ class App {
   private currentHeadings: OutlineHeading[] = [];
 
   async init() {
-    // 0. 初始化主题系统 (恢复上次选中的 5 套同款内置主题或外部 custom.css)
     themeLoader.init();
 
-    // 1. 初始化原生窗口控制（右上角关闭按钮支持未保存脏状态拦截确认）
     initTitlebar({
       onClose: () => this.handleWindowClose(),
     });
 
-    // 2. 初始化侧边栏拖拽调宽与 Tab 切换
     this.initSidebarResizer();
     this.initSidebarTabs();
     this.initSidebarActions();
 
-    // 3. 挂载编辑器
     const writeContainer = document.getElementById("write")!;
     this.editorView = createEditor(writeContainer, INITIAL_DEMO_DOC, {
       onChange: (content) => this.handleContentChange(content),
@@ -156,16 +156,16 @@ class App {
       onOpenWorkspace: (dirPath) => this.loadWorkspace(dirPath),
     });
 
-    // 3.1 挂载顶部吸顶查找与替换浮动控制器 (Ctrl+F / Ctrl+H)
     this.findReplaceCtrl = initFindReplace(this.editorView);
 
-    // 3.2 挂载快速文件漫游、图片/链接微型浮层、富文本智能粘贴、字数阅读卡片
     const quickOpen = initQuickOpen({
       onOpenFile: (filePath) => this.loadFile(filePath),
       getWorkspaceFiles: async () => {
         if (!this.currentWorkspaceRoot) return [];
         try {
-          const res = await invoke<any[]>("list_workspace_files", { root: this.currentWorkspaceRoot });
+          const res = await invoke<any[]>("list_workspace_files", {
+            root: this.currentWorkspaceRoot,
+          });
           const paths: string[] = [];
           const traverse = (items: any[]) => {
             for (const item of items) {
@@ -185,7 +185,6 @@ class App {
     initFloatingToolbars(this.editorView, (filePath) => this.loadFile(filePath));
     initSmartPaste(this.editorView);
 
-    // 4. 底部状态栏事件
     document.getElementById("footer-toggle-sidebar")?.addEventListener("click", () => {
       document.body.classList.toggle("pin-outline");
     });
@@ -194,7 +193,12 @@ class App {
     const toggleSourceMode = () => {
       const isSource = document.body.classList.toggle("source-mode");
       if (toggleSourceBtn) {
-        toggleSourceBtn.innerHTML = isSource ? "&lt;/&gt; 实时预览" : "&lt;/&gt; 源码模式";
+        const labelSpan = toggleSourceBtn.querySelector(".footer-btn-label");
+        if (labelSpan) {
+          labelSpan.textContent = isSource ? "实时预览" : "源码模式";
+        } else {
+          toggleSourceBtn.innerHTML = isSource ? "&lt;/&gt; 实时预览" : "&lt;/&gt; 源码模式";
+        }
       }
       if (this.editorView) {
         this.editorView.dispatch({
@@ -205,7 +209,6 @@ class App {
     };
     toggleSourceBtn?.addEventListener("click", toggleSourceMode);
 
-    // 4.1 打字机模式与专注模式状态同步与控制
     const typewriterBtn = document.getElementById("footer-toggle-typewriter");
     const focusBtn = document.getElementById("footer-toggle-focus");
 
@@ -250,7 +253,6 @@ class App {
       this.showThemePicker(e);
     });
 
-    // 快捷键监听
     window.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "/") {
         e.preventDefault();
@@ -281,13 +283,20 @@ class App {
         this.promptOpenFile();
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        window.print();
+        this.printDocument();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         if (this.editorView && this.editorView.hasFocus) {
           return;
         }
         const active = document.activeElement as HTMLElement;
-        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+        if (
+          active &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.isContentEditable)
+        ) {
+          return;
+        }
         if (this.editorView) {
           e.preventDefault();
           undo(this.editorView);
@@ -300,7 +309,14 @@ class App {
           return;
         }
         const active = document.activeElement as HTMLElement;
-        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+        if (
+          active &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.isContentEditable)
+        ) {
+          return;
+        }
         if (this.editorView) {
           e.preventDefault();
           redo(this.editorView);
@@ -308,7 +324,6 @@ class App {
       }
     });
 
-    // 5. 初始化汉堡弹出菜单与右键上下文菜单
     initMenus(this.editorView, {
       onNewFile: () => this.newFile(),
       onNewWindow: () => this.createNewWindow(),
@@ -325,11 +340,10 @@ class App {
         themeLoader.setTheme(theme);
       },
       onExportHtml: () => this.exportHtml(),
-      onPrint: () => window.print(),
+      onPrint: () => this.printDocument(),
       onQuickOpen: () => quickOpen.open(),
     });
 
-    // 窗口关闭前脏检查守卫
     window.addEventListener("beforeunload", (e) => {
       if (this.isModified) {
         e.preventDefault();
@@ -337,7 +351,6 @@ class App {
       }
     });
 
-    // 6. 全文搜索事件
     const searchInput = document.getElementById("workspace-search-input") as HTMLInputElement;
     searchInput?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -345,7 +358,6 @@ class App {
       }
     });
 
-    // 7. 检查是否有 CLI 外部传入打开文件或新建独立窗口
     const isNewWin = await invoke<boolean>("is_blank_new_window").catch(() => false);
     const cliFile = await invoke<string | null>("get_cli_open_file").catch(() => null);
 
@@ -354,12 +366,11 @@ class App {
     const urlNew = urlParams.get("new");
 
     if (cliFile || urlOpen) {
-      const target = cliFile || urlOpen!;
+      const target = cliFile || decodeURIComponent(urlOpen!);
       await this.loadFile(target);
     } else if (isNewWin || urlNew === "1") {
-      this.newFile();
+      await this.newFile();
     } else {
-      // 正常恢复上次打开的工作区或展示优雅空状态
       const lastWorkspace = localStorage.getItem("typora_last_workspace");
       if (lastWorkspace) {
         this.loadWorkspace(lastWorkspace).catch(() => {
@@ -372,17 +383,28 @@ class App {
       updateWindowTitle("Untitled.md", false);
     }
 
-    // 8. 检查是否有未保存的崩溃恢复快照
-    checkAndPromptRecovery((snapshot) => {
+    checkAndPromptRecovery(async (snapshot) => {
       this.currentFilePath = snapshot.filePath;
       setActiveDocumentPath(snapshot.filePath);
+      if (snapshot.filePath) {
+        try {
+          this.savedContent = await invoke<string>("read_file_content", {
+            path: snapshot.filePath,
+          });
+        } catch {
+          this.savedContent = "";
+        }
+      } else {
+        this.savedContent = "";
+      }
       if (this.editorView) {
-        this.editorView.dispatch({
-          changes: { from: 0, to: this.editorView.state.doc.length, insert: snapshot.content },
-        });
+        resetEditorDocument(this.editorView, snapshot.content);
         this.editorView.focus();
       }
+      const treeContainer = document.getElementById("file-library-tree");
+      syncActiveTreeItem(treeContainer, snapshot.filePath);
       this.handleContentChange(snapshot.content);
+      showToast("已恢复未保存的文档草稿", "success");
     });
   }
 
@@ -391,7 +413,7 @@ class App {
       await invoke("create_new_window", { filePath: filePath || null });
     } catch (err) {
       console.error("新建窗口失败:", err);
-      alert(`新建窗口失败: ${err}`);
+      showToast(`新建窗口失败: ${err}`, "error");
     }
   }
 
@@ -399,7 +421,6 @@ class App {
     const resizer = document.getElementById("sidebar-resizer");
     if (!resizer) return;
 
-    // 恢复上次用户调整的宽度
     const savedWidth = localStorage.getItem("typora_sidebar_width");
     if (savedWidth) {
       document.documentElement.style.setProperty("--sidebar-width", savedWidth);
@@ -448,17 +469,14 @@ class App {
   }
 
   private initSidebarActions() {
-    // 空状态卡片：打开文件夹
     document.getElementById("open-folder-empty-btn")?.addEventListener("click", () => {
       this.openWorkspaceFolder();
     });
 
-    // 标题栏：点击更换工作区
     document.getElementById("workspace-folder-trigger")?.addEventListener("click", () => {
       this.openWorkspaceFolder();
     });
 
-    // 工作区顶部按钮：新建文件、新建文件夹、刷新、关闭
     document.getElementById("sidebar-action-new-file")?.addEventListener("click", () => {
       this.createSidebarNewFile();
     });
@@ -472,7 +490,6 @@ class App {
       this.closeWorkspace();
     });
 
-    // 侧边栏底部操作栏
     document.getElementById("sidebar-footer-new-file")?.addEventListener("click", () => {
       this.createSidebarNewFile();
     });
@@ -506,7 +523,7 @@ class App {
       return success ? "save" : "cancel";
     }
     if (choice === "discard") {
-      clearRecoverySnapshot();
+      clearRecoverySnapshot(this.currentFilePath);
     }
     return choice;
   }
@@ -527,7 +544,7 @@ class App {
       this.savedContent = content;
       this.isModified = false;
       addRecentFile(this.currentFilePath);
-      clearRecoverySnapshot();
+      clearRecoverySnapshot(this.currentFilePath);
       const fileName = this.currentFilePath.split(/[\\/]/).pop() || "Untitled.md";
       updateWindowTitle(fileName, false);
       if (saveStatus) {
@@ -536,7 +553,7 @@ class App {
       }
       return true;
     } catch (err) {
-      alert(`保存文件失败: ${err}`);
+      showToast(`保存文件失败: ${err}`, "error");
       if (saveStatus) saveStatus.textContent = "保存失败";
       return false;
     }
@@ -555,19 +572,45 @@ class App {
         return false;
       }
       const targetPath = selectedPath.trim();
-      const content = this.editorView ? this.editorView.state.doc.toString() : this.savedContent;
+      let content = this.editorView ? this.editorView.state.doc.toString() : this.savedContent;
+
+      // 若原先是未保存文档且粘贴过临时目录图片 (quilla-unsaved)，自动迁移至新文档同级 assets/ 目录
+      if (!this.currentFilePath && content.includes("quilla-unsaved")) {
+        const tempImgRegex = /(!\[[^\]]*\]\()([^)\n]*quilla-unsaved[^)\n]*)(\))/g;
+        const matches = Array.from(content.matchAll(tempImgRegex));
+        for (const m of matches) {
+          const oldTempPath = m[2];
+          try {
+            const newRelPath = await invoke<string>("copy_image_to_assets", {
+              docPath: targetPath,
+              sourcePath: oldTempPath,
+            });
+            content = content.split(oldTempPath).join(newRelPath);
+          } catch {
+            // ignore migration error for missing temp image
+          }
+        }
+        if (this.editorView && content !== this.editorView.state.doc.toString()) {
+          this.editorView.dispatch({
+            changes: { from: 0, to: this.editorView.state.doc.length, insert: content },
+          });
+        }
+      }
+
       await invoke("save_file_content", {
         path: targetPath,
         content,
       });
 
+      const oldPath = this.currentFilePath;
       this.currentFilePath = targetPath;
       this.savedContent = content;
       this.isModified = false;
       clearImageCache();
       setActiveDocumentPath(targetPath);
       addRecentFile(targetPath);
-      clearRecoverySnapshot();
+      clearRecoverySnapshot(oldPath);
+      clearRecoverySnapshot(targetPath);
 
       const fileName = targetPath.split(/[\\/]/).pop() || "Untitled.md";
       updateWindowTitle(fileName, false);
@@ -584,7 +627,6 @@ class App {
         });
       }
 
-      // 如果当前工作区包含了此文件，刷新文件树
       if (
         this.currentWorkspaceRoot &&
         targetPath.toLowerCase().startsWith(this.currentWorkspaceRoot.toLowerCase())
@@ -594,9 +636,10 @@ class App {
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, targetPath);
 
+      showToast(`已保存至 ${fileName}`, "success");
       return true;
     } catch (err) {
-      alert(`另存为失败: ${err}`);
+      showToast(`另存为失败: ${err}`, "error");
       return false;
     }
   }
@@ -619,9 +662,7 @@ class App {
     }
 
     if (this.editorView) {
-      this.editorView.dispatch({
-        changes: { from: 0, to: this.editorView.state.doc.length, insert: initialText },
-      });
+      resetEditorDocument(this.editorView, initialText);
       this.editorView.focus();
     }
 
@@ -634,42 +675,21 @@ class App {
       this.newFile();
       return;
     }
-    const choice = await this.confirmDiscardOrSave();
-    if (choice === "cancel") return;
-
-    const rawName = prompt("请输入新建文件名 (例如: note.md):", "untitled.md");
-    if (!rawName || !rawName.trim()) return;
-    let fileName = rawName.trim();
-    if (!fileName.includes(".")) {
-      fileName += ".md";
-    }
-    const sep = this.currentWorkspaceRoot.includes("\\") ? "\\" : "/";
-    const fullPath = `${this.currentWorkspaceRoot}${sep}${fileName}`;
-    try {
-      await invoke("create_file", { path: fullPath });
-      await this.loadWorkspace(this.currentWorkspaceRoot);
-      await this.loadFile(fullPath);
-    } catch (err) {
-      alert(`新建文件失败: ${err}`);
-    }
+    document.body.classList.add("pin-outline");
+    document.getElementById("tab-files")?.click();
+    const treeContainer = document.getElementById("file-library-tree");
+    triggerInlineCreateInTree(treeContainer, false, this.currentWorkspaceRoot, 0);
   }
 
   private async createSidebarNewFolder() {
     if (!this.currentWorkspaceRoot) {
-      alert("请先打开工作区文件夹");
+      showToast("请先打开工作区文件夹", "info");
       return;
     }
-    const rawName = prompt("请输入新建文件夹名称:", "新文件夹");
-    if (!rawName || !rawName.trim()) return;
-    const folderName = rawName.trim();
-    const sep = this.currentWorkspaceRoot.includes("\\") ? "\\" : "/";
-    const fullPath = `${this.currentWorkspaceRoot}${sep}${folderName}`;
-    try {
-      await invoke("create_folder", { path: fullPath });
-      await this.loadWorkspace(this.currentWorkspaceRoot);
-    } catch (err) {
-      alert(`创建文件夹失败: ${err}`);
-    }
+    document.body.classList.add("pin-outline");
+    document.getElementById("tab-files")?.click();
+    const treeContainer = document.getElementById("file-library-tree");
+    triggerInlineCreateInTree(treeContainer, true, this.currentWorkspaceRoot, 0);
   }
 
   private refreshWorkspace() {
@@ -701,12 +721,16 @@ class App {
         await this.loadFile(selectedPath.trim());
       }
     } catch (err) {
-      const p = prompt("请输入要打开的 Markdown 本地绝对路径:");
-      if (p) this.loadFile(p);
+      showToast(`打开文件对话框失败: ${err}`, "error");
     }
   }
 
-  private renderMarkdownToHtmlBody(md: string): string {
+  /**
+   * 完整出版级 Markdown -> HTML 异步渲染管线：
+   * 支持：Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注、
+   * 保留 <img width/align> 属性，并将本地相对路径图片自动转换为内联 Base64，实现 100% 自包含 HTML 与无损打印！
+   */
+  private async renderMarkdownToHtmlBody(md: string): Promise<string> {
     const lines = md.replace(/\r\n/g, "\n").split("\n");
     const out: string[] = [];
     let i = 0;
@@ -721,32 +745,154 @@ class App {
       }
     }
 
-    const renderInline = (raw: string): string => {
-      let s = this.escapeHtml(raw);
-      // 行内公式 $...$
-      s = s.replace(/\$([^$\n]+)\$/g, (_m, tex) => {
+    const resolveImgSrc = async (rawSrc: string): Promise<string> => {
+      if (
+        rawSrc.startsWith("http://") ||
+        rawSrc.startsWith("https://") ||
+        rawSrc.startsWith("data:")
+      ) {
+        return rawSrc;
+      }
+      try {
+        return await invoke<string>("read_image_base64", {
+          docPath: this.currentFilePath,
+          relPath: rawSrc,
+        });
+      } catch {
+        return rawSrc;
+      }
+    };
+
+    const renderInline = async (raw: string): Promise<string> => {
+      const placeholders: string[] = [];
+      const pushPh = (html: string) => {
+        const token = `\u0000EXP_PH_${placeholders.length}_\u0000`;
+        placeholders.push(html);
+        return token;
+      };
+
+      let working = raw;
+
+      // 0. 保护换行 <br> 与 HTML <img ...> 标签（防止被 escapeHtml 转义成源码文本）
+      working = working.replace(/<br\s*\/?>/gi, () => pushPh("<br />"));
+
+      const htmlImgMatches = Array.from(
+        working.matchAll(/<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi)
+      );
+      for (const m of htmlImgMatches) {
+        const fullTag = m[0];
+        const fullAttrs = `${m[1]} ${m[3]}`;
+        const rawSrc = m[2];
+        const resolvedSrc = await resolveImgSrc(rawSrc);
+        const altMatch = fullAttrs.match(/alt=["']([^"']*)["']/i);
+        const widthMatch = fullAttrs.match(/width=["']([^"']*)["']/i);
+        const alignMatch = fullAttrs.match(/align=["']([^"']*)["']/i);
+        const alt = this.escapeHtml(altMatch ? altMatch[1] : "");
+        const widthStyle = widthMatch ? `width:${this.escapeHtml(widthMatch[1])};` : "";
+        const align = alignMatch ? alignMatch[1] : "left";
+        const wrapStyle =
+          align === "center"
+            ? "text-align:center;"
+            : align === "right"
+            ? "text-align:right;"
+            : "text-align:left;";
+        const imgHtml = `<figure class="md-image-card" style="${wrapStyle}"><img src="${resolvedSrc}" alt="${alt}" style="${widthStyle}max-width:100%;" /></figure>`;
+        working = working.replace(fullTag, () => pushPh(imgHtml));
+      }
+
+      // 1. 提取 Markdown 图片 ![alt](src)
+      const mdImgMatches = Array.from(working.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g));
+      for (const m of mdImgMatches) {
+        const fullMatch = m[0];
+        const alt = this.escapeHtml(m[1]);
+        const resolvedSrc = await resolveImgSrc(m[2]);
+        const imgHtml = `<img alt="${alt}" src="${resolvedSrc}" style="max-width:100%;" />`;
+        working = working.replace(fullMatch, () => pushPh(imgHtml));
+      }
+
+      // 2. 转义普通文本中的 HTML 特殊字符
+      working = this.escapeHtml(working);
+
+      // 3. 提取行内代码 `code`
+      working = working.replace(/`([^`\n]+)`/g, (_m, code) => pushPh(`<code>${code}</code>`));
+
+      // 4. 提取行内公式 $...$
+      working = working.replace(/(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g, (_m, tex) => {
+        const unescapedTex = tex
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&#039;/g, "'");
         try {
-          return katex.renderToString(tex, { displayMode: false, throwOnError: false, output: "html" });
+          return pushPh(
+            katex.renderToString(unescapedTex, {
+              displayMode: false,
+              throwOnError: false,
+              output: "html",
+            })
+          );
         } catch {
-          return `<code>${tex}</code>`;
+          return pushPh(`<code>$${tex}$</code>`);
         }
       });
-      // 行内代码
-      s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-      // 图片
-      s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" style="max-width:100%;" />');
-      // 链接
-      s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-      // 加粗斜体 / 加粗 / 斜体 / 删除线 / 高亮 / 上下标
-      s = s.replace(/(\*{3}|_{3})([^*_\n]+?)\1/g, "<strong><em>$2</em></strong>");
-      s = s.replace(/(\*{2}|_{2})([^*_\n]+?)\1/g, "<strong>$2</strong>");
-      s = s.replace(/(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g, "<em>$1$2</em>");
-      s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-      s = s.replace(/==([^=\n]+)==/g, "<mark>$1</mark>");
-      s = s.replace(/(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g, "<sub>$1</sub>");
-      s = s.replace(/\^([^\^\s\n][^\^\n]*?)\^/g, "<sup>$1</sup>");
-      return s;
+
+      // 5. 超链接与脚注角标
+      working = working.replace(/\[\^([^\]\n]+)\]/g, (_m, fn) =>
+        pushPh(`<sup class="cm-footnote-ref">[${fn}]</sup>`)
+      );
+      working = working.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text, url) =>
+        pushPh(`<a href="${url}" target="_blank" rel="noopener">${text}</a>`)
+      );
+
+      // 6. 加粗斜体 / 加粗 / 斜体 / 删除线 / 高亮 / 上下标
+      working = working.replace(/(\*{3}|_{3})([^*_\n]+?)\1/g, "<strong><em>$2</em></strong>");
+      working = working.replace(/(\*{2}|_{2})([^*_\n]+?)\1/g, "<strong>$2</strong>");
+      working = working.replace(
+        /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g,
+        "<em>$1$2</em>"
+      );
+      working = working.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+      working = working.replace(/==([^=\n]+)==/g, "<mark>$1</mark>");
+      working = working.replace(/(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g, "<sub>$1</sub>");
+      working = working.replace(/\^([^\^\s\n][^\^\n]*?)\^/g, "<sup>$1</sup>");
+
+      // 7. 还原占位符
+      working = working.replace(
+        /\u0000EXP_PH_(\d+)_\u0000/g,
+        (_m, idx) => placeholders[Number(idx)] || ""
+      );
+      return working;
     };
+
+    // 预先收集全文标题供 [TOC] 渲染
+    const allDocHeadings: Array<{ level: number; text: string; id: string }> = [];
+    {
+      let inF = false;
+      let fChar = "";
+      for (let k = i; k < lines.length; k++) {
+        const t = lines[k].trim();
+        if (/^(```+|~~~+)/.test(t)) {
+          const mChar = t[0];
+          if (!inF) {
+            inF = true;
+            fChar = mChar;
+          } else if (mChar === fChar) {
+            inF = false;
+          }
+          continue;
+        }
+        if (inF) continue;
+        const hm = lines[k].match(/^(#{1,6})\s+(.*)$/);
+        if (hm) {
+          const clean = stripInlineMarkdown(hm[2]);
+          const id = `heading-${k}-${clean.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-")}`;
+          allDocHeadings.push({ level: hm[1].length, text: clean, id });
+        }
+      }
+    }
+
+    let headingCursor = 0;
 
     while (i < lines.length) {
       const line = lines[i];
@@ -757,25 +903,39 @@ class App {
         continue;
       }
 
-      // 1. 围栏代码块
+      // 1. 围栏代码块与 Mermaid 矢量图渲染
       const fenceMatch = trimmed.match(/^(```+|~~~+)\s*([^\s`~]*).*$/);
       if (fenceMatch) {
         const fenceChar = fenceMatch[1][0];
-        const lang = fenceMatch[2] || "";
+        const lang = (fenceMatch[2] || "").toLowerCase();
         const codeLines: string[] = [];
         i++;
         while (i < lines.length) {
           const t = lines[i].trim();
-          if ((fenceChar === "`" && /^```+$/.test(t)) || (fenceChar === "~" && /^~~~+$/.test(t))) {
+          if (
+            (fenceChar === "`" && /^```+$/.test(t)) ||
+            (fenceChar === "~" && /^~~~+$/.test(t))
+          ) {
             i++;
             break;
           }
           codeLines.push(lines[i]);
           i++;
         }
-        out.push(
-          `<pre><code class="language-${this.escapeHtml(lang)}">${this.escapeHtml(codeLines.join("\n"))}</code></pre>`
-        );
+        const rawCode = codeLines.join("\n");
+        if (lang === "mermaid") {
+          try {
+            const id = "mmd-exp-" + Math.random().toString(36).substring(2, 9);
+            const { svg } = await mermaid.render(id, rawCode.trim());
+            out.push(`<figure class="md-mermaid-card"><div class="mermaid-chart-box">${svg}</div></figure>`);
+          } catch {
+            out.push(`<pre><code class="language-mermaid">${this.escapeHtml(rawCode)}</code></pre>`);
+          }
+        } else {
+          out.push(
+            `<pre><code class="language-${this.escapeHtml(lang)}">${this.escapeHtml(rawCode)}</code></pre>`
+          );
+        }
         continue;
       }
 
@@ -787,7 +947,7 @@ class App {
           mathLines.push(lines[i]);
           i++;
         }
-        i++; // 跳过结束 $$
+        i++;
         try {
           const rendered = katex.renderToString(mathLines.join("\n"), {
             displayMode: true,
@@ -818,6 +978,21 @@ class App {
         continue;
       }
 
+      // 3.5 [TOC] 目录块
+      if (/^\[TOC\]$/i.test(trimmed)) {
+        const tocItems = allDocHeadings
+          .map(
+            (h) =>
+              `<li style="padding-left:${(h.level - 1) * 16}px"><a href="#${h.id}">${this.escapeHtml(h.text)}</a></li>`
+          )
+          .join("");
+        out.push(
+          `<nav class="cm-toc-card"><div class="cm-toc-title">目录</div><ul class="cm-toc-list">${tocItems}</ul></nav>`
+        );
+        i++;
+        continue;
+      }
+
       // 4. 表格块
       if (trimmed.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
         const parseCells = (rowStr: string) => {
@@ -840,18 +1015,25 @@ class App {
           bodyRows.push(parseCells(lines[i]));
           i++;
         }
-        const thHtml = headers
-          .map((h, idx) => `<th style="text-align:${aligns[idx]}">${renderInline(h)}</th>`)
-          .join("");
-        const tbodyHtml = bodyRows
-          .map(
-            (r) =>
-              `<tr>${headers
-                .map((_h, idx) => `<td style="text-align:${aligns[idx]}">${renderInline(r[idx] || "")}</td>`)
-                .join("")}</tr>`
+        const thRendered = await Promise.all(
+          headers.map(
+            async (h, idx) =>
+              `<th style="text-align:${aligns[idx]}">${await renderInline(h)}</th>`
           )
-          .join("");
-        out.push(`<table class="md-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbodyHtml}</tbody></table>`);
+        );
+        const tbodyRowsRendered: string[] = [];
+        for (const r of bodyRows) {
+          const tds = await Promise.all(
+            headers.map(
+              async (_h, idx) =>
+                `<td style="text-align:${aligns[idx]}">${await renderInline(r[idx] || "")}</td>`
+            )
+          );
+          tbodyRowsRendered.push(`<tr>${tds.join("")}</tr>`);
+        }
+        out.push(
+          `<table class="md-table"><thead><tr>${thRendered.join("")}</tr></thead><tbody>${tbodyRowsRendered.join("")}</tbody></table>`
+        );
         continue;
       }
 
@@ -866,7 +1048,9 @@ class App {
       const hMatch = line.match(/^(#{1,6})\s+(.*)$/);
       if (hMatch) {
         const lvl = hMatch[1].length;
-        out.push(`<h${lvl}>${renderInline(hMatch[2].trim())}</h${lvl}>`);
+        const hMeta = allDocHeadings[headingCursor++];
+        const idAttr = hMeta ? ` id="${hMeta.id}"` : "";
+        out.push(`<h${lvl}${idAttr}>${await renderInline(hMatch[2].trim())}</h${lvl}>`);
         i++;
         continue;
       }
@@ -875,49 +1059,115 @@ class App {
       if (trimmed.startsWith(">")) {
         const qLines: string[] = [];
         while (i < lines.length && lines[i].trim().startsWith(">")) {
-          qLines.push(renderInline(lines[i].replace(/^\s*>\s?/, "")));
+          qLines.push(await renderInline(lines[i].replace(/^\s*>\s?/, "")));
           i++;
         }
         out.push(`<blockquote><p>${qLines.join("<br/>")}</p></blockquote>`);
         continue;
       }
 
-      // 8. 无序/任务列表
-      if (/^\s*[-*+]\s+/.test(line)) {
-        const items: string[] = [];
-        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-          const taskM = lines[i].match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
+      // 8. 多级无序/有序/任务列表（支持缩进层级嵌套）
+      if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+        const listLines: Array<{
+          indent: number;
+          ordered: boolean;
+          html: string;
+        }> = [];
+        while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+          const cur = lines[i];
+          const indent = (cur.match(/^\s*/)?.[0] || "").length;
+          const taskM = cur.match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
+          const ordM = cur.match(/^\s*\d+\.\s+(.*)$/);
           if (taskM) {
             const checked = taskM[1].toLowerCase() === "x" ? " checked disabled" : " disabled";
-            items.push(`<li><input type="checkbox"${checked} /> ${renderInline(taskM[2])}</li>`);
+            listLines.push({
+              indent,
+              ordered: false,
+              html: `<li class="task-list-item"><input type="checkbox"${checked} /> ${await renderInline(taskM[2])}</li>`,
+            });
+          } else if (ordM) {
+            listLines.push({
+              indent,
+              ordered: true,
+              html: `<li>${await renderInline(ordM[1])}</li>`,
+            });
           } else {
-            const itemTxt = lines[i].replace(/^\s*[-*+]\s+/, "");
-            items.push(`<li>${renderInline(itemTxt)}</li>`);
+            const itemTxt = cur.replace(/^\s*[-*+]\s+/, "");
+            listLines.push({
+              indent,
+              ordered: false,
+              html: `<li>${await renderInline(itemTxt)}</li>`,
+            });
           }
           i++;
         }
-        out.push(`<ul>${items.join("")}</ul>`);
-        continue;
-      }
 
-      // 9. 有序列表
-      if (/^\s*\d+\.\s+/.test(line)) {
-        const items: string[] = [];
-        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-          const itemTxt = lines[i].replace(/^\s*\d+\.\s+/, "");
-          items.push(`<li>${renderInline(itemTxt)}</li>`);
-          i++;
+        // 根据缩进层级构建嵌套列表树
+        let listHtml = "";
+        const tagStack: Array<{ tag: "ul" | "ol"; indent: number }> = [];
+        for (const item of listLines) {
+          const tag = item.ordered ? "ol" : "ul";
+          if (tagStack.length === 0 || item.indent > tagStack[tagStack.length - 1].indent) {
+            listHtml += `<${tag}>`;
+            tagStack.push({ tag, indent: item.indent });
+          } else {
+            while (
+              tagStack.length > 1 &&
+              item.indent < tagStack[tagStack.length - 1].indent
+            ) {
+              const popped = tagStack.pop()!;
+              listHtml += `</${popped.tag}>`;
+            }
+            if (tagStack[tagStack.length - 1].tag !== tag) {
+              const popped = tagStack.pop()!;
+              listHtml += `</${popped.tag}><${tag}>`;
+              tagStack.push({ tag, indent: item.indent });
+            }
+          }
+          listHtml += item.html;
         }
-        out.push(`<ol>${items.join("")}</ol>`);
+        while (tagStack.length > 0) {
+          const popped = tagStack.pop()!;
+          listHtml += `</${popped.tag}>`;
+        }
+        out.push(listHtml);
         continue;
       }
 
-      // 10. 普通段落
-      out.push(`<p>${renderInline(line)}</p>`);
+      // 9. 普通段落
+      out.push(`<p>${await renderInline(line)}</p>`);
       i++;
     }
 
     return out.join("\n");
+  }
+
+  /**
+   * 全量无损打印 / 导出 PDF：
+   * 将全文渲染至独立打印容器 #quilla-print-mount，彻底规避 CodeMirror 虚拟视口只渲染当前屏幕几十行导致长文档截断的缺陷
+   */
+  private async printDocument() {
+    if (!this.editorView) return;
+    const docText = this.editorView.state.doc.toString();
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+
+    let printMount = document.getElementById("quilla-print-mount");
+    if (!printMount) {
+      printMount = document.createElement("div");
+      printMount.id = "quilla-print-mount";
+      document.body.appendChild(printMount);
+    }
+    printMount.innerHTML = bodyHtml;
+
+    const cleanup = () => {
+      if (printMount) printMount.innerHTML = "";
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+
+    setTimeout(() => {
+      window.print();
+    }, 60);
   }
 
   private async exportHtml() {
@@ -927,7 +1177,7 @@ class App {
       ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
       : "document-export";
     const themeCss = themeLoader.getThemeMeta().css;
-    const bodyHtml = this.renderMarkdownToHtmlBody(docText);
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
 
     const fullHtml = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -943,6 +1193,8 @@ class App {
     table.md-table th { background-color: #f6f8fa; font-weight: 600; }
     pre { padding: 14px 16px; border-radius: 6px; background: #f6f8fa; overflow-x: auto; }
     blockquote { border-left: 4px solid #dfe2e5; margin: 1rem 0; padding: 2px 16px; color: #6a737d; }
+    li.task-list-item { list-style: none; }
+    .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
   </style>
 </head>
 <body id="write">
@@ -959,10 +1211,10 @@ ${bodyHtml}
           path: savePath.trim(),
           content: fullHtml,
         });
+        showToast("HTML 导出成功", "success");
       }
       return;
     } catch {
-      // 浏览器模式降级下载
       const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -992,7 +1244,7 @@ ${bodyHtml}
     if (isDirty) {
       saveRecoverySnapshot(this.currentFilePath, content, fileName);
     } else {
-      clearRecoverySnapshot();
+      clearRecoverySnapshot(this.currentFilePath);
     }
   }
 
@@ -1025,13 +1277,21 @@ ${bodyHtml}
       },
       (fromIdx, toIdx, insertAfter) => {
         if (this.editorView) {
-          reorderDocumentHeading(this.editorView, this.currentHeadings, fromIdx, toIdx, insertAfter);
+          reorderDocumentHeading(
+            this.editorView,
+            this.currentHeadings,
+            fromIdx,
+            toIdx,
+            insertAfter
+          );
         }
       }
     );
 
     if (this.editorView) {
-      const curLine = this.editorView.state.doc.lineAt(this.editorView.state.selection.main.head).number;
+      const curLine = this.editorView.state.doc.lineAt(
+        this.editorView.state.selection.main.head
+      ).number;
       syncActiveOutlineHeading(outlineContainer, headings, curLine);
     }
   }
@@ -1155,16 +1415,14 @@ ${bodyHtml}
       }
 
       if (this.editorView) {
-        this.editorView.dispatch({
-          changes: { from: 0, to: this.editorView.state.doc.length, insert: content },
-        });
+        resetEditorDocument(this.editorView, content);
       }
 
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, filePath);
     } catch (e) {
       console.error("Failed to load file:", e);
-      alert(`无法打开文件: ${e}`);
+      showToast(`无法打开文件: ${e}`, "error");
     }
   }
 
@@ -1212,7 +1470,7 @@ ${bodyHtml}
         });
         resultsContainer.appendChild(item);
       });
-    } catch (e) {
+    } catch {
       resultsContainer.innerHTML = `<div style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">请先打开工作区文件夹</div>`;
     }
   }
@@ -1245,7 +1503,7 @@ ${bodyHtml}
           .map(
             (t) => `
           <div class="menu-item theme-choice ${t.id === cur ? "active" : ""}" data-theme="${t.id}" style="${
-              t.id === cur ? "color: #0969da; font-weight: 600;" : ""
+              t.id === cur ? "color: var(--primary-color, #0969da); font-weight: 600;" : ""
             }">
             <span>${t.id === cur ? "✓ " : "  "}${t.label}</span>
           </div>
@@ -1256,7 +1514,8 @@ ${bodyHtml}
     `;
 
     picker.classList.remove("hidden");
-    const targetEl = document.getElementById("footer-theme-selector") || (e.target as HTMLElement);
+    const targetEl =
+      document.getElementById("footer-theme-selector") || (e.target as HTMLElement);
     const rect = targetEl.getBoundingClientRect();
     picker.style.bottom = `${window.innerHeight - rect.top + 6}px`;
     picker.style.left = `${rect.left}px`;

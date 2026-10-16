@@ -2,9 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 /**
  * 沉浸式标题栏控制器：
- * 支持原生窗口最小化、最大化、关闭、置顶锁定及标题显示
+ * 支持原生窗口最小化、最大化、双击标题栏最大化还原、关闭、置顶锁定及标题显示
  */
 export function initTitlebar(callbacks?: { onClose?: () => void }) {
+  const titlebar = document.getElementById("top-titlebar");
   const pinBtn = document.getElementById("w-pin");
   const minBtn = document.getElementById("w-min");
   const maxBtn = document.getElementById("w-max");
@@ -31,12 +32,21 @@ export function initTitlebar(callbacks?: { onClose?: () => void }) {
     }
   });
 
-  maxBtn?.addEventListener("click", async () => {
+  const toggleMaximize = async () => {
     try {
       await invoke("window_toggle_maximize");
     } catch (e) {
       console.error("最大化切换失败:", e);
     }
+  };
+
+  maxBtn?.addEventListener("click", toggleMaximize);
+
+  // 双击标题栏空白处切换最大化/还原
+  titlebar?.addEventListener("dblclick", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("#w-traffic-lights, #w-menu-btn")) return;
+    toggleMaximize();
   });
 
   closeBtn?.addEventListener("click", async () => {

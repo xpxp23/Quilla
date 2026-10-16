@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-
 export interface RecentFileItem {
   path: string;
   name: string;
@@ -28,21 +26,16 @@ export function clearRecentFiles() {
   localStorage.removeItem("typora_recent_files");
 }
 
-/**
- * 拼音简拼首字母与模糊匹配核心算法
- */
 function fuzzyMatch(text: string, query: string): { matches: boolean; score: number } {
   const t = text.toLowerCase();
   const q = query.toLowerCase().trim();
   if (!q) return { matches: true, score: 0 };
 
-  // 1. 直观包含匹配
   const directIdx = t.indexOf(q);
   if (directIdx !== -1) {
     return { matches: true, score: 100 - directIdx };
   }
 
-  // 2. 子序列模糊命中
   let tIdx = 0;
   let qIdx = 0;
   let score = 0;
@@ -76,6 +69,9 @@ export function getQuickOpenInstance() {
   return quickOpenInstance;
 }
 
+const SVG_SEARCH = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
+const SVG_FILE_MD = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>`;
+
 /**
  * 初始化快速文件漫游 (Ctrl+P) 居中毛玻璃命令面板
  */
@@ -87,8 +83,8 @@ export function initQuickOpen(options: QuickOpenOptions) {
   overlay.innerHTML = `
     <div class="ty-quick-open-box">
       <div class="quick-open-search-bar">
-        <span class="quick-open-icon">🔍</span>
-        <input type="text" id="quick-open-input" placeholder="输入文件名快速跳转 (支持拼音/首字母模糊查找)..." spellcheck="false" autocomplete="off" />
+        <span class="quick-open-icon">${SVG_SEARCH}</span>
+        <input type="text" id="quick-open-input" placeholder="输入文件名快速跳转 (支持首字母模糊匹配)..." spellcheck="false" autocomplete="off" />
         <span class="quick-open-kbd">ESC 退出</span>
       </div>
       <div class="quick-open-results" id="quick-open-results"></div>
@@ -152,15 +148,15 @@ export function initQuickOpen(options: QuickOpenOptions) {
       itemEl.className = `quick-open-item ${idx === selectedIndex ? "active" : ""}`;
       itemEl.dataset.index = String(idx);
 
-      const icon = item.name.endsWith(".md") ? "📝" : "📄";
-      const badge = item.isRecent ? `<span class="quick-open-badge recent">最近</span>` : `<span class="quick-open-badge ws">工作区</span>`;
+      const badge = item.isRecent
+        ? `<span class="quick-open-badge recent">最近</span>`
+        : `<span class="quick-open-badge ws">工作区</span>`;
 
-      // 格式化展示路径
       const displayPath = item.path.length > 55 ? "..." + item.path.slice(-52) : item.path;
 
       itemEl.innerHTML = `
         <div class="item-left">
-          <span class="file-icon">${icon}</span>
+          <span class="file-icon">${SVG_FILE_MD}</span>
           <div class="file-info">
             <div class="file-name">${item.name}</div>
             <div class="file-path">${displayPath}</div>
@@ -263,7 +259,7 @@ export function initQuickOpen(options: QuickOpenOptions) {
   });
 
   window.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "p") {
       e.preventDefault();
       toggle();
     }

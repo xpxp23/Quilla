@@ -48,7 +48,16 @@ pub fn read_file_content(path: String, state: State<'_, AppState>) -> Result<Str
 }
 
 #[tauri::command]
-pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
+pub fn list_workspace_files(
+    root: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileItem>, String> {
+    // 关键修复：无论是启动时自动恢复工作区、还是通过外部拖拽文件夹进入，均同步更新 current_workspace，
+    // 彻底解决恢复工作区后侧边栏 Search 全文搜索报“当前未设置工作区目录”的 Bug。
+    if let Ok(mut ws) = state.current_workspace.lock() {
+        *ws = Some(root.clone());
+    }
+
     const MAX_DEPTH: usize = 8;
     const MAX_ITEMS: usize = 3500;
     static BLACKLIST: &[&str] = &[
@@ -84,7 +93,6 @@ pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
                     .to_string_lossy()
                     .to_string();
 
-                // 过滤隐藏文件与黑名单巨型/二进制目录 (同时隐藏图片默认存放目录 assets 防止干扰文档树)
                 if file_name.starts_with('.')
                     || file_name.eq_ignore_ascii_case("assets")
                     || BLACKLIST.iter().any(|&b| file_name.eq_ignore_ascii_case(b))
@@ -94,7 +102,6 @@ pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
 
                 if path.is_dir() {
                     let children = build_tree(&path, depth + 1, count);
-                    // 保留工作区内的用户目录（包含空文件夹，确保新建文件夹后立即可见并可在其下创建文件）
                     *count += 1;
                     items.push(FileItem {
                         name: file_name,
@@ -113,8 +120,11 @@ pub fn list_workspace_files(root: String) -> Result<Vec<FileItem>, String> {
                 }
             }
         }
-        // 目录在前，文件在后排序
-        items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        items.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
         items
     }
 
@@ -320,6 +330,35 @@ pub fn read_image_base64(
 }
 
 #[tauri::command]
+pub fn read_custom_theme_css(state: State<'_, AppState>) -> Result<String, String> {
+    let mut candidates = Vec::new();
+    if let Ok(ws) = state.current_workspace.lock() {
+        if let Some(ref root) = *ws {
+            candidates.push(Path::new(root).join("base.user.css"));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("base.user.css"));
+            candidates.push(parent.join("themes").join("base.user.css"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("base.user.css"));
+        candidates.push(cwd.join("src").join("themes").join("base.user.css"));
+    }
+
+    for path in candidates {
+        if path.exists() {
+            if let Ok(css) = fs::read_to_string(&path) {
+                return Ok(css);
+            }
+        }
+    }
+    Ok(String::new())
+}
+
+#[tauri::command]
 pub fn window_minimize(window: tauri::Window) {
     let _ = window.minimize();
 }
@@ -439,9 +478,27 @@ pub fn is_blank_new_window(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(*nw)
 }
 
+fn encode_uri_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() * 2);
+    for b in input.as_bytes() {
+        match *b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'/'
+            | b':' => out.push(*b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 #[tauri::command]
 pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<(), String> {
-    // 优先通过独立进程拉起全新的 Quilla 实例（保证崩溃隔离与独立窗口生命周期）
     if let Ok(current_exe) = std::env::current_exe() {
         let mut cmd = std::process::Command::new(current_exe);
         if let Some(ref path) = file_path {
@@ -454,7 +511,6 @@ pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Re
         }
     }
 
-    // 备用机制：通过 Tauri WebviewWindowBuilder 在同一进程内动态创建窗口
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -463,7 +519,8 @@ pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Re
 
     let url = if let Some(ref path) = file_path {
         let normalized = path.replace('\\', "/");
-        tauri::WebviewUrl::App(format!("index.html?open={}", normalized).into())
+        let encoded = encode_uri_component(&normalized);
+        tauri::WebviewUrl::App(format!("index.html?open={}", encoded).into())
     } else {
         tauri::WebviewUrl::App("index.html?new=1".into())
     };
@@ -488,7 +545,6 @@ pub fn open_external_url(url: String) -> Result<(), String> {
         return Ok(());
     }
 
-    // 严格校验允许的外部协议，防止命令注入或恶意本地文件执行
     let lower = target.to_lowercase();
     if !(lower.starts_with("http://")
         || lower.starts_with("https://")
@@ -502,7 +558,6 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        // 使用 rundll32 url.dll,FileProtocolHandler 替代 cmd /c start，避免 & 等参数被 shell 截断或命令注入
         std::process::Command::new("rundll32.exe")
             .args(["url.dll,FileProtocolHandler", target])
             .creation_flags(CREATE_NO_WINDOW)

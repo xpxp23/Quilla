@@ -16,7 +16,7 @@ mermaid.initialize({
   },
 });
 
-interface MermaidBlock {
+export interface MermaidBlock {
   startLine: number;
   endLine: number;
   from: number;
@@ -28,6 +28,7 @@ export function findMermaidBlocks(state: EditorState): MermaidBlock[] {
   const doc = state.doc;
   const blocks: MermaidBlock[] = [];
   let inBlock = false;
+  let fenceChar = "";
   let startLine = 0;
   let codeLines: string[] = [];
 
@@ -36,13 +37,18 @@ export function findMermaidBlocks(state: EditorState): MermaidBlock[] {
     const trimmed = line.text.trim();
 
     if (!inBlock) {
-      if (/^```+\s*mermaid/i.test(trimmed)) {
+      const m = trimmed.match(/^(```+|~~~+)\s*mermaid\s*$/i);
+      if (m) {
         inBlock = true;
+        fenceChar = m[1][0];
         startLine = i;
         codeLines = [];
       }
     } else {
-      if (/^```+$/.test(trimmed)) {
+      const isClose =
+        (fenceChar === "`" && /^```+$/.test(trimmed)) ||
+        (fenceChar === "~" && /^~~~+$/.test(trimmed));
+      if (isClose) {
         inBlock = false;
         const from = doc.line(startLine).from;
         const to = line.to;
@@ -66,15 +72,15 @@ class MermaidWidget extends WidgetType {
   constructor(
     readonly code: string,
     readonly fromPos: number,
+    readonly toPos: number,
     readonly isLivePreview: boolean = false
   ) {
     super();
   }
 
-  // 动态预估 Mermaid 图表物理高度，杜绝 CodeMirror HeightMap 塌陷导致的鼠标向下偏移
   get estimatedHeight(): number {
     const lineCount = this.code.split("\n").length;
-    return Math.max(200, lineCount * 28 + 60);
+    return Math.max(160, lineCount * 24 + 40);
   }
 
   ignoreEvent(_event: Event): boolean {
@@ -87,21 +93,11 @@ class MermaidWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const container = document.createElement("figure");
-    container.className = this.isLivePreview ? "md-mermaid-card live-preview-card" : "md-mermaid-card";
-
-    const header = document.createElement("div");
-    header.className = "mermaid-header";
-    if (this.isLivePreview) {
-      header.innerHTML = `
-        <span class="mermaid-badge" style="background: #0969da; color: #ffffff;">📊 实时流程图预览</span>
-        <span style="font-size: 11px; opacity: 0.7;">编辑上方源码即时更新</span>
-      `;
-    } else {
-      header.innerHTML = `
-        <span class="mermaid-badge">MERMAID 流程图</span>
-        <button type="button" class="mermaid-edit-btn" title="点击编辑源码">✏️ 编辑</button>
-      `;
-    }
+    container.className = this.isLivePreview
+      ? "md-mermaid-card live-preview-card cm-mermaid-container"
+      : "md-mermaid-card clean-figure-card cm-mermaid-container";
+    container.dataset.fromPos = String(this.fromPos);
+    container.dataset.toPos = String(this.toPos);
 
     const chartBox = document.createElement("div");
     chartBox.className = "mermaid-chart-box";
@@ -109,6 +105,13 @@ class MermaidWidget extends WidgetType {
 
     const id = "mmd-" + Math.random().toString(36).substring(2, 9);
     try {
+      const isDark =
+        typeof document !== "undefined" && document.body.classList.contains("theme-night");
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: isDark ? "dark" : "default",
+        securityLevel: "loose",
+      });
       mermaid
         .render(id, this.code.trim())
         .then(({ svg }) => {
@@ -118,7 +121,7 @@ class MermaidWidget extends WidgetType {
         .catch((err) => {
           chartBox.innerHTML = `
             <div class="mermaid-error">
-              <div class="err-title">⚠️ 流程图语法解析失败</div>
+              <div class="err-title">流程图语法解析失败</div>
               <pre class="err-detail">${err.message || String(err)}</pre>
             </div>
           `;
@@ -127,35 +130,51 @@ class MermaidWidget extends WidgetType {
     } catch (e: any) {
       chartBox.innerHTML = `
         <div class="mermaid-error">
-          <div class="err-title">⚠️ 语法错误</div>
+          <div class="err-title">语法错误</div>
           <pre class="err-detail">${e.message || String(e)}</pre>
         </div>
       `;
       view.requestMeasure();
     }
 
-    if (!this.isLivePreview) {
-      // 显式点击【✏️ 编辑】按钮或双击图表卡片展开源码
-      const editBtn = header.querySelector(".mermaid-edit-btn") as HTMLElement;
+    if (this.isLivePreview) {
+      const header = document.createElement("div");
+      header.className = "mermaid-header live-preview-header";
+      header.innerHTML = `
+        <span class="mermaid-badge">MERMAID 实时预览</span>
+        <span class="live-preview-hint">移出代码块即自动折叠源码</span>
+      `;
+      container.appendChild(header);
+    } else {
+      // Typora 极简纯净风格：非编辑态无厚重顶栏，仅在悬浮时于右上角微露精巧编辑按钮
+      const floatingEditBtn = document.createElement("button");
+      floatingEditBtn.type = "button";
+      floatingEditBtn.className = "floating-corner-edit-btn";
+      floatingEditBtn.title = "点击编辑 Mermaid 源码";
+      floatingEditBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>`;
+
       const enterEditMode = (e: Event) => {
         e.stopPropagation();
+        const firstLineEnd = view.state.doc.lineAt(
+          Math.min(this.fromPos, view.state.doc.length)
+        ).to;
+        const targetAnchor = Math.min(firstLineEnd + 1, view.state.doc.length);
         view.dispatch({
-          selection: { anchor: Math.min(this.fromPos + 10, view.state.doc.length) },
+          selection: { anchor: targetAnchor },
         });
         view.focus();
       };
 
-      editBtn?.addEventListener("click", enterEditMode);
+      floatingEditBtn.addEventListener("click", enterEditMode);
       container.addEventListener("dblclick", enterEditMode);
+      container.appendChild(floatingEditBtn);
     }
 
-    // 单击流程图：在打字机模式下平滑缓动居中供查阅，杜绝误触乱跳
     container.addEventListener("click", (e) => {
       e.stopPropagation();
       centerElementInTypewriter(view, container);
     });
 
-    container.appendChild(header);
     container.appendChild(chartBox);
     return container;
   }
@@ -164,6 +183,7 @@ class MermaidWidget extends WidgetType {
     return (
       other.code === this.code &&
       other.fromPos === this.fromPos &&
+      other.toPos === this.toPos &&
       other.isLivePreview === this.isLivePreview
     );
   }
@@ -184,13 +204,12 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
 
   for (const b of blocks) {
-    // 光标位于流程图块内时，展开上方源码供编辑，并在下方保留实时渲染预览卡片
     if (cursorLine >= b.startLine && cursorLine <= b.endLine) {
       builder.add(
         b.to,
         b.to,
         Decoration.widget({
-          widget: new MermaidWidget(b.code, b.from, true),
+          widget: new MermaidWidget(b.code, b.from, b.to, true),
           side: 1,
           block: true,
         })
@@ -198,12 +217,11 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
       continue;
     }
 
-    // 光标离开时，折叠为原生 Mermaid 流程图卡片
     builder.add(
       b.from,
       b.to,
       Decoration.replace({
-        widget: new MermaidWidget(b.code, b.from, false),
+        widget: new MermaidWidget(b.code, b.from, b.to, false),
         block: true,
       })
     );
@@ -212,9 +230,6 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
   return builder.finish();
 }
 
-/**
- * 流程图实时预览 StateField
- */
 export const mermaidLiveViewField = StateField.define<DecorationSet>({
   create(state) {
     return computeMermaidDecorations(state);

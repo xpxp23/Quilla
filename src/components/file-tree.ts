@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { showDeleteConfirmDialog, showToast } from "./save-dialog";
 
 export interface FileItem {
   name: string;
@@ -16,11 +17,9 @@ export interface FileTreeOptions {
   onFileDeleted?: (path: string) => void;
 }
 
-// 记录所有已折叠的目录路径，确保重绘时不丢失折叠状态
 const collapsedPaths = new Set<string>();
-
-// 全局单例右键上下文菜单
 let activeContextMenu: HTMLElement | null = null;
+let latestTreeOptions: FileTreeOptions | null = null;
 
 function closeContextMenu() {
   if (activeContextMenu && activeContextMenu.parentNode) {
@@ -39,6 +38,181 @@ const SVG_FOLDER_CLOSED = `<svg width="14" height="14" viewBox="0 0 24 24" fill=
 const SVG_FOLDER_OPEN = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><path d="M2 10h20"></path></svg>`;
 const SVG_FILE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>`;
 
+const ICON_NEW_FILE = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>`;
+const ICON_NEW_FOLDER = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>`;
+const ICON_NEW_WIN = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line></svg>`;
+const ICON_RENAME = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>`;
+const ICON_DELETE = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+const ICON_EXPLORER = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>`;
+
+/**
+ * 在文件树中启动原位内联输入（新建文件 / 新建文件夹），彻底告别原生 window.prompt
+ */
+export function triggerInlineCreateInTree(
+  container: HTMLElement | null,
+  isFolder: boolean,
+  targetDir?: string,
+  depth: number = 0
+) {
+  if (!container || !latestTreeOptions) return;
+  const options = latestTreeOptions;
+  const dir = targetDir || options.workspaceRoot;
+  if (!dir) return;
+
+  // 移除已有的临时输入行
+  container.querySelectorAll(".tree-inline-create-row").forEach((el) => el.remove());
+
+  const row = document.createElement("div");
+  row.className = "tree-item tree-inline-create-row";
+  row.style.paddingLeft = `${depth * 14 + 6}px`;
+
+  const spacer = document.createElement("span");
+  spacer.className = "tree-spacer";
+
+  const icon = document.createElement("span");
+  icon.className = "tree-icon";
+  icon.innerHTML = isFolder ? SVG_FOLDER_CLOSED : SVG_FILE;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tree-inline-input";
+  input.value = isFolder ? "新建文件夹" : "Untitled.md";
+  input.spellcheck = false;
+
+  row.appendChild(spacer);
+  row.appendChild(icon);
+  row.appendChild(input);
+
+  // 移除空状态提示（若存在）
+  const emptyHint = container.querySelector(".tree-empty-hint");
+  if (emptyHint) emptyHint.remove();
+
+  container.prepend(row);
+  input.focus();
+  if (!isFolder && input.value.endsWith(".md")) {
+    input.setSelectionRange(0, input.value.length - 3);
+  } else {
+    input.select();
+  }
+
+  let committed = false;
+  const commit = async () => {
+    if (committed) return;
+    committed = true;
+    const rawName = input.value.trim();
+    row.remove();
+    if (!rawName) {
+      options.onRefresh?.();
+      return;
+    }
+    let finalName = rawName;
+    if (!isFolder && !finalName.includes(".")) {
+      finalName += ".md";
+    }
+    const sep = dir.includes("\\") ? "\\" : "/";
+    const fullPath = `${dir}${sep}${finalName}`;
+    try {
+      if (isFolder) {
+        await invoke("create_folder", { path: fullPath });
+        options.onRefresh?.();
+        showToast(`已创建文件夹 ${finalName}`, "success");
+      } else {
+        await invoke("create_file", { path: fullPath });
+        options.onRefresh?.();
+        options.onFileSelect(fullPath);
+      }
+    } catch (err) {
+      showToast(`创建失败: ${err}`, "error");
+      options.onRefresh?.();
+    }
+  };
+
+  const cancel = () => {
+    if (committed) return;
+    committed = true;
+    row.remove();
+    options.onRefresh?.();
+  };
+
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancel();
+    }
+  });
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => commit(), 80);
+  });
+}
+
+/**
+ * 原位内联重命名指定文件树节点
+ */
+function startInlineRename(rowEl: HTMLElement, item: FileItem, options: FileTreeOptions) {
+  const labelEl = rowEl.querySelector(".tree-label") as HTMLElement | null;
+  if (!labelEl) return;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tree-inline-input";
+  input.value = item.name;
+  input.spellcheck = false;
+
+  labelEl.style.display = "none";
+  rowEl.appendChild(input);
+  input.focus();
+
+  const dotIdx = item.name.lastIndexOf(".");
+  if (!item.is_dir && dotIdx > 0) {
+    input.setSelectionRange(0, dotIdx);
+  } else {
+    input.select();
+  }
+
+  let finished = false;
+  const finishRename = async (save: boolean) => {
+    if (finished) return;
+    finished = true;
+    const newName = input.value.trim();
+    input.remove();
+    labelEl.style.display = "";
+
+    if (!save || !newName || newName === item.name) return;
+
+    const sep = item.path.includes("\\") ? "\\" : "/";
+    const parentDir = item.path.replace(/[\\/][^\\/]+$/, "");
+    const newPath = `${parentDir}${sep}${newName}`;
+    try {
+      await invoke("rename_path", { oldPath: item.path, newPath });
+      options.onFileRenamed?.(item.path, newPath);
+      options.onRefresh?.();
+      showToast(`已重命名为 ${newName}`, "success");
+    } catch (err) {
+      showToast(`重命名失败: ${err}`, "error");
+    }
+  };
+
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finishRename(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      finishRename(false);
+    }
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(() => finishRename(true), 80);
+  });
+}
+
 export function renderFileTree(
   container: HTMLElement,
   items: FileItem[],
@@ -46,20 +220,19 @@ export function renderFileTree(
 ) {
   const options: FileTreeOptions =
     typeof optionsOrCb === "function" ? { onFileSelect: optionsOrCb } : optionsOrCb;
+  latestTreeOptions = options;
 
   container.innerHTML = "";
 
   if (items.length === 0) {
-    container.innerHTML = `<div style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">此文件夹为空</div>`;
-    return;
+    container.innerHTML = `<div class="tree-empty-hint" style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">此文件夹为空</div>`;
   }
 
-  // 绑定工作区空白区域右键菜单（支持根目录新建）
   container.oncontextmenu = (e: MouseEvent) => {
     if ((e.target as HTMLElement).closest(".tree-item")) return;
     e.preventDefault();
     e.stopPropagation();
-    showTreeContextMenu(e.clientX, e.clientY, null, options);
+    showTreeContextMenu(e.clientX, e.clientY, null, null, container, options);
   };
 
   function createNode(item: FileItem, depth: number): HTMLElement {
@@ -90,7 +263,6 @@ export function renderFileTree(
       row.appendChild(icon);
       row.appendChild(label);
 
-      // 子节点容器
       const childContainer = document.createElement("div");
       childContainer.className = "tree-children";
       if (isCollapsed) {
@@ -117,7 +289,6 @@ export function renderFileTree(
         }
       };
 
-      // 单击文件夹或折叠按钮展开/收起
       toggle.addEventListener("click", (e) => {
         e.stopPropagation();
         toggleFolder();
@@ -128,11 +299,10 @@ export function renderFileTree(
         toggleFolder();
       });
 
-      // 文件夹右键
       row.addEventListener("contextmenu", (e: MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        showTreeContextMenu(e.clientX, e.clientY, item, options);
+        showTreeContextMenu(e.clientX, e.clientY, item, row, childContainer, options, depth + 1);
       });
 
       wrapper.appendChild(row);
@@ -161,17 +331,15 @@ export function renderFileTree(
       row.appendChild(icon);
       row.appendChild(label);
 
-      // 单击文件打开（由 loadFile 异步成功后统一同步激活状态，防止取消保存或竞态时高亮串线）
       row.addEventListener("click", (e) => {
         e.stopPropagation();
         options.onFileSelect(item.path);
       });
 
-      // 文件右键
       row.addEventListener("contextmenu", (e: MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        showTreeContextMenu(e.clientX, e.clientY, item, options);
+        showTreeContextMenu(e.clientX, e.clientY, item, row, container, options, depth);
       });
 
       wrapper.appendChild(row);
@@ -185,9 +353,6 @@ export function renderFileTree(
   });
 }
 
-/**
- * 根据规范化文件全路径精准同步文件树高亮，彻底杜绝重名文件误激活与串线
- */
 export function syncActiveTreeItem(
   container: HTMLElement | null,
   activeFilePath: string | null
@@ -209,26 +374,28 @@ function showTreeContextMenu(
   x: number,
   y: number,
   item: FileItem | null,
-  options: FileTreeOptions
+  rowEl: HTMLElement | null,
+  mountContainer: HTMLElement,
+  options: FileTreeOptions,
+  depth: number = 0
 ) {
   closeContextMenu();
 
   const menu = document.createElement("div");
   menu.className = "ty-dropdown-menu file-tree-context-menu";
   menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - 220)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 240)}px`;
 
-  // 计算新建目标的基准目录
   const targetDir = item
     ? item.is_dir
       ? item.path
       : item.path.replace(/[\\/][^\\/]+$/, "")
     : options.workspaceRoot || ".";
 
-  const addMenuItem = (icon: string, label: string, onClick: () => void) => {
+  const addMenuItem = (iconSvg: string, label: string, onClick: () => void, danger = false) => {
     const itemEl = document.createElement("div");
-    itemEl.className = "menu-item";
-    itemEl.innerHTML = `<span class="m-icon">${icon}</span><span>${label}</span>`;
+    itemEl.className = `menu-item ${danger ? "danger-item" : ""}`;
+    itemEl.innerHTML = `<div class="menu-item-left"><span class="m-icon">${iconSvg}</span><span>${label}</span></div>`;
     itemEl.addEventListener("click", (e) => {
       e.stopPropagation();
       closeContextMenu();
@@ -243,92 +410,70 @@ function showTreeContextMenu(
     menu.appendChild(div);
   };
 
-  // 1. 新建 Markdown 文件
-  addMenuItem("📄", "新建文件", async () => {
-    const rawName = prompt("请输入新建文件名 (例如: note.md):", "untitled.md");
-    if (!rawName || !rawName.trim()) return;
-    let fileName = rawName.trim();
-    if (!fileName.includes(".")) {
-      fileName += ".md";
+  // 1. 原位新建 Markdown 文件
+  addMenuItem(ICON_NEW_FILE, "新建文件", () => {
+    if (item?.is_dir) {
+      collapsedPaths.delete(item.path);
+      mountContainer.style.display = "block";
     }
-    const sep = targetDir.includes("\\") ? "\\" : "/";
-    const fullPath = `${targetDir}${sep}${fileName}`;
-    try {
-      await invoke("create_file", { path: fullPath });
-      if (options.onRefresh) options.onRefresh();
-      options.onFileSelect(fullPath);
-    } catch (err) {
-      alert(`新建文件失败: ${err}`);
-    }
+    triggerInlineCreateInTree(mountContainer, false, targetDir, depth);
   });
 
-  // 2. 新建文件夹
-  addMenuItem("📁", "新建文件夹", async () => {
-    const rawName = prompt("请输入文件夹名称:", "新文件夹");
-    if (!rawName || !rawName.trim()) return;
-    const folderName = rawName.trim();
-    const sep = targetDir.includes("\\") ? "\\" : "/";
-    const fullPath = `${targetDir}${sep}${folderName}`;
-    try {
-      await invoke("create_folder", { path: fullPath });
-      if (options.onRefresh) options.onRefresh();
-    } catch (err) {
-      alert(`创建文件夹失败: ${err}`);
+  // 2. 原位新建文件夹
+  addMenuItem(ICON_NEW_FOLDER, "新建文件夹", () => {
+    if (item?.is_dir) {
+      collapsedPaths.delete(item.path);
+      mountContainer.style.display = "block";
     }
+    triggerInlineCreateInTree(mountContainer, true, targetDir, depth);
   });
 
-  if (item) {
+  if (item && rowEl) {
     addDivider();
 
     if (!item.is_dir) {
-      // 在新窗口中打开 (对齐 Typora 侧边栏文件右键)
-      addMenuItem("🗖", "在新窗口中打开", async () => {
+      addMenuItem(ICON_NEW_WIN, "在新窗口中打开", async () => {
         try {
           await invoke("create_new_window", { filePath: item.path });
         } catch (err) {
-          alert(`打开新窗口失败: ${err}`);
+          showToast(`打开新窗口失败: ${err}`, "error");
         }
       });
       addDivider();
     }
 
-    // 3. 重命名
-    addMenuItem("✏️", "重命名", async () => {
-      const newName = prompt("请输入新的名称:", item.name);
-      if (!newName || !newName.trim() || newName.trim() === item.name) return;
-      const sep = item.path.includes("\\") ? "\\" : "/";
-      const parentDir = item.path.replace(/[\\/][^\\/]+$/, "");
-      const newPath = `${parentDir}${sep}${newName.trim()}`;
-      try {
-        await invoke("rename_path", { oldPath: item.path, newPath });
-        options.onFileRenamed?.(item.path, newPath);
-        if (options.onRefresh) options.onRefresh();
-      } catch (err) {
-        alert(`重命名失败: ${err}`);
-      }
+    // 3. 原位内联重命名
+    addMenuItem(ICON_RENAME, "重命名", () => {
+      startInlineRename(rowEl, item, options);
     });
 
-    // 4. 删除
-    addMenuItem("🗑️", "删除", async () => {
-      const ok = confirm(`确定要永久删除 "${item.name}" 吗？此操作无法撤销。`);
-      if (!ok) return;
-      try {
-        await invoke("delete_path", { path: item.path });
-        options.onFileDeleted?.(item.path);
-        if (options.onRefresh) options.onRefresh();
-      } catch (err) {
-        alert(`删除失败: ${err}`);
-      }
-    });
+    // 4. 非阻塞确认删除
+    addMenuItem(
+      ICON_DELETE,
+      "删除",
+      async () => {
+        const ok = await showDeleteConfirmDialog(item.name);
+        if (!ok) return;
+        try {
+          await invoke("delete_path", { path: item.path });
+          options.onFileDeleted?.(item.path);
+          options.onRefresh?.();
+          showToast(`已删除 ${item.name}`, "info");
+        } catch (err) {
+          showToast(`删除失败: ${err}`, "error");
+        }
+      },
+      true
+    );
 
     addDivider();
 
     // 5. 在文件资源管理器中定位
-    addMenuItem("📂", "在文件资源管理器中显示", async () => {
+    addMenuItem(ICON_EXPLORER, "在文件资源管理器中显示", async () => {
       try {
         await invoke("reveal_in_explorer", { path: item.path });
       } catch (err) {
-        alert(`无法打开资源管理器: ${err}`);
+        showToast(`无法打开资源管理器: ${err}`, "error");
       }
     });
   }

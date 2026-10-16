@@ -1,35 +1,96 @@
+import { EditorState } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
+import { findTablesInDoc } from "./table-editor";
+import { findMermaidBlocks } from "./mermaid-extension";
+import { findMathBlocks } from "./math-block-extension";
+
+/**
+ * 计算给定行所属的完整语义块行号区间（表格、围栏代码块、Mermaid、多行公式块或单行段落），
+ * 防止点击或拖拽手柄时将多行块撕裂。
+ */
+export function resolveSemanticBlockSpan(
+  state: EditorState,
+  lineNum: number
+): { startLine: number; endLine: number } {
+  const doc = state.doc;
+  const clampedLine = Math.max(1, Math.min(doc.lines, lineNum));
+
+  // 1. 表格块
+  const tables = findTablesInDoc(state);
+  for (const t of tables) {
+    if (clampedLine >= t.startLine && clampedLine <= t.endLine) {
+      return { startLine: t.startLine, endLine: t.endLine };
+    }
+  }
+
+  // 2. Mermaid 块
+  const mermaids = findMermaidBlocks(state);
+  for (const m of mermaids) {
+    if (clampedLine >= m.startLine && clampedLine <= m.endLine) {
+      return { startLine: m.startLine, endLine: m.endLine };
+    }
+  }
+
+  // 3. 多行公式块
+  const mathBlocks = findMathBlocks(state);
+  for (const mb of mathBlocks) {
+    if (clampedLine >= mb.startLine && clampedLine <= mb.endLine) {
+      return { startLine: mb.startLine, endLine: mb.endLine };
+    }
+  }
+
+  // 4. 普通围栏代码块
+  let inFence = false;
+  let fenceStart = 1;
+  let fenceChar = "";
+  for (let i = 1; i <= doc.lines; i++) {
+    const trimmed = doc.line(i).text.trim();
+    if (/^(```+|~~~+)/.test(trimmed)) {
+      const marker = trimmed.startsWith("`") ? "`" : "~";
+      if (!inFence) {
+        inFence = true;
+        fenceStart = i;
+        fenceChar = marker;
+      } else if (marker === fenceChar) {
+        if (clampedLine >= fenceStart && clampedLine <= i) {
+          return { startLine: fenceStart, endLine: i };
+        }
+        inFence = false;
+      }
+    }
+  }
+
+  return { startLine: clampedLine, endLine: clampedLine };
+}
 
 /**
  * Typora 经典段落/块级左侧拖拽手柄 (⋮⋮ Block Handle)
- * 鼠标悬浮在任意段落/块左侧显示拖拽点，单击全选该段落，拖动可上下重排段落位置。
+ * 鼠标悬浮在任意段落/块左侧显示拖拽点，单击全选该语义块，拖动可上下重排整个块位置。
  */
 export const blockHandlePlugin = ViewPlugin.fromClass(
   class {
     private handle: HTMLElement;
     private dropIndicator: HTMLElement;
     private activeLineEl: HTMLElement | null = null;
-    private sourceLineNum: number = -1;
+    private sourceSpan: { startLine: number; endLine: number } | null = null;
     private targetLineNum: number = -1;
 
     constructor(private view: EditorView) {
-      // 1. 创建悬浮手柄
       this.handle = document.createElement("div");
       this.handle.className = "cm-block-handle";
       this.handle.setAttribute("draggable", "true");
-      this.handle.title = "点击全选段落，拖动重排段落";
+      this.handle.title = "点击全选当前块，拖动上下重排位置";
       this.handle.innerHTML = `
         <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
-          <circle cx="3" cy="2" r="1.5" />
-          <circle cx="9" cy="2" r="1.5" />
-          <circle cx="3" cy="7" r="1.5" />
-          <circle cx="9" cy="7" r="1.5" />
-          <circle cx="3" cy="12" r="1.5" />
-          <circle cx="9" cy="12" r="1.5" />
+          <circle cx="3" cy="2" r="1.4" />
+          <circle cx="9" cy="2" r="1.4" />
+          <circle cx="3" cy="7" r="1.4" />
+          <circle cx="9" cy="7" r="1.4" />
+          <circle cx="3" cy="12" r="1.4" />
+          <circle cx="9" cy="12" r="1.4" />
         </svg>
       `;
 
-      // 2. 创建拖拽目标指示线
       this.dropIndicator = document.createElement("div");
       this.dropIndicator.className = "cm-block-drop-indicator";
       this.dropIndicator.style.display = "none";
@@ -41,10 +102,20 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       this.setupListeners();
     }
 
+    private getLineNumberFromElement(el: HTMLElement): number {
+      if (el.dataset.fromPos) {
+        const pos = parseInt(el.dataset.fromPos, 10);
+        if (!Number.isNaN(pos)) {
+          return this.view.state.doc.lineAt(Math.min(pos, this.view.state.doc.length)).number;
+        }
+      }
+      const pos = this.view.posAtDOM(el);
+      return this.view.state.doc.lineAt(pos).number;
+    }
+
     private setupListeners() {
       const scroller = this.view.scrollDOM;
 
-      // 监听鼠标移动，准确定位段落手柄
       scroller.addEventListener("mousemove", (e: MouseEvent) => {
         if (typeof document !== "undefined" && document.body.classList.contains("source-mode")) {
           this.hideHandle();
@@ -55,13 +126,12 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         if (target === this.handle || this.handle.contains(target)) return;
 
         const lineEl = target.closest(
-          ".cm-line, .cm-math-block, .cm-mermaid-container, .cm-table-widget, .cm-toc-card"
+          ".cm-line, .md-math-block-card, .md-mermaid-card, .table-figure, .cm-toc-card"
         ) as HTMLElement | null;
 
         if (!lineEl || !lineEl.offsetParent) {
-          // 如果离开编辑内容区一定距离则淡出手柄
           const contentRect = this.view.contentDOM.getBoundingClientRect();
-          if (e.clientX < contentRect.left - 40 || e.clientX > contentRect.right + 20) {
+          if (e.clientX < contentRect.left - 44 || e.clientX > contentRect.right + 20) {
             this.hideHandle();
           }
           return;
@@ -75,15 +145,17 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         this.hideHandle();
       });
 
-      // 单击手柄：全选当前段落
+      // 单击手柄：全选当前语义块（支持整表、整代码块、整公式块或整段落）
       this.handle.addEventListener("click", (e) => {
         e.stopPropagation();
         if (!this.activeLineEl) return;
         try {
-          const pos = this.view.posAtDOM(this.activeLineEl);
-          const line = this.view.state.doc.lineAt(pos);
+          const lineNum = this.getLineNumberFromElement(this.activeLineEl);
+          const span = resolveSemanticBlockSpan(this.view.state, lineNum);
+          const from = this.view.state.doc.line(span.startLine).from;
+          const to = this.view.state.doc.line(span.endLine).to;
           this.view.dispatch({
-            selection: { anchor: line.from, head: line.to },
+            selection: { anchor: from, head: to },
           });
           this.view.focus();
         } catch {
@@ -95,11 +167,14 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       this.handle.addEventListener("dragstart", (e) => {
         if (!this.activeLineEl) return;
         try {
-          const pos = this.view.posAtDOM(this.activeLineEl);
-          this.sourceLineNum = this.view.state.doc.lineAt(pos).number;
+          const lineNum = this.getLineNumberFromElement(this.activeLineEl);
+          this.sourceSpan = resolveSemanticBlockSpan(this.view.state, lineNum);
           if (e.dataTransfer) {
             e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", `cm-block-line:${this.sourceLineNum}`);
+            e.dataTransfer.setData(
+              "text/plain",
+              `cm-block-span:${this.sourceSpan.startLine}-${this.sourceSpan.endLine}`
+            );
           }
           this.handle.classList.add("dragging");
         } catch {
@@ -110,27 +185,27 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       this.handle.addEventListener("dragend", () => {
         this.handle.classList.remove("dragging");
         this.dropIndicator.style.display = "none";
-        this.sourceLineNum = -1;
+        this.sourceSpan = null;
         this.targetLineNum = -1;
       });
 
-      // 编辑区监听拖拽经过
       scroller.addEventListener("dragover", (e: DragEvent) => {
-        if (this.sourceLineNum === -1) return;
+        if (!this.sourceSpan) return;
         e.preventDefault();
         if (e.dataTransfer) {
           e.dataTransfer.dropEffect = "move";
         }
 
-        const clientY = e.clientY;
-        const pos = this.view.posAtCoords({ x: e.clientX, y: clientY });
+        const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
         if (pos === null) return;
 
-        const line = this.view.state.doc.lineAt(pos);
-        this.targetLineNum = line.number;
+        const hoveredLine = this.view.state.doc.lineAt(pos).number;
+        const targetSpan = resolveSemanticBlockSpan(this.view.state, hoveredLine);
+        this.targetLineNum =
+          hoveredLine < this.sourceSpan.startLine ? targetSpan.startLine : targetSpan.endLine;
 
-        // 计算目标指示线位置
-        const coords = this.view.coordsAtPos(line.from);
+        const anchorLine = this.view.state.doc.line(this.targetLineNum);
+        const coords = this.view.coordsAtPos(anchorLine.from);
         if (coords) {
           const scrollerRect = scroller.getBoundingClientRect();
           const top = coords.top - scrollerRect.top + scroller.scrollTop;
@@ -141,35 +216,34 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         }
       });
 
-      // 放置并重排段落文本
       scroller.addEventListener("drop", (e: DragEvent) => {
-        if (this.sourceLineNum === -1 || this.targetLineNum === -1) return;
+        if (!this.sourceSpan || this.targetLineNum === -1) return;
         e.preventDefault();
         e.stopPropagation();
 
-        const srcNum = this.sourceLineNum;
+        const { startLine, endLine } = this.sourceSpan;
         const tgtNum = this.targetLineNum;
         this.dropIndicator.style.display = "none";
+        this.sourceSpan = null;
 
-        if (srcNum === tgtNum) return;
+        if (tgtNum >= startLine && tgtNum <= endLine) return;
 
         const doc = this.view.state.doc;
-        const srcLine = doc.line(srcNum);
+        const srcStartLine = doc.line(startLine);
+        const srcEndLine = doc.line(endLine);
         const tgtLine = doc.line(tgtNum);
-        const srcText = srcLine.text;
+        const srcText = this.view.state.sliceDoc(srcStartLine.from, srcEndLine.to);
 
-        let delFrom = srcLine.from;
-        let delTo = srcNum === doc.lines ? srcLine.to : srcLine.to + 1;
+        let delFrom = srcStartLine.from;
+        let delTo = endLine === doc.lines ? srcEndLine.to : srcEndLine.to + 1;
         let insertPos = 0;
         let insertText = "";
 
-        if (srcNum < tgtNum) {
-          // 向下移动：插入在目标行末尾
+        if (endLine < tgtNum) {
           insertPos = tgtLine.to;
           insertText = "\n" + srcText;
         } else {
-          // 向上移动：插入在目标行开头
-          if (srcNum === doc.lines && delFrom > 0) {
+          if (endLine === doc.lines && delFrom > 0) {
             delFrom -= 1;
           }
           insertPos = tgtLine.from;
@@ -182,7 +256,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         ].sort((a, b) => a.from - b.from);
 
         this.view.dispatch({ changes });
-
         this.view.focus();
       });
     }
@@ -207,9 +280,7 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       this.handle.style.pointerEvents = "none";
     }
 
-    update(_update: ViewUpdate) {
-      // 视口更新
-    }
+    update(_update: ViewUpdate) {}
 
     destroy() {
       this.handle.remove();

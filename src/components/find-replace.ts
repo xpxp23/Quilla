@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { setSearchMatchesEffect } from "../editor/extensions/search-highlighter";
+import { findTablesInDoc } from "../editor/extensions/table-editor";
 
 export interface FindReplaceController {
   open: (replaceMode?: boolean) => void;
@@ -7,8 +8,11 @@ export interface FindReplaceController {
   notifyDocChanged: () => void;
 }
 
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function initFindReplace(view: EditorView): FindReplaceController {
-  // 1. 创建吸顶查找替换浮层 DOM
   const bar = document.createElement("div");
   bar.id = "ty-find-replace";
   bar.className = "ty-find-replace-bar hidden";
@@ -19,11 +23,21 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         <span id="find-count" class="find-count">0/0</span>
       </div>
       <div class="find-actions">
-        <button type="button" id="find-prev-btn" class="find-btn" title="上一个 (Shift+Enter)">▲</button>
-        <button type="button" id="find-next-btn" class="find-btn" title="下一个 (Enter)">▼</button>
+        <button type="button" id="find-prev-btn" class="find-btn" title="上一个 (Shift+Enter)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="18 15 12 9 6 15"></polyline></svg>
+        </button>
+        <button type="button" id="find-next-btn" class="find-btn" title="下一个 (Enter)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
         <button type="button" id="find-case-btn" class="find-btn" title="区分大小写">Aa</button>
-        <button type="button" id="find-toggle-replace" class="find-btn" title="切换替换模式">⇄</button>
-        <button type="button" id="find-close-btn" class="find-btn close-btn" title="关闭 (Esc)">✕</button>
+        <button type="button" id="find-word-btn" class="find-btn" title="全词匹配">W</button>
+        <button type="button" id="find-regex-btn" class="find-btn" title="使用正则表达式">.*</button>
+        <button type="button" id="find-toggle-replace" class="find-btn" title="展开/收起替换 (Ctrl+H)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+        </button>
+        <button type="button" id="find-close-btn" class="find-btn close-btn" title="关闭 (Esc)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
       </div>
     </div>
     <div id="replace-row" class="replace-row hidden">
@@ -42,6 +56,8 @@ export function initFindReplace(view: EditorView): FindReplaceController {
   const prevBtn = bar.querySelector("#find-prev-btn") as HTMLElement;
   const nextBtn = bar.querySelector("#find-next-btn") as HTMLElement;
   const caseBtn = bar.querySelector("#find-case-btn") as HTMLElement;
+  const wordBtn = bar.querySelector("#find-word-btn") as HTMLElement;
+  const regexBtn = bar.querySelector("#find-regex-btn") as HTMLElement;
   const toggleReplaceBtn = bar.querySelector("#find-toggle-replace") as HTMLElement;
   const closeBtn = bar.querySelector("#find-close-btn") as HTMLElement;
   const replaceRow = bar.querySelector("#replace-row") as HTMLElement;
@@ -49,13 +65,46 @@ export function initFindReplace(view: EditorView): FindReplaceController {
   const replaceAllBtn = bar.querySelector("#replace-all-btn") as HTMLElement;
 
   let isCaseSensitive = false;
+  let isWholeWord = false;
+  let isRegex = false;
   let matches: Array<{ from: number; to: number }> = [];
   let currentIndex = -1;
+
+  function clearTableSearchHighlights() {
+    view.dom.querySelectorAll(".tbl-search-hit").forEach((el) => {
+      el.classList.remove("tbl-search-hit");
+    });
+  }
+
+  function highlightTableCellIfInsideTable(matchFrom: number, query: string) {
+    clearTableSearchHighlights();
+    const tables = findTablesInDoc(view.state);
+    const hitTable = tables.find((t) => matchFrom >= t.from && matchFrom <= t.to);
+    if (!hitTable) return;
+
+    const fig = view.dom.querySelector<HTMLElement>(
+      `figure.table-figure[data-from-pos="${hitTable.from}"], figure.table-figure[data-fromPos="${hitTable.from}"]`
+    ) ||
+      Array.from(view.dom.querySelectorAll<HTMLElement>("figure.table-figure")).find(
+        (f) => Number(f.dataset.fromPos) === hitTable.from
+      );
+    if (!fig) return;
+
+    const qLower = query.toLowerCase();
+    fig.querySelectorAll<HTMLElement>("th, td").forEach((cell) => {
+      if ((cell.textContent || "").toLowerCase().includes(qLower)) {
+        cell.classList.add("tbl-search-hit");
+      }
+    });
+    fig.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
 
   function performSearch(moveSelection: boolean = true) {
     const query = findInput.value;
     matches = [];
     currentIndex = -1;
+    clearTableSearchHighlights();
+    findInput.classList.remove("regex-error");
 
     if (!query) {
       findCount.textContent = "0/0";
@@ -66,17 +115,32 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     }
 
     const docText = view.state.doc.toString();
-    const searchTarget = isCaseSensitive ? docText : docText.toLowerCase();
-    const needle = isCaseSensitive ? query : query.toLowerCase();
 
-    let pos = 0;
-    while ((pos = searchTarget.indexOf(needle, pos)) !== -1) {
-      matches.push({ from: pos, to: pos + needle.length });
-      pos += needle.length;
+    try {
+      let pattern = isRegex ? query : escapeRegExp(query);
+      if (isWholeWord) {
+        pattern = `\\b(?:${pattern})\\b`;
+      }
+      const flags = isCaseSensitive ? "g" : "gi";
+      const re = new RegExp(pattern, flags);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(docText)) !== null) {
+        if (m[0].length === 0) {
+          re.lastIndex++;
+          continue;
+        }
+        matches.push({ from: m.index, to: m.index + m[0].length });
+      }
+    } catch {
+      findInput.classList.add("regex-error");
+      findCount.textContent = "语法错误";
+      view.dispatch({
+        effects: [setSearchMatchesEffect.of(null)],
+      });
+      return;
     }
 
     if (matches.length > 0) {
-      // 找出距离光标最近的匹配项
       const cursorPos = view.state.selection.main.head;
       let closestIdx = matches.findIndex((m) => m.from >= cursorPos);
       if (closestIdx === -1) closestIdx = 0;
@@ -106,15 +170,12 @@ export function initFindReplace(view: EditorView): FindReplaceController {
       view.dispatch({
         selection: { anchor: m.from, head: m.to },
         scrollIntoView: true,
-        effects: [
-          setSearchMatchesEffect.of({ matches, currentIndex }),
-        ],
+        effects: [setSearchMatchesEffect.of({ matches, currentIndex })],
       });
+      highlightTableCellIfInsideTable(m.from, findInput.value);
     } else {
       view.dispatch({
-        effects: [
-          setSearchMatchesEffect.of({ matches, currentIndex }),
-        ],
+        effects: [setSearchMatchesEffect.of({ matches, currentIndex })],
       });
     }
   }
@@ -150,7 +211,6 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     performSearch(true);
   }
 
-  // 事件监听
   findInput.addEventListener("input", () => performSearch(true));
 
   findInput.addEventListener("keydown", (e) => {
@@ -184,6 +244,18 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     performSearch(true);
   });
 
+  wordBtn.addEventListener("click", () => {
+    isWholeWord = !isWholeWord;
+    wordBtn.classList.toggle("active", isWholeWord);
+    performSearch(true);
+  });
+
+  regexBtn.addEventListener("click", () => {
+    isRegex = !isRegex;
+    regexBtn.classList.toggle("active", isRegex);
+    performSearch(true);
+  });
+
   toggleReplaceBtn.addEventListener("click", () => {
     replaceRow.classList.toggle("hidden");
     if (!replaceRow.classList.contains("hidden")) {
@@ -202,11 +274,10 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         replaceRow.classList.remove("hidden");
       }
 
-      // 如果编辑器当前有选中文本，自动填充进搜索框
       const sel = view.state.selection.main;
       if (!sel.empty && sel.to - sel.from < 100) {
         const text = view.state.sliceDoc(sel.from, sel.to).trim();
-        if (text) {
+        if (text && !text.includes("\n")) {
           findInput.value = text;
         }
       }
@@ -223,6 +294,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     },
     close() {
       bar.classList.add("hidden");
+      clearTableSearchHighlights();
       view.dispatch({
         effects: [setSearchMatchesEffect.of(null)],
       });
@@ -235,7 +307,6 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     },
   };
 
-  // 全局快捷键拦截
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();

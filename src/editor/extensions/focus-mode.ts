@@ -1,11 +1,11 @@
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
+import { resolveSemanticBlockSpan } from "./block-handle";
 
 /**
  * 专注模式状态管理与段落级视差聚焦插件 (F8)
- * - 当前光标所在段落/列表项/标题/代码块：保持 100% 不透明度高清高亮
+ * - 当前光标所在段落/列表项/标题/代码块/公式块/表格：保持 100% 不透明度高清高亮
  * - 其余所有非当前段落与行：平滑淡化至 28% 不透明度
- * - 完全对齐 Typora 专注模式手感
  */
 
 export const setFocusMode = StateEffect.define<boolean>();
@@ -26,33 +26,13 @@ export const focusModeState = StateField.define<boolean>({
 
 const focusActiveLineDeco = Decoration.line({ class: "cm-focus-active-block" });
 
-/**
- * 精确计算当前光标所处的语义块 (Block) 范围：
- * 0. 围栏代码块: 整体高亮整个代码块
- * 1. 标题: 独立单行
- * 2. 列表项: 独立列表项，不牵连其他项 (Typora 原生规范)
- * 3. 普通段落: 连续文本行
- */
-function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: number } {
-  // 0. 检查是否处于围栏代码块内部
-  let inFence = false;
-  let fenceStart = 1;
-  let fenceChar = "";
-  for (let i = 1; i <= doc.lines; i++) {
-    const trimmed = doc.line(i).text.trim();
-    if (/^(```+|~~~+)/.test(trimmed)) {
-      const marker = trimmed.startsWith("`") ? "`" : "~";
-      if (!inFence) {
-        inFence = true;
-        fenceStart = i;
-        fenceChar = marker;
-      } else if (marker === fenceChar) {
-        if (cursorLineNum >= fenceStart && cursorLineNum <= i) {
-          return { start: fenceStart, end: i };
-        }
-        inFence = false;
-      }
-    }
+function getBlockRange(state: any, cursorLineNum: number): { start: number; end: number } {
+  const doc = state.doc;
+
+  // 0. 优先检查多行语义块（围栏代码块、Mermaid 块、多行数学公式块、表格块）
+  const semanticSpan = resolveSemanticBlockSpan(state, cursorLineNum);
+  if (semanticSpan.startLine !== semanticSpan.endLine) {
+    return { start: semanticSpan.startLine, end: semanticSpan.endLine };
   }
 
   const currentLine = doc.line(cursorLineNum);
@@ -68,13 +48,30 @@ function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: n
     return { start: cursorLineNum, end: cursorLineNum };
   }
 
-  // 2. 列表项: 独立高亮当前列表项
+  // 2. 引用块: 整段连续引用块高亮
+  if (trimmed.startsWith(">")) {
+    let start = cursorLineNum;
+    while (start > 1 && doc.line(start - 1).text.trim().startsWith(">")) {
+      start--;
+    }
+    let end = cursorLineNum;
+    while (end < doc.lines && doc.line(end + 1).text.trim().startsWith(">")) {
+      end++;
+    }
+    return { start, end };
+  }
+
+  // 3. 列表项: 独立高亮当前列表项
   const isListItemStart = (t: string) => /^(\s*[-*+]|\s*\d+\.)(\s+\[[ xX]\])?\s+/.test(t);
   if (isListItemStart(text)) {
     let end = cursorLineNum;
     while (end < doc.lines) {
       const next = doc.line(end + 1);
-      if (next.text.trim() === "" || isListItemStart(next.text) || /^#{1,6}\s+/.test(next.text.trim())) {
+      if (
+        next.text.trim() === "" ||
+        isListItemStart(next.text) ||
+        /^#{1,6}\s+/.test(next.text.trim())
+      ) {
         break;
       }
       end++;
@@ -82,7 +79,7 @@ function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: n
     return { start: cursorLineNum, end };
   }
 
-  // 3. 处于多行列表项的延续行内部时，向上寻找该列表项起始
+  // 4. 处于多行列表项的延续行内部时，向上寻找该列表项起始
   let start = cursorLineNum;
   while (start > 1) {
     const prev = doc.line(start - 1);
@@ -92,7 +89,13 @@ function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: n
       let end = cursorLineNum;
       while (end < doc.lines) {
         const next = doc.line(end + 1);
-        if (next.text.trim() === "" || isListItemStart(next.text) || /^#{1,6}\s+/.test(next.text.trim())) break;
+        if (
+          next.text.trim() === "" ||
+          isListItemStart(next.text) ||
+          /^#{1,6}\s+/.test(next.text.trim())
+        ) {
+          break;
+        }
         end++;
       }
       return { start, end };
@@ -100,11 +103,15 @@ function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: n
     start--;
   }
 
-  // 4. 普通段落
+  // 5. 普通段落
   start = cursorLineNum;
   while (start > 1) {
     const prev = doc.line(start - 1);
-    if (prev.text.trim() === "" || /^#{1,6}\s+/.test(prev.text.trim()) || isListItemStart(prev.text)) {
+    if (
+      prev.text.trim() === "" ||
+      /^#{1,6}\s+/.test(prev.text.trim()) ||
+      isListItemStart(prev.text)
+    ) {
       break;
     }
     start--;
@@ -113,7 +120,11 @@ function getBlockRange(doc: any, cursorLineNum: number): { start: number; end: n
   let end = cursorLineNum;
   while (end < doc.lines) {
     const next = doc.line(end + 1);
-    if (next.text.trim() === "" || /^#{1,6}\s+/.test(next.text.trim()) || isListItemStart(next.text)) {
+    if (
+      next.text.trim() === "" ||
+      /^#{1,6}\s+/.test(next.text.trim()) ||
+      isListItemStart(next.text)
+    ) {
       break;
     }
     end++;
@@ -165,9 +176,8 @@ export const focusModePlugin = ViewPlugin.fromClass(
       const sel = state.selection.main;
       const headLine = doc.lineAt(sel.head);
 
-      const { start, end } = getBlockRange(doc, headLine.number);
+      const { start, end } = getBlockRange(state, headLine.number);
 
-      // 遍历文档给目标块的所有行加上高光装饰器
       for (let ln = start; ln <= end; ln++) {
         const l = doc.line(ln);
         builder.add(l.from, l.from, focusActiveLineDeco);
@@ -199,7 +209,4 @@ export function isFocusModeActive(view: EditorView): boolean {
   return view.state.field(focusModeState);
 }
 
-export const focusModeExtension = [
-  focusModeState,
-  focusModePlugin,
-];
+export const focusModeExtension = [focusModeState, focusModePlugin];

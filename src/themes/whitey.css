@@ -5,6 +5,8 @@
   --side-bar-bg-color: #fafafa;
   --control-text-color: #7f8c8d;
   --select-text-bg-color: #e5e5e5;
+  --primary-color: #34495e;
+  --primary-bg-subtle: rgba(52, 73, 94, 0.1);
   --border-color: #eaeaea;
   --item-hover-bg-color: rgba(0, 0, 0, 0.03);
 }

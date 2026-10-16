@@ -1,9 +1,13 @@
-import { EditorState } from "@codemirror/state";
+import { EditorState, Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, undo, redo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { livePreviewPlugin, activeDocumentPath } from "./extensions/live-preview";
+import {
+  livePreviewPlugin,
+  activeDocumentPath,
+  stripInlineMarkdown,
+} from "./extensions/live-preview";
 import { imeGuardPlugin } from "./extensions/ime-guard";
 import { tableKeymap, tableLiveViewField } from "./extensions/table-editor";
 import { formattingKeymap } from "./extensions/formatting-keymap";
@@ -13,8 +17,16 @@ import { mathBlockLiveViewField } from "./extensions/math-block-extension";
 import { searchHighlightField } from "./extensions/search-highlighter";
 import { navigateToAnchor } from "./extensions/anchor-navigator";
 import { preciseCursorExtension, getExactPosAtCoords } from "./extensions/precise-cursor";
-import { typewriterModeExtension, toggleTypewriterMode, isTypewriterModeActive } from "./extensions/typewriter-mode";
-import { focusModeExtension, toggleFocusMode, isFocusModeActive } from "./extensions/focus-mode";
+import {
+  typewriterModeExtension,
+  toggleTypewriterMode,
+  isTypewriterModeActive,
+} from "./extensions/typewriter-mode";
+import {
+  focusModeExtension,
+  toggleFocusMode,
+  isFocusModeActive,
+} from "./extensions/focus-mode";
 import { boundaryTraversalExtension } from "./extensions/boundary-traversal";
 import { emojiAutocompletion } from "./extensions/emoji-autocomplete";
 import { smartAutopairExtension } from "./extensions/smart-autopair";
@@ -30,7 +42,6 @@ export interface EditorCallbacks {
   onOpenWorkspace?: (dirPath: string) => void;
 }
 
-// 消除 CodeMirror 默认外聚焦虚线边框与杂色
 const cleanFocusTheme = EditorView.theme({
   "&": {
     outline: "none !important",
@@ -51,13 +62,12 @@ const cleanFocusTheme = EditorView.theme({
 function resolveRelativeFilePath(baseDocPath: string | null, relHref: string): string {
   const cleaned = decodeURIComponent(relHref.split("#")[0].split("?")[0]).trim();
   if (!baseDocPath) return cleaned;
-  // 若已经是绝对路径（Windows 盘符或 Unix / 开头）
   if (/^[a-zA-Z]:[\\/]/.test(cleaned) || cleaned.startsWith("/")) {
     return cleaned;
   }
   const sep = baseDocPath.includes("\\") ? "\\" : "/";
   const baseParts = baseDocPath.replace(/\\/g, "/").split("/");
-  baseParts.pop(); // 移除文件名
+  baseParts.pop();
   const relParts = cleaned.replace(/\\/g, "/").split("/");
   for (const part of relParts) {
     if (!part || part === ".") continue;
@@ -105,7 +115,20 @@ export function extractOutlineHeadings(doc: {
   let inFence = false;
   let fenceChar = "";
 
-  for (let i = 1; i <= doc.lines; i++) {
+  // 跳过顶部 YAML Front Matter
+  let startScanLine = 1;
+  if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
+    const limit = Math.min(doc.lines, 35);
+    for (let k = 2; k <= limit; k++) {
+      const t = doc.line(k).text.trim();
+      if (t === "---" || t === "...") {
+        startScanLine = k + 1;
+        break;
+      }
+    }
+  }
+
+  for (let i = startScanLine; i <= doc.lines; i++) {
     const lineText = doc.line(i).text;
     const trimmed = lineText.trim();
     if (/^(```+|~~~+)/.test(trimmed)) {
@@ -124,7 +147,7 @@ export function extractOutlineHeadings(doc: {
     if (match) {
       headings.push({
         level: match[1].length,
-        text: match[2].trim(),
+        text: stripInlineMarkdown(match[2]),
         line: i,
       });
     }
@@ -133,6 +156,29 @@ export function extractOutlineHeadings(doc: {
 }
 
 export { toggleTypewriterMode, isTypewriterModeActive, toggleFocusMode, isFocusModeActive };
+
+/**
+ * 彻底重置编辑器文档与 Undo/Redo 历史栈（用于切换文件或新建文件时隔离历史栈，严防 Ctrl+Z 跨文件串线）
+ */
+export function resetEditorDocument(view: EditorView, newContent: string) {
+  const wasTW = isTypewriterModeActive(view);
+  const wasFC = isFocusModeActive(view);
+  const extensions: Extension[] = (view as any)._quillaExtensions || [];
+  if (extensions.length > 0) {
+    view.setState(
+      EditorState.create({
+        doc: newContent,
+        extensions,
+      })
+    );
+    if (wasTW) toggleTypewriterMode(view, true);
+    if (wasFC) toggleFocusMode(view, true);
+  } else {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: newContent },
+    });
+  }
+}
 
 export function createEditor(
   parent: HTMLElement,
@@ -151,7 +197,7 @@ export function createEditor(
       const words = (text.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
       callbacks.onStatsUpdate(words, chars);
 
-      // 2. 提取大纲数据 (跳过代码块内注释)
+      // 2. 提取大纲数据 (跳过代码块内注释并剥离行内格式符)
       const headings = extractOutlineHeadings(doc);
       callbacks.onOutlineUpdate(headings);
 
@@ -168,67 +214,69 @@ export function createEditor(
     }
   });
 
+  const extensions: Extension[] = [
+    cleanFocusTheme,
+    history(),
+    markdown(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    imeGuardPlugin,
+    ...smartAutopairExtension(),
+    emojiAutocompletion,
+    blockHandlePlugin,
+    tableLiveViewField,
+    mermaidLiveViewField,
+    mathBlockLiveViewField,
+    searchHighlightField,
+    preciseCursorExtension,
+    typewriterModeExtension,
+    focusModeExtension,
+    boundaryTraversalExtension,
+    livePreviewPlugin,
+    EditorView.domEventHandlers({
+      click: (event, view) => {
+        const linkElem = (event.target as HTMLElement).closest(".cm-link") as HTMLElement;
+        if (linkElem && linkElem.dataset.href) {
+          const href = linkElem.dataset.href.trim();
+          if (href.startsWith("#")) {
+            event.preventDefault();
+            event.stopPropagation();
+            return navigateToAnchor(view, href.slice(1));
+          }
+
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            event.stopPropagation();
+            handleOpenLink(href, callbacks.onOpenFile);
+            return true;
+          }
+        }
+        return false;
+      },
+    }),
+    keymap.of([
+      { key: "Ctrl-z", run: undo },
+      { key: "Ctrl-y", run: redo },
+      { key: "Ctrl-Shift-z", run: redo },
+      ...formattingKeymap,
+      ...tableKeymap,
+      ...defaultKeymap,
+      ...historyKeymap,
+    ]),
+    updateListener,
+    EditorView.lineWrapping,
+  ];
+
   const state = EditorState.create({
     doc: initialDoc,
-    extensions: [
-      cleanFocusTheme,
-      history(),
-      markdown(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      imeGuardPlugin,
-      ...smartAutopairExtension(),
-      emojiAutocompletion,
-      blockHandlePlugin,
-      tableLiveViewField,
-      mermaidLiveViewField,
-      mathBlockLiveViewField,
-      searchHighlightField,
-      preciseCursorExtension,
-      typewriterModeExtension,
-      focusModeExtension,
-      boundaryTraversalExtension,
-      livePreviewPlugin,
-      EditorView.domEventHandlers({
-        click: (event, view) => {
-          const linkElem = (event.target as HTMLElement).closest(".cm-link") as HTMLElement;
-          if (linkElem && linkElem.dataset.href) {
-            const href = linkElem.dataset.href.trim();
-            // 1. 文档内部目录锚点：无论是直接单击还是 Ctrl+点击均即时平滑跳转
-            if (href.startsWith("#")) {
-              event.preventDefault();
-              event.stopPropagation();
-              return navigateToAnchor(view, href.slice(1));
-            }
-
-            // 2. 外部超链接或跨文件引用：Ctrl+点击触发打开
-            if (event.ctrlKey || event.metaKey) {
-              event.preventDefault();
-              event.stopPropagation();
-              handleOpenLink(href, callbacks.onOpenFile);
-              return true;
-            }
-          }
-          return false;
-        },
-      }),
-      keymap.of([
-        { key: "Ctrl-z", run: undo },
-        { key: "Ctrl-y", run: redo },
-        { key: "Ctrl-Shift-z", run: redo },
-        ...formattingKeymap,
-        ...tableKeymap,
-        ...defaultKeymap,
-        ...historyKeymap,
-      ]),
-      updateListener,
-      EditorView.lineWrapping,
-    ],
+    extensions,
   });
 
   const view = new EditorView({
     state,
     parent,
   });
+
+  (view as any)._quillaExtensions = extensions;
 
   const origPosAtCoords = view.posAtCoords.bind(view);
   const origPosAndSideAtCoords = view.posAndSideAtCoords.bind(view);
@@ -245,6 +293,27 @@ export function createEditor(
     if (exact) return exact;
     return (origPosAndSideAtCoords as any)(coords, precise);
   };
+
+  // 视口滚动联动大纲 Scroll Spy：鼠标滚轮阅读长文时实时高亮当前视口顶部章节
+  let scrollSpyRaf: number | null = null;
+  view.scrollDOM.addEventListener(
+    "scroll",
+    () => {
+      if (!callbacks.onCursorLineChange || scrollSpyRaf !== null) return;
+      scrollSpyRaf = requestAnimationFrame(() => {
+        scrollSpyRaf = null;
+        try {
+          const topY = view.scrollDOM.scrollTop + 60;
+          const block = view.lineBlockAtHeight(topY);
+          const lineNum = view.state.doc.lineAt(block.from).number;
+          callbacks.onCursorLineChange?.(lineNum);
+        } catch {
+          // ignore
+        }
+      });
+    },
+    { passive: true }
+  );
 
   // 绑定图片粘贴与外部拖放管道
   setupImageAndDropHandlers(view, {
