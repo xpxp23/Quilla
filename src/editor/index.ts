@@ -189,23 +189,21 @@ export function createEditor(
 
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-      const doc = update.state.doc;
-      const text = doc.toString();
-
-      // 1. 统计字数与字符数
-      const chars = text.length;
-      const words = (text.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
-      callbacks.onStatsUpdate(words, chars);
-
-      // 2. 提取大纲数据 (跳过代码块内注释并剥离行内格式符)
-      const headings = extractOutlineHeadings(doc);
-      callbacks.onOutlineUpdate(headings);
-
-      // 3. 50ms 即时同步状态给上层应用
+      // 统一防抖执行全文序列化、字数统计、大纲提取与快照同步，彻底消除高频击键时的 O(N) 阻塞
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
+        const doc = update.view.state.doc;
+        const text = doc.toString();
+
+        const chars = text.length;
+        const words = (text.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
+        callbacks.onStatsUpdate(words, chars);
+
+        const headings = extractOutlineHeadings(doc);
+        callbacks.onOutlineUpdate(headings);
+
         callbacks.onChange(text);
-      }, 50);
+      }, 65);
     }
 
     if ((update.selectionSet || update.docChanged) && callbacks.onCursorLineChange) {
@@ -294,7 +292,7 @@ export function createEditor(
     return (origPosAndSideAtCoords as any)(coords, precise);
   };
 
-  // 视口滚动联动大纲 Scroll Spy：鼠标滚轮阅读长文时实时高亮当前视口顶部章节
+  // 视口滚动联动大纲 Scroll Spy
   let scrollSpyRaf: number | null = null;
   view.scrollDOM.addEventListener(
     "scroll",

@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import { openShortcutGuide } from "./shortcut-guide";
+import { openPreferencesModal } from "./preferences";
 import { getRecentFiles, clearRecentFiles } from "./quick-open";
 import { handleOpenLink } from "../editor/index";
 import { smartToggleFormat } from "../editor/extensions/formatting-keymap";
@@ -38,6 +39,7 @@ const SVG = {
   redo: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`,
   search: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`,
   keyboard: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6.01" y2="8"></line><line x1="10" y1="8" x2="10.01" y2="8"></line><line x1="14" y1="8" x2="14.01" y2="8"></line><line x1="18" y1="8" x2="18.01" y2="8"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>`,
+  settings: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
   trash: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
   copy: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
   scissors: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>`,
@@ -48,7 +50,7 @@ const SVG = {
 };
 
 /**
- * 初始化左上角汉堡弹出菜单与右键上下文菜单 (统一采用单色线性 SVG 图标)
+ * 初始化左上角汉堡弹出菜单与右键上下文菜单
  */
 export function initMenus(view: EditorView, actions: MenuActions) {
   const menuContainer = document.createElement("div");
@@ -110,6 +112,10 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       <div class="menu-item" data-action="shortcut-guide">
         <div class="menu-item-left"><span class="m-icon">${SVG.keyboard}</span><span>快捷键指南</span></div>
         <span class="shortcut">F1</span>
+      </div>
+      <div class="menu-item" data-action="preferences">
+        <div class="menu-item-left"><span class="m-icon">${SVG.settings}</span><span>偏好设置...</span></div>
+        <span class="shortcut">Ctrl+,</span>
       </div>
     </div>
   `;
@@ -209,12 +215,14 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       redo(view);
     } else if (action === "shortcut-guide") {
       openShortcutGuide();
+    } else if (action === "preferences") {
+      openPreferencesModal();
     }
 
     menuContainer.classList.add("hidden");
   });
 
-  // 2. 自定义动态上下文敏感右键菜单 (Context-Sensitive Menu)
+  // 2. 自定义动态上下文敏感右键菜单
   const contextMenu = document.createElement("div");
   contextMenu.id = "app-context-menu";
   contextMenu.className = "ty-dropdown-menu hidden";
@@ -411,9 +419,20 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     } else if (act === "link-copy" && currentContextTarget?.element) {
       const href = currentContextTarget.element.dataset.href;
       if (href) navigator.clipboard.writeText(href);
-    } else if (act === "cut") document.execCommand("cut");
-    else if (act === "copy") document.execCommand("copy");
-    else if (act === "paste") {
+    } else if (act === "cut") {
+      const { from, to } = view.state.selection.main;
+      if (from < to) {
+        const selected = view.state.sliceDoc(from, to);
+        navigator.clipboard.writeText(selected).catch(() => {});
+        view.dispatch({ changes: { from, to, insert: "" } });
+      }
+    } else if (act === "copy") {
+      const { from, to } = view.state.selection.main;
+      if (from < to) {
+        const selected = view.state.sliceDoc(from, to);
+        navigator.clipboard.writeText(selected).catch(() => {});
+      }
+    } else if (act === "paste") {
       if (navigator.clipboard.read) {
         navigator.clipboard
           .read()

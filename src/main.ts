@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "katex/dist/katex.min.css";
 import katex from "katex";
 import mermaid from "mermaid";
@@ -23,10 +24,17 @@ import {
   FileItem,
   syncActiveTreeItem,
   triggerInlineCreateInTree,
+  toggleTreeSortMode,
 } from "./components/file-tree";
 import { initMenus } from "./components/menu";
 import { initQuickOpen, addRecentFile } from "./components/quick-open";
 import { initStatsPopover } from "./components/stats-popover";
+import {
+  getPreferences,
+  applyPreferencesToDOM,
+  onPreferencesChange,
+  openPreferencesModal,
+} from "./components/preferences";
 import { initFloatingToolbars } from "./editor/extensions/floating-toolbars";
 import { initSmartPaste } from "./editor/extensions/smart-paste";
 import {
@@ -34,6 +42,7 @@ import {
   clearImageCache,
   stripInlineMarkdown,
 } from "./editor/extensions/live-preview";
+import { highlightCodeBlockToHtml } from "./editor/extensions/code-highlighter";
 import { forceRefreshEffect } from "./editor/extensions/refresh-effect";
 import { initFindReplace, FindReplaceController } from "./components/find-replace";
 import { undo, redo } from "@codemirror/commands";
@@ -57,7 +66,7 @@ const INITIAL_DEMO_DOC = `# 欢迎使用 Quilla (羽墨)
 - **可视化表格内联编辑 (In-Place Table Editor)**：表格自始至终是标准排版表格，点击任意单元格直接打字，支持四向方向键导航、\`Tab\` 跳格、\`Ctrl+Enter\` 续行，聚焦时浮出工具条一键增删行列、切换对齐与删除整表！
 - **Mermaid 流程图矢量渲染**：支持 \`\`\`mermaid 语法自动生成矢量流程图，编辑时上方显示源码，下方实时保留渲染预览，移出后平滑收起为无边框画布！
 - **多行 LaTeX 数学公式块**：内置矢量 KaTeX 引擎，编辑时实时双向渲染。
-- **多语言代码块卡片**：支持右上角点击搜索切换语言标签与一键复制代码。
+- **多语言代码块语法高亮**：内置 20+ 语言词法高亮与行号展示，支持右上角搜索切换语言标签与一键复制代码。
 - **全链路图片资产与拖放管道**：支持截图 \`Ctrl+V\` 自动在本地 \`assets/\` 落盘并插入，外部图片/文件直接拖入编辑器即可导入！
 
 ---
@@ -69,7 +78,7 @@ const INITIAL_DEMO_DOC = `# 欢迎使用 Quilla (羽墨)
 | 模块名称 | 核心语言 | 职责说明 | 性能指标 |
 | :--- | :---: | :--- | ---: |
 | Rope Core | Rust | 文档缓冲原子持久化 | < 1ms |
-| Micro Live View | TypeScript | Token 级微观局部展开 | 60 FPS |
+| Micro Live View | TypeScript | 视口虚拟化与微观展开 | 60 FPS |
 | Visual Table | CSS/DOM | 可视化表格内联双向同步 | 即时响应 |
 | Mermaid Engine | Mermaid.js | 响应式矢量流程图渲染 | 即时响应 |
 
@@ -89,7 +98,7 @@ flowchart TD
 
 ---
 
-## 体验 3：多语言代码块卡片 (右上角切换语言与复制)
+## 体验 3：多语言代码块卡片 (语法高亮、行号、语言切换与复制)
 
 \`\`\`rust
 fn main() {
@@ -114,12 +123,12 @@ $$
 
 ## 体验 5：优雅引用块与快捷操作
 
-> **快捷操作指南**
+> **快捷操作指南：**
 > - 打字机模式：按 \`F9\` 或点击底部状态栏【打字机】，光标垂直软居中锁频，滚轮可自由翻阅
 > - 专注模式：按 \`F8\` 或点击底部状态栏【专注】，当前段落聚焦高亮，其余文本平滑淡化
 > - 5 套内置主题：点击底部状态栏【主题】，一键在 GitHub、Night、Newsprint、Clear、Whitey 之间自由切换
 > - 列表智能状态机：按 \`Enter\` 智能续行编号与任务框，按 \`Tab\` / \`Shift+Tab\` 缩进与降级，空项按 \`Enter\` 或 \`Backspace\` 智能退出
-> - 选中文本气泡栏：鼠标划选任意文字自动浮出快捷格式化气泡工具条
+> - 偏好设置中心：按 \`Ctrl+,\` 随时定制字号、行高、版心宽度、代码块行号与自动保存策略
 `;
 
 class App {
@@ -131,12 +140,18 @@ class App {
   private editorView: EditorView | null = null;
   private findReplaceCtrl: FindReplaceController | null = null;
   private currentHeadings: OutlineHeading[] = [];
+  private autoSaveTimer: any = null;
 
   async init() {
+    applyPreferencesToDOM();
     themeLoader.init();
 
     initTitlebar({
       onClose: () => this.handleWindowClose(),
+    });
+
+    document.getElementById("w-settings")?.addEventListener("click", () => {
+      openPreferencesModal();
     });
 
     this.initSidebarResizer();
@@ -184,6 +199,57 @@ class App {
     initStatsPopover(this.editorView);
     initFloatingToolbars(this.editorView, (filePath) => this.loadFile(filePath));
     initSmartPaste(this.editorView);
+
+    // 监听偏好设置变更并实时刷新编辑器装饰器与自动保存策略
+    onPreferencesChange(() => {
+      if (this.editorView) {
+        this.editorView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
+      }
+      this.setupAutoSaveTimer();
+    });
+    this.setupAutoSaveTimer();
+
+    // 窗口失焦自动保存 (当偏好设置为 onBlur 时)
+    window.addEventListener("blur", () => {
+      const prefs = getPreferences();
+      if (prefs.autoSaveMode === "onBlur" && this.isModified && this.currentFilePath) {
+        this.saveFile(true);
+      }
+    });
+
+    // 监听来自 Rust WorkspaceWatcher 的工作区与当前文件外部磁盘变动事件
+    listen<{ paths: string[]; kind: string }>("workspace-fs-changed", async (event) => {
+      if (this.currentWorkspaceRoot) {
+        this.loadWorkspace(this.currentWorkspaceRoot, true);
+      }
+      if (this.currentFilePath && event.payload?.paths) {
+        const normActive = this.currentFilePath.replace(/\\/g, "/").toLowerCase();
+        const isCurrentModifiedExternally = event.payload.paths.some(
+          (p) => p.replace(/\\/g, "/").toLowerCase() === normActive
+        );
+        if (isCurrentModifiedExternally && event.payload.kind === "modify") {
+          try {
+            const diskContent = await invoke<string>("read_file_content", {
+              path: this.currentFilePath,
+            });
+            const currentDoc = this.editorView?.state.doc.toString() || "";
+            if (diskContent !== currentDoc) {
+              if (!this.isModified && this.editorView) {
+                this.savedContent = diskContent;
+                resetEditorDocument(this.editorView, diskContent);
+                showToast("外部文件已更新，内容已自动同步", "info");
+              } else {
+                showToast("注意：当前文档在外部被修改，保存时将覆盖外部改动", "info");
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }).catch(() => {});
 
     document.getElementById("footer-toggle-sidebar")?.addEventListener("click", () => {
       document.body.classList.toggle("pin-outline");
@@ -408,6 +474,22 @@ class App {
     });
   }
 
+  private setupAutoSaveTimer() {
+    if (this.autoSaveTimer) {
+      clearInterval(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    const prefs = getPreferences();
+    if (prefs.autoSaveMode === "interval") {
+      const ms = Math.max(5, prefs.autoSaveIntervalSec || 30) * 1000;
+      this.autoSaveTimer = setInterval(() => {
+        if (this.isModified && this.currentFilePath) {
+          this.saveFile(true);
+        }
+      }, ms);
+    }
+  }
+
   private async createNewWindow(filePath?: string | null) {
     try {
       await invoke("create_new_window", { filePath: filePath || null });
@@ -483,6 +565,14 @@ class App {
     document.getElementById("sidebar-action-new-folder")?.addEventListener("click", () => {
       this.createSidebarNewFolder();
     });
+    document.getElementById("sidebar-action-sort")?.addEventListener("click", () => {
+      const nextSort = toggleTreeSortMode();
+      this.refreshWorkspace();
+      showToast(
+        nextSort === "modified" ? "文件树已按最近修改时间排序" : "文件树已按名称 A-Z 排序",
+        "info"
+      );
+    });
     document.getElementById("sidebar-action-refresh")?.addEventListener("click", () => {
       this.refreshWorkspace();
     });
@@ -528,8 +618,9 @@ class App {
     return choice;
   }
 
-  public async saveFile(): Promise<boolean> {
+  public async saveFile(silent: boolean = false): Promise<boolean> {
     if (!this.currentFilePath) {
+      if (silent) return false;
       return this.saveFileAs();
     }
     const content = this.editorView ? this.editorView.state.doc.toString() : this.savedContent;
@@ -548,12 +639,14 @@ class App {
       const fileName = this.currentFilePath.split(/[\\/]/).pop() || "Untitled.md";
       updateWindowTitle(fileName, false);
       if (saveStatus) {
-        saveStatus.textContent = "已保存";
+        saveStatus.textContent = silent ? "已自动保存" : "已保存";
         saveStatus.style.color = "var(--control-text-color)";
       }
       return true;
     } catch (err) {
-      showToast(`保存文件失败: ${err}`, "error");
+      if (!silent) {
+        showToast(`保存文件失败: ${err}`, "error");
+      }
       if (saveStatus) saveStatus.textContent = "保存失败";
       return false;
     }
@@ -574,16 +667,18 @@ class App {
       const targetPath = selectedPath.trim();
       let content = this.editorView ? this.editorView.state.doc.toString() : this.savedContent;
 
-      // 若原先是未保存文档且粘贴过临时目录图片 (quilla-unsaved)，自动迁移至新文档同级 assets/ 目录
+      // 若原先是未保存文档且粘贴过临时目录图片 (quilla-unsaved)，自动迁移至新文档配置的 assets 目录
       if (!this.currentFilePath && content.includes("quilla-unsaved")) {
         const tempImgRegex = /(!\[[^\]]*\]\()([^)\n]*quilla-unsaved[^)\n]*)(\))/g;
         const matches = Array.from(content.matchAll(tempImgRegex));
+        const folderMode = getPreferences().imageFolderMode;
         for (const m of matches) {
           const oldTempPath = m[2];
           try {
             const newRelPath = await invoke<string>("copy_image_to_assets", {
               docPath: targetPath,
               sourcePath: oldTempPath,
+              folderMode,
             });
             content = content.split(oldTempPath).join(newRelPath);
           } catch {
@@ -631,7 +726,7 @@ class App {
         this.currentWorkspaceRoot &&
         targetPath.toLowerCase().startsWith(this.currentWorkspaceRoot.toLowerCase())
       ) {
-        await this.loadWorkspace(this.currentWorkspaceRoot);
+        await this.loadWorkspace(this.currentWorkspaceRoot, true);
       }
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, targetPath);
@@ -694,7 +789,7 @@ class App {
 
   private refreshWorkspace() {
     if (this.currentWorkspaceRoot) {
-      this.loadWorkspace(this.currentWorkspaceRoot);
+      this.loadWorkspace(this.currentWorkspaceRoot, true);
     }
   }
 
@@ -726,20 +821,19 @@ class App {
   }
 
   /**
-   * 完整出版级 Markdown -> HTML 异步渲染管线：
-   * 支持：Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注、
-   * 保留 <img width/align> 属性，并将本地相对路径图片自动转换为内联 Base64，实现 100% 自包含 HTML 与无损打印！
+   * 完整出版级 Markdown -> HTML 递归异步渲染管线：
+   * 支持：引用块内递归块级语法（多级列表、标题、代码块、表格、嵌套引用）、多语言代码块词法高亮与行号、
+   * Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注及内联 Base64 图片。
    */
   private async renderMarkdownToHtmlBody(md: string): Promise<string> {
-    const lines = md.replace(/\r\n/g, "\n").split("\n");
-    const out: string[] = [];
-    let i = 0;
+    const rawLines = md.replace(/\r\n/g, "\n").split("\n");
+    let startIdx = 0;
 
     // 跳过顶部 YAML Front Matter
-    if (lines.length >= 3 && lines[0].trim() === "---") {
-      for (let k = 1; k < Math.min(lines.length, 35); k++) {
-        if (lines[k].trim() === "---" || lines[k].trim() === "...") {
-          i = k + 1;
+    if (rawLines.length >= 3 && rawLines[0].trim() === "---") {
+      for (let k = 1; k < Math.min(rawLines.length, 35); k++) {
+        if (rawLines[k].trim() === "---" || rawLines[k].trim() === "...") {
+          startIdx = k + 1;
           break;
         }
       }
@@ -773,7 +867,7 @@ class App {
 
       let working = raw;
 
-      // 0. 保护换行 <br> 与 HTML <img ...> 标签（防止被 escapeHtml 转义成源码文本）
+      // 0. 保护换行 <br> 与 HTML <img ...> 标签
       working = working.replace(/<br\s*\/?>/gi, () => pushPh("<br />"));
 
       const htmlImgMatches = Array.from(
@@ -817,25 +911,28 @@ class App {
       working = working.replace(/`([^`\n]+)`/g, (_m, code) => pushPh(`<code>${code}</code>`));
 
       // 4. 提取行内公式 $...$
-      working = working.replace(/(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g, (_m, tex) => {
-        const unescapedTex = tex
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"')
-          .replace(/&#039;/g, "'");
-        try {
-          return pushPh(
-            katex.renderToString(unescapedTex, {
-              displayMode: false,
-              throwOnError: false,
-              output: "html",
-            })
-          );
-        } catch {
-          return pushPh(`<code>$${tex}$</code>`);
+      working = working.replace(
+        /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g,
+        (_m, tex) => {
+          const unescapedTex = tex
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/&#039;/g, "'");
+          try {
+            return pushPh(
+              katex.renderToString(unescapedTex, {
+                displayMode: false,
+                throwOnError: false,
+                output: "html",
+              })
+            );
+          } catch {
+            return pushPh(`<code>$${tex}$</code>`);
+          }
         }
-      });
+      );
 
       // 5. 超链接与脚注角标
       working = working.replace(/\[\^([^\]\n]+)\]/g, (_m, fn) =>
@@ -870,8 +967,8 @@ class App {
     {
       let inF = false;
       let fChar = "";
-      for (let k = i; k < lines.length; k++) {
-        const t = lines[k].trim();
+      for (let k = startIdx; k < rawLines.length; k++) {
+        const t = rawLines[k].trim();
         if (/^(```+|~~~+)/.test(t)) {
           const mChar = t[0];
           if (!inF) {
@@ -883,7 +980,7 @@ class App {
           continue;
         }
         if (inF) continue;
-        const hm = lines[k].match(/^(#{1,6})\s+(.*)$/);
+        const hm = rawLines[k].match(/^(#{1,6})\s+(.*)$/);
         if (hm) {
           const clean = stripInlineMarkdown(hm[2]);
           const id = `heading-${k}-${clean.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-")}`;
@@ -893,258 +990,267 @@ class App {
     }
 
     let headingCursor = 0;
+    const showLineNumbers = getPreferences().showCodeLineNumbers;
 
-    while (i < lines.length) {
-      const line = lines[i];
-      const trimmed = line.trim();
+    // 递归块级解析器（完美支持引用块内嵌套列表、标题、代码块、表格与多级引用）
+    const renderBlocks = async (lines: string[], isTopLevel: boolean): Promise<string> => {
+      const out: string[] = [];
+      let i = 0;
 
-      if (!trimmed) {
-        i++;
-        continue;
-      }
+      while (i < lines.length) {
+        const line = lines[i];
+        const trimmed = line.trim();
 
-      // 1. 围栏代码块与 Mermaid 矢量图渲染
-      const fenceMatch = trimmed.match(/^(```+|~~~+)\s*([^\s`~]*).*$/);
-      if (fenceMatch) {
-        const fenceChar = fenceMatch[1][0];
-        const lang = (fenceMatch[2] || "").toLowerCase();
-        const codeLines: string[] = [];
-        i++;
-        while (i < lines.length) {
-          const t = lines[i].trim();
-          if (
-            (fenceChar === "`" && /^```+$/.test(t)) ||
-            (fenceChar === "~" && /^~~~+$/.test(t))
-          ) {
+        if (!trimmed) {
+          i++;
+          continue;
+        }
+
+        // 1. 围栏代码块与 Mermaid 矢量图渲染
+        const fenceMatch = trimmed.match(/^(```+|~~~+)\s*([^\s`~]*).*$/);
+        if (fenceMatch) {
+          const fenceChar = fenceMatch[1][0];
+          const lang = (fenceMatch[2] || "").toLowerCase();
+          const codeLines: string[] = [];
+          i++;
+          while (i < lines.length) {
+            const t = lines[i].trim();
+            if (
+              (fenceChar === "`" && /^```+$/.test(t)) ||
+              (fenceChar === "~" && /^~~~+$/.test(t))
+            ) {
+              i++;
+              break;
+            }
+            codeLines.push(lines[i]);
             i++;
-            break;
           }
-          codeLines.push(lines[i]);
-          i++;
+          const rawCode = codeLines.join("\n");
+          if (lang === "mermaid") {
+            try {
+              const id = "mmd-exp-" + Math.random().toString(36).substring(2, 9);
+              const { svg } = await mermaid.render(id, rawCode.trim());
+              out.push(`<figure class="md-mermaid-card"><div class="mermaid-chart-box">${svg}</div></figure>`);
+            } catch {
+              out.push(`<pre><code class="language-mermaid">${this.escapeHtml(rawCode)}</code></pre>`);
+            }
+          } else {
+            const highlightedHtml = highlightCodeBlockToHtml(rawCode, lang, showLineNumbers);
+            out.push(
+              `<pre class="exported-code-block"><code class="language-${this.escapeHtml(lang)}">${highlightedHtml}</code></pre>`
+            );
+          }
+          continue;
         }
-        const rawCode = codeLines.join("\n");
-        if (lang === "mermaid") {
+
+        // 2. 多行公式块 $$
+        if (trimmed === "$$") {
+          const mathLines: string[] = [];
+          i++;
+          while (i < lines.length && lines[i].trim() !== "$$") {
+            mathLines.push(lines[i]);
+            i++;
+          }
+          i++;
           try {
-            const id = "mmd-exp-" + Math.random().toString(36).substring(2, 9);
-            const { svg } = await mermaid.render(id, rawCode.trim());
-            out.push(`<figure class="md-mermaid-card"><div class="mermaid-chart-box">${svg}</div></figure>`);
+            const rendered = katex.renderToString(mathLines.join("\n"), {
+              displayMode: true,
+              throwOnError: false,
+              output: "html",
+            });
+            out.push(`<div class="md-math-block-preview">${rendered}</div>`);
           } catch {
-            out.push(`<pre><code class="language-mermaid">${this.escapeHtml(rawCode)}</code></pre>`);
+            out.push(`<pre>${this.escapeHtml(mathLines.join("\n"))}</pre>`);
           }
-        } else {
+          continue;
+        }
+
+        // 3. 单行公式块 $$ ... $$
+        const singleMath = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
+        if (singleMath) {
+          try {
+            const rendered = katex.renderToString(singleMath[1], {
+              displayMode: true,
+              throwOnError: false,
+              output: "html",
+            });
+            out.push(`<div class="md-math-block-preview">${rendered}</div>`);
+          } catch {
+            out.push(`<pre>${this.escapeHtml(singleMath[1])}</pre>`);
+          }
+          i++;
+          continue;
+        }
+
+        // 3.5 [TOC] 目录块
+        if (/^\[TOC\]$/i.test(trimmed)) {
+          const tocItems = allDocHeadings
+            .map(
+              (h) =>
+                `<li style="padding-left:${(h.level - 1) * 16}px"><a href="#${h.id}">${this.escapeHtml(h.text)}</a></li>`
+            )
+            .join("");
           out.push(
-            `<pre><code class="language-${this.escapeHtml(lang)}">${this.escapeHtml(rawCode)}</code></pre>`
+            `<nav class="cm-toc-card"><div class="cm-toc-title">目录</div><ul class="cm-toc-list">${tocItems}</ul></nav>`
           );
-        }
-        continue;
-      }
-
-      // 2. 多行公式块 $$
-      if (trimmed === "$$") {
-        const mathLines: string[] = [];
-        i++;
-        while (i < lines.length && lines[i].trim() !== "$$") {
-          mathLines.push(lines[i]);
           i++;
+          continue;
         }
-        i++;
-        try {
-          const rendered = katex.renderToString(mathLines.join("\n"), {
-            displayMode: true,
-            throwOnError: false,
-            output: "html",
+
+        // 4. 表格块
+        if (trimmed.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
+          const parseCells = (rowStr: string) => {
+            let t = rowStr.trim();
+            if (t.startsWith("|")) t = t.slice(1);
+            if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
+            return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+          };
+          const headers = parseCells(lines[i]);
+          const delimParts = parseCells(lines[i + 1]);
+          const aligns = headers.map((_h, idx) => {
+            const d = delimParts[idx] || "";
+            if (d.startsWith(":") && d.endsWith(":")) return "center";
+            if (d.endsWith(":")) return "right";
+            return "left";
           });
-          out.push(`<div class="md-math-block-preview">${rendered}</div>`);
-        } catch {
-          out.push(`<pre>${this.escapeHtml(mathLines.join("\n"))}</pre>`);
-        }
-        continue;
-      }
-
-      // 3. 单行公式块 $$ ... $$
-      const singleMath = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
-      if (singleMath) {
-        try {
-          const rendered = katex.renderToString(singleMath[1], {
-            displayMode: true,
-            throwOnError: false,
-            output: "html",
-          });
-          out.push(`<div class="md-math-block-preview">${rendered}</div>`);
-        } catch {
-          out.push(`<pre>${this.escapeHtml(singleMath[1])}</pre>`);
-        }
-        i++;
-        continue;
-      }
-
-      // 3.5 [TOC] 目录块
-      if (/^\[TOC\]$/i.test(trimmed)) {
-        const tocItems = allDocHeadings
-          .map(
-            (h) =>
-              `<li style="padding-left:${(h.level - 1) * 16}px"><a href="#${h.id}">${this.escapeHtml(h.text)}</a></li>`
-          )
-          .join("");
-        out.push(
-          `<nav class="cm-toc-card"><div class="cm-toc-title">目录</div><ul class="cm-toc-list">${tocItems}</ul></nav>`
-        );
-        i++;
-        continue;
-      }
-
-      // 4. 表格块
-      if (trimmed.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
-        const parseCells = (rowStr: string) => {
-          let t = rowStr.trim();
-          if (t.startsWith("|")) t = t.slice(1);
-          if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
-          return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
-        };
-        const headers = parseCells(lines[i]);
-        const delimParts = parseCells(lines[i + 1]);
-        const aligns = headers.map((_h, idx) => {
-          const d = delimParts[idx] || "";
-          if (d.startsWith(":") && d.endsWith(":")) return "center";
-          if (d.endsWith(":")) return "right";
-          return "left";
-        });
-        i += 2;
-        const bodyRows: string[][] = [];
-        while (i < lines.length && lines[i].trim().includes("|")) {
-          bodyRows.push(parseCells(lines[i]));
-          i++;
-        }
-        const thRendered = await Promise.all(
-          headers.map(
-            async (h, idx) =>
-              `<th style="text-align:${aligns[idx]}">${await renderInline(h)}</th>`
-          )
-        );
-        const tbodyRowsRendered: string[] = [];
-        for (const r of bodyRows) {
-          const tds = await Promise.all(
+          i += 2;
+          const bodyRows: string[][] = [];
+          while (i < lines.length && lines[i].trim().includes("|")) {
+            bodyRows.push(parseCells(lines[i]));
+            i++;
+          }
+          const thRendered = await Promise.all(
             headers.map(
-              async (_h, idx) =>
-                `<td style="text-align:${aligns[idx]}">${await renderInline(r[idx] || "")}</td>`
+              async (h, idx) =>
+                `<th style="text-align:${aligns[idx]}">${await renderInline(h)}</th>`
             )
           );
-          tbodyRowsRendered.push(`<tr>${tds.join("")}</tr>`);
-        }
-        out.push(
-          `<table class="md-table"><thead><tr>${thRendered.join("")}</tr></thead><tbody>${tbodyRowsRendered.join("")}</tbody></table>`
-        );
-        continue;
-      }
-
-      // 5. 水平分割线
-      if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-        out.push("<hr />");
-        i++;
-        continue;
-      }
-
-      // 6. 标题
-      const hMatch = line.match(/^(#{1,6})\s+(.*)$/);
-      if (hMatch) {
-        const lvl = hMatch[1].length;
-        const hMeta = allDocHeadings[headingCursor++];
-        const idAttr = hMeta ? ` id="${hMeta.id}"` : "";
-        out.push(`<h${lvl}${idAttr}>${await renderInline(hMatch[2].trim())}</h${lvl}>`);
-        i++;
-        continue;
-      }
-
-      // 7. 引用块
-      if (trimmed.startsWith(">")) {
-        const qLines: string[] = [];
-        while (i < lines.length && lines[i].trim().startsWith(">")) {
-          qLines.push(await renderInline(lines[i].replace(/^\s*>\s?/, "")));
-          i++;
-        }
-        out.push(`<blockquote><p>${qLines.join("<br/>")}</p></blockquote>`);
-        continue;
-      }
-
-      // 8. 多级无序/有序/任务列表（支持缩进层级嵌套）
-      if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-        const listLines: Array<{
-          indent: number;
-          ordered: boolean;
-          html: string;
-        }> = [];
-        while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
-          const cur = lines[i];
-          const indent = (cur.match(/^\s*/)?.[0] || "").length;
-          const taskM = cur.match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
-          const ordM = cur.match(/^\s*\d+\.\s+(.*)$/);
-          if (taskM) {
-            const checked = taskM[1].toLowerCase() === "x" ? " checked disabled" : " disabled";
-            listLines.push({
-              indent,
-              ordered: false,
-              html: `<li class="task-list-item"><input type="checkbox"${checked} /> ${await renderInline(taskM[2])}</li>`,
-            });
-          } else if (ordM) {
-            listLines.push({
-              indent,
-              ordered: true,
-              html: `<li>${await renderInline(ordM[1])}</li>`,
-            });
-          } else {
-            const itemTxt = cur.replace(/^\s*[-*+]\s+/, "");
-            listLines.push({
-              indent,
-              ordered: false,
-              html: `<li>${await renderInline(itemTxt)}</li>`,
-            });
+          const tbodyRowsRendered: string[] = [];
+          for (const r of bodyRows) {
+            const tds = await Promise.all(
+              headers.map(
+                async (_h, idx) =>
+                  `<td style="text-align:${aligns[idx]}">${await renderInline(r[idx] || "")}</td>`
+              )
+            );
+            tbodyRowsRendered.push(`<tr>${tds.join("")}</tr>`);
           }
-          i++;
+          out.push(
+            `<table class="md-table"><thead><tr>${thRendered.join("")}</tr></thead><tbody>${tbodyRowsRendered.join("")}</tbody></table>`
+          );
+          continue;
         }
 
-        // 根据缩进层级构建嵌套列表树
-        let listHtml = "";
-        const tagStack: Array<{ tag: "ul" | "ol"; indent: number }> = [];
-        for (const item of listLines) {
-          const tag = item.ordered ? "ol" : "ul";
-          if (tagStack.length === 0 || item.indent > tagStack[tagStack.length - 1].indent) {
-            listHtml += `<${tag}>`;
-            tagStack.push({ tag, indent: item.indent });
-          } else {
-            while (
-              tagStack.length > 1 &&
-              item.indent < tagStack[tagStack.length - 1].indent
-            ) {
-              const popped = tagStack.pop()!;
-              listHtml += `</${popped.tag}>`;
+        // 5. 水平分割线
+        if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+          out.push("<hr />");
+          i++;
+          continue;
+        }
+
+        // 6. 标题
+        const hMatch = line.match(/^(#{1,6})\s+(.*)$/);
+        if (hMatch) {
+          const lvl = hMatch[1].length;
+          const hMeta = isTopLevel ? allDocHeadings[headingCursor++] : null;
+          const idAttr = hMeta ? ` id="${hMeta.id}"` : "";
+          out.push(`<h${lvl}${idAttr}>${await renderInline(hMatch[2].trim())}</h${lvl}>`);
+          i++;
+          continue;
+        }
+
+        // 7. 引用块（剥离最外层 `> ` 并递归调用 renderBlocks，完美渲染内嵌列表/标题/多级引用）
+        if (trimmed.startsWith(">")) {
+          const innerQuoteLines: string[] = [];
+          while (i < lines.length && lines[i].trim().startsWith(">")) {
+            innerQuoteLines.push(lines[i].replace(/^\s*> ?/, ""));
+            i++;
+          }
+          const innerHtml = await renderBlocks(innerQuoteLines, false);
+          out.push(`<blockquote>${innerHtml}</blockquote>`);
+          continue;
+        }
+
+        // 8. 多级无序/有序/任务列表（支持缩进层级嵌套）
+        if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+          const listLines: Array<{
+            indent: number;
+            ordered: boolean;
+            html: string;
+          }> = [];
+          while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+            const cur = lines[i];
+            const indent = (cur.match(/^\s*/)?.[0] || "").length;
+            const taskM = cur.match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
+            const ordM = cur.match(/^\s*\d+\.\s+(.*)$/);
+            if (taskM) {
+              const checked = taskM[1].toLowerCase() === "x" ? " checked disabled" : " disabled";
+              listLines.push({
+                indent,
+                ordered: false,
+                html: `<li class="task-list-item"><input type="checkbox"${checked} /> ${await renderInline(taskM[2])}</li>`,
+              });
+            } else if (ordM) {
+              listLines.push({
+                indent,
+                ordered: true,
+                html: `<li>${await renderInline(ordM[1])}</li>`,
+              });
+            } else {
+              const itemTxt = cur.replace(/^\s*[-*+]\s+/, "");
+              listLines.push({
+                indent,
+                ordered: false,
+                html: `<li>${await renderInline(itemTxt)}</li>`,
+              });
             }
-            if (tagStack[tagStack.length - 1].tag !== tag) {
-              const popped = tagStack.pop()!;
-              listHtml += `</${popped.tag}><${tag}>`;
+            i++;
+          }
+
+          let listHtml = "";
+          const tagStack: Array<{ tag: "ul" | "ol"; indent: number }> = [];
+          for (const item of listLines) {
+            const tag = item.ordered ? "ol" : "ul";
+            if (tagStack.length === 0 || item.indent > tagStack[tagStack.length - 1].indent) {
+              listHtml += `<${tag}>`;
               tagStack.push({ tag, indent: item.indent });
+            } else {
+              while (
+                tagStack.length > 1 &&
+                item.indent < tagStack[tagStack.length - 1].indent
+              ) {
+                const popped = tagStack.pop()!;
+                listHtml += `</${popped.tag}>`;
+              }
+              if (tagStack[tagStack.length - 1].tag !== tag) {
+                const popped = tagStack.pop()!;
+                listHtml += `</${popped.tag}><${tag}>`;
+                tagStack.push({ tag, indent: item.indent });
+              }
             }
+            listHtml += item.html;
           }
-          listHtml += item.html;
+          while (tagStack.length > 0) {
+            const popped = tagStack.pop()!;
+            listHtml += `</${popped.tag}>`;
+          }
+          out.push(listHtml);
+          continue;
         }
-        while (tagStack.length > 0) {
-          const popped = tagStack.pop()!;
-          listHtml += `</${popped.tag}>`;
-        }
-        out.push(listHtml);
-        continue;
+
+        // 9. 普通段落
+        out.push(`<p>${await renderInline(line)}</p>`);
+        i++;
       }
 
-      // 9. 普通段落
-      out.push(`<p>${await renderInline(line)}</p>`);
-      i++;
-    }
+      return out.join("\n");
+    };
 
-    return out.join("\n");
+    return renderBlocks(rawLines.slice(startIdx), true);
   }
 
   /**
-   * 全量无损打印 / 导出 PDF：
-   * 将全文渲染至独立打印容器 #quilla-print-mount，彻底规避 CodeMirror 虚拟视口只渲染当前屏幕几十行导致长文档截断的缺陷
+   * 全量无损打印 / 导出 PDF
    */
   private async printDocument() {
     if (!this.editorView) return;
@@ -1187,12 +1293,28 @@ class App {
   <title>${this.escapeHtml(title)}</title>
   <style>
     ${themeCss}
-    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.7; }
+    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; }
     table.md-table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; }
     table.md-table th, table.md-table td { border: 1px solid #dfe2e5; padding: 8px 14px; }
     table.md-table th { background-color: #f6f8fa; font-weight: 600; }
-    pre { padding: 14px 16px; border-radius: 6px; background: #f6f8fa; overflow-x: auto; }
-    blockquote { border-left: 4px solid #dfe2e5; margin: 1rem 0; padding: 2px 16px; color: #6a737d; }
+    pre { padding: 14px 16px; border-radius: 6px; background: #f6f8fa; overflow-x: auto; font-family: Consolas, monospace; }
+    .exported-code-line[data-code-line]::before {
+      content: attr(data-code-line);
+      display: inline-block;
+      width: 28px;
+      margin-right: 14px;
+      text-align: right;
+      color: #8c959f;
+      user-select: none;
+    }
+    .cm-syn-keyword { color: #cf222e; font-weight: 600; }
+    .cm-syn-string { color: #0a3069; }
+    .cm-syn-comment { color: #6e7781; font-style: italic; }
+    .cm-syn-number { color: #0550ae; }
+    .cm-syn-type { color: #953800; }
+    .cm-syn-function { color: #8250df; }
+    .cm-syn-attr { color: #116329; }
+    blockquote { border-left: 4px solid #dfe2e5; margin: 1rem 0; padding: 4px 16px; color: #57606a; }
     li.task-list-item { list-style: none; }
     .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
   </style>
@@ -1307,7 +1429,7 @@ ${bodyHtml}
     }
   }
 
-  private async loadWorkspace(folderPath: string) {
+  private async loadWorkspace(folderPath: string, silent: boolean = false) {
     try {
       const files: FileItem[] = await invoke("list_workspace_files", { root: folderPath });
       this.currentWorkspaceRoot = folderPath;
@@ -1323,17 +1445,24 @@ ${bodyHtml}
       if (wsContainer) wsContainer.style.display = "block";
 
       const treeContainer = document.getElementById("file-library-tree")!;
+      // 若当前正在进行内联重命名或新建输入，静默刷新暂缓以防打断用户输入
+      if (silent && treeContainer.querySelector(".tree-inline-input")) {
+        return;
+      }
+
       renderFileTree(treeContainer, files, {
         workspaceRoot: folderPath,
         activeFilePath: this.currentFilePath,
         onFileSelect: (filePath) => this.loadFile(filePath),
-        onRefresh: () => this.loadWorkspace(folderPath),
+        onRefresh: () => this.loadWorkspace(folderPath, true),
         onFileRenamed: (oldPath, newPath) => this.handleFileRenamed(oldPath, newPath),
         onFileDeleted: (deletedPath) => this.handleFileDeleted(deletedPath),
       });
     } catch (e) {
       console.error("加载工作区失败:", e);
-      this.closeWorkspace();
+      if (!silent) {
+        this.closeWorkspace();
+      }
     }
   }
 

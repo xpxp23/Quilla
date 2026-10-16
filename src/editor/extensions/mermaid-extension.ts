@@ -68,6 +68,8 @@ export function findMermaidBlocks(state: EditorState): MermaidBlock[] {
   return blocks;
 }
 
+const svgRenderCache = new Map<string, string>();
+
 class MermaidWidget extends WidgetType {
   constructor(
     readonly code: string,
@@ -87,7 +89,15 @@ class MermaidWidget extends WidgetType {
     return true;
   }
 
-  updateDOM(_dom: HTMLElement): boolean {
+  updateDOM(dom: HTMLElement): boolean {
+    if (
+      dom.dataset.isLive === String(this.isLivePreview) &&
+      dom.dataset.code === this.code
+    ) {
+      dom.dataset.fromPos = String(this.fromPos);
+      dom.dataset.toPos = String(this.toPos);
+      return true;
+    }
     return false;
   }
 
@@ -98,43 +108,53 @@ class MermaidWidget extends WidgetType {
       : "md-mermaid-card clean-figure-card cm-mermaid-container";
     container.dataset.fromPos = String(this.fromPos);
     container.dataset.toPos = String(this.toPos);
+    container.dataset.isLive = String(this.isLivePreview);
+    container.dataset.code = this.code;
 
     const chartBox = document.createElement("div");
     chartBox.className = "mermaid-chart-box";
-    chartBox.innerHTML = `<div class="mermaid-loading">图表渲染中...</div>`;
 
-    const id = "mmd-" + Math.random().toString(36).substring(2, 9);
-    try {
-      const isDark =
-        typeof document !== "undefined" && document.body.classList.contains("theme-night");
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: isDark ? "dark" : "default",
-        securityLevel: "loose",
-      });
-      mermaid
-        .render(id, this.code.trim())
-        .then(({ svg }) => {
-          chartBox.innerHTML = svg;
-          view.requestMeasure();
-        })
-        .catch((err) => {
-          chartBox.innerHTML = `
-            <div class="mermaid-error">
-              <div class="err-title">流程图语法解析失败</div>
-              <pre class="err-detail">${err.message || String(err)}</pre>
-            </div>
-          `;
-          view.requestMeasure();
+    const isDark =
+      typeof document !== "undefined" && document.body.classList.contains("theme-night");
+    const cacheKey = `${isDark ? "dark" : "light"}::${this.code.trim()}`;
+    const cachedSvg = svgRenderCache.get(cacheKey);
+
+    if (cachedSvg) {
+      chartBox.innerHTML = cachedSvg;
+    } else {
+      chartBox.innerHTML = `<div class="mermaid-loading">图表渲染中...</div>`;
+      const id = "mmd-" + Math.random().toString(36).substring(2, 9);
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: isDark ? "dark" : "default",
+          securityLevel: "loose",
         });
-    } catch (e: any) {
-      chartBox.innerHTML = `
-        <div class="mermaid-error">
-          <div class="err-title">语法错误</div>
-          <pre class="err-detail">${e.message || String(e)}</pre>
-        </div>
-      `;
-      view.requestMeasure();
+        mermaid
+          .render(id, this.code.trim())
+          .then(({ svg }) => {
+            svgRenderCache.set(cacheKey, svg);
+            chartBox.innerHTML = svg;
+            view.requestMeasure();
+          })
+          .catch((err) => {
+            chartBox.innerHTML = `
+              <div class="mermaid-error">
+                <div class="err-title">流程图语法解析失败</div>
+                <pre class="err-detail">${err.message || String(err)}</pre>
+              </div>
+            `;
+            view.requestMeasure();
+          });
+      } catch (e: any) {
+        chartBox.innerHTML = `
+          <div class="mermaid-error">
+            <div class="err-title">语法错误</div>
+            <pre class="err-detail">${e.message || String(e)}</pre>
+          </div>
+        `;
+        view.requestMeasure();
+      }
     }
 
     if (this.isLivePreview) {
@@ -142,11 +162,17 @@ class MermaidWidget extends WidgetType {
       header.className = "mermaid-header live-preview-header";
       header.innerHTML = `
         <span class="mermaid-badge">MERMAID 实时预览</span>
-        <span class="live-preview-hint">移出代码块即自动折叠源码</span>
+        <button type="button" class="live-preview-fold-btn" title="完成编辑并收起源码">✓ 完成收起</button>
       `;
+      header.querySelector(".live-preview-fold-btn")?.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const afterPos = Math.min(view.state.doc.length, this.toPos + 1);
+        view.dispatch({ selection: { anchor: afterPos } });
+        view.focus();
+      });
       container.appendChild(header);
     } else {
-      // Typora 极简纯净风格：非编辑态无厚重顶栏，仅在悬浮时于右上角微露精巧编辑按钮
       const floatingEditBtn = document.createElement("button");
       floatingEditBtn.type = "button";
       floatingEditBtn.className = "floating-corner-edit-btn";

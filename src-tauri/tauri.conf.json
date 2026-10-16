@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
   "productName": "Quilla",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "app.quilla.editor",
   "build": {
     "beforeBuildCommand": "pnpm build",
@@ -22,7 +22,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": ["default"]
     }
   },
   "bundle": {

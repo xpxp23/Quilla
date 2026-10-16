@@ -1,13 +1,14 @@
 /* ================= GitHub 经典主题 (github.css) ================= */
 :root {
   --bg-color: #ffffff;
-  --text-color: #333333;
-  --side-bar-bg-color: #f8f8f8;
-  --control-text-color: #6a737d;
+  --text-color: #24292f;
+  --side-bar-bg-color: #f6f8fa;
+  --control-text-color: #57606a;
   --select-text-bg-color: #cce5ff;
   --primary-color: #0969da;
   --primary-bg-subtle: rgba(9, 105, 218, 0.1);
-  --border-color: #e1e4e8;
+  --border-color: #d0d7de;
+  --quote-border-color: #d0d7de;
   --item-hover-bg-color: rgba(0, 0, 0, 0.04);
 }
 
@@ -15,43 +16,37 @@ body {
   background-color: var(--bg-color);
   color: var(--text-color);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  line-height: 1.6;
 }
 
 #write {
-  color: #333333;
+  color: var(--text-color);
 }
 
 #write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
 .cm-line.cm-heading {
-  color: #24292e;
+  color: #1f2328;
   font-weight: 600;
 }
 
 #write h1, .cm-line.cm-heading-1 {
-  font-size: 2.2em;
+  font-size: 2.15em;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid #eaecef;
-  margin-top: 1.2em;
+  border-bottom: 1px solid #d8dee4;
 }
 
 #write h2, .cm-line.cm-heading-2 {
-  font-size: 1.75em;
+  font-size: 1.65em;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid #eaecef;
-  margin-top: 1.2em;
+  border-bottom: 1px solid #d8dee4;
 }
 
 #write h3, .cm-line.cm-heading-3 {
-  font-size: 1.4em;
-  margin-top: 1em;
+  font-size: 1.35em;
 }
 
 #write blockquote, .cm-line.cm-blockquote {
-  border-left: 4px solid #dfe2e5 !important;
-  color: #6a737d;
-  padding: 0 1em;
-  background-color: transparent;
+  border-left: 3.5px solid var(--quote-border-color, #d0d7de) !important;
+  color: #57606a !important;
 }
 
 #write .md-fences, #write pre,
@@ -63,10 +58,10 @@ body {
 }
 
 #write code, .cm-inline-code {
-  background-color: rgba(27, 31, 35, 0.06) !important;
-  color: #24292e !important;
-  border-radius: 3px;
-  font-size: 88%;
+  background-color: rgba(175, 184, 193, 0.2) !important;
+  color: #24292f !important;
+  border-radius: 4px;
+  font-size: 87%;
   padding: 0.2em 0.4em;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -81,21 +76,21 @@ body {
 }
 
 #write hr, .md-hr {
-  border-top: 2px solid #e1e4e8 !important;
+  border-top: 2px solid #d8dee4 !important;
 }
 
 table.md-table th, .custom-table-root th {
   background-color: #f6f8fa !important;
   color: #24292e !important;
-  border: 1px solid #dfe2e5 !important;
+  border: 1px solid #d0d7de !important;
   font-weight: 600;
 }
 
 table.md-table td, .custom-table-root td {
-  border: 1px solid #dfe2e5 !important;
+  border: 1px solid #d0d7de !important;
   color: #24292e !important;
 }
 
 table.md-table tr:nth-child(2n) td, .custom-table-root tr:nth-child(2n) td {
-  background-color: #fcfcfc !important;
+  background-color: #f6f8fa80 !important;
 }

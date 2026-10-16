@@ -52,13 +52,31 @@ impl DocumentBuffer {
         self.is_dirty
     }
 
-    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过代码块内部注释
+    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与代码块内部注释
     pub fn extract_headings(&self) -> Vec<HeadingItem> {
         let mut headings = Vec::new();
         let mut in_fence = false;
         let mut fence_marker = "";
 
+        let total_lines = self.rope.len_lines();
+        let mut start_line_idx = 0;
+
+        if total_lines >= 3 && self.rope.line(0).to_string().trim() == "---" {
+            let limit = total_lines.min(35);
+            for k in 1..limit {
+                let t = self.rope.line(k).to_string();
+                let trimmed = t.trim();
+                if trimmed == "---" || trimmed == "..." {
+                    start_line_idx = k + 1;
+                    break;
+                }
+            }
+        }
+
         for (idx, line_slice) in self.rope.lines().enumerate() {
+            if idx < start_line_idx {
+                continue;
+            }
             let line_str = line_slice.to_string();
             let trimmed = line_str.trim();
 
@@ -120,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_heading_extraction() {
-        let content = "# Header 1\nSome paragraph\n```python\n# Code comment\n```\n## Subheader 2\n### Subheader 3\nNot # A Header";
+        let content = "---\ntitle: demo\n---\n# Header 1\nSome paragraph\n```python\n# Code comment\n```\n## Subheader 2\n### Subheader 3\nNot # A Header";
         let buf = DocumentBuffer::new(content);
         let headings = buf.extract_headings();
 

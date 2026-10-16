@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { activeDocumentPath } from "./live-preview";
+import { getPreferences } from "../../components/preferences";
 
 export interface DragDropCallbacks {
   onOpenFile?: (filePath: string) => void;
@@ -8,7 +9,7 @@ export interface DragDropCallbacks {
 }
 
 /**
- * 注册剪贴板图片粘贴与外部文件拖入管道
+ * 注册剪贴板图片粘贴与外部文件拖入管道（支持按偏好设置自动选择 ./assets 或 ./${filename}.assets）
  */
 export function setupImageAndDropHandlers(
   view: EditorView,
@@ -18,7 +19,6 @@ export function setupImageAndDropHandlers(
   let lastDroppedPathTime = 0;
 
   const handleDroppedPath = async (filePath: string, insertPos: number) => {
-    // 防止 Tauri onDragDropEvent 与浏览器原生 drop 事件在极短时间内重复触发同一次拖放
     const now = Date.now();
     if (now - lastDroppedPathTime < 250) return;
     lastDroppedPathTime = now;
@@ -36,9 +36,11 @@ export function setupImageAndDropHandlers(
       lowerName.endsWith(".bmp")
     ) {
       try {
+        const folderMode = getPreferences().imageFolderMode;
         const relPath: string = await invoke("copy_image_to_assets", {
           docPath: activeDocumentPath,
           sourcePath: filePath,
+          folderMode,
         });
         const insertText = `![${fileName}](${relPath})\n`;
         view.dispatch({
@@ -82,10 +84,12 @@ export function setupImageAndDropHandlers(
           const filename = `image-${Date.now()}.${ext}`;
 
           try {
+            const folderMode = getPreferences().imageFolderMode;
             const relPath: string = await invoke("save_image_asset", {
               docPath: activeDocumentPath,
               filename,
               base64Data,
+              folderMode,
             });
 
             const insertText = `![${filename}](${relPath})\n`;
@@ -126,7 +130,7 @@ export function setupImageAndDropHandlers(
       // 标准浏览器环境静默降级
     });
 
-  // 3. 浏览器原生外部文件 drag/drop 事件兜底（严格过滤内部段落手柄与大纲拖拽）
+  // 3. 浏览器原生外部文件 drag/drop 事件兜底
   dom.addEventListener("dragover", (e: DragEvent) => {
     const types = e.dataTransfer?.types;
     if (!types || !Array.from(types).includes("Files")) return;

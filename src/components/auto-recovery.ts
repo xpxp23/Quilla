@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 export interface RecoverySnapshot {
   sessionId: string;
   filePath: string | null;
@@ -25,7 +27,6 @@ function readSnapshotMap(): Record<string, RecoverySnapshot> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const map: Record<string, RecoverySnapshot> = raw ? JSON.parse(raw) : {};
-    // 兼容迁移旧版单键快照
     const legacyRaw = localStorage.getItem(LEGACY_KEY);
     if (legacyRaw) {
       try {
@@ -50,18 +51,35 @@ function readSnapshotMap(): Record<string, RecoverySnapshot> {
 
 function writeSnapshotMap(map: Record<string, RecoverySnapshot>) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+    // 限制最多保留最近 8 份快照，防止 localStorage 5MB 容量溢出
+    const entries = Object.entries(map).sort((a, b) => b[1].timestamp - a[1].timestamp);
+    const trimmedMap: Record<string, RecoverySnapshot> = {};
+    for (const [k, v] of entries.slice(0, 8)) {
+      trimmedMap[k] = v;
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmedMap));
   } catch (e) {
-    console.error("写入自动恢复快照失败:", e);
+    // 若遇超长文档引发 QuotaExceededError，仅保留当前最新一条
+    try {
+      const entries = Object.entries(map).sort((a, b) => b[1].timestamp - a[1].timestamp);
+      if (entries.length > 0) {
+        const [k, v] = entries[0];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ [k]: v }));
+      }
+    } catch {
+      console.warn("本地存储配额已满，已自动交由 Rust 磁盘快照兜底:", e);
+    }
   }
 }
 
 /**
- * 实时在后台按当前窗口会话与文件路径保存脏内容快照，多窗口互不干扰
+ * 实时在后台按当前窗口会话与文件路径保存脏内容快照（同时同步至 Rust 后端 Ropey 与磁盘草稿）
  */
 export function saveRecoverySnapshot(filePath: string | null, content: string, title: string) {
   const map = readSnapshotMap();
-  const bucketKey = filePath ? `file::${filePath.replace(/\\/g, "/").toLowerCase()}` : CURRENT_SESSION_ID;
+  const bucketKey = filePath
+    ? `file::${filePath.replace(/\\/g, "/").toLowerCase()}`
+    : CURRENT_SESSION_ID;
   map[bucketKey] = {
     sessionId: CURRENT_SESSION_ID,
     filePath,
@@ -70,18 +88,26 @@ export function saveRecoverySnapshot(filePath: string | null, content: string, t
     title,
   };
   writeSnapshotMap(map);
+
+  // 同步至 Rust Ropey 缓冲区与磁盘级原子快照文件
+  invoke("sync_document_buffer", {
+    content,
+    fileId: bucketKey,
+  }).catch(() => {});
 }
 
 /**
- * 当当前窗口的文件正常保存或放弃更改时，仅清除当前文件/会话对应的快照，绝不误删其他窗口快照
+ * 当当前窗口的文件正常保存或放弃更改时，仅清除当前文件/会话对应的快照
  */
 export function clearRecoverySnapshot(filePath?: string | null) {
   const map = readSnapshotMap();
   delete map[CURRENT_SESSION_ID];
   delete map["legacy"];
+  invoke("clear_draft_snapshot", { fileId: CURRENT_SESSION_ID }).catch(() => {});
   if (filePath) {
     const fileKey = `file::${filePath.replace(/\\/g, "/").toLowerCase()}`;
     delete map[fileKey];
+    invoke("clear_draft_snapshot", { fileId: fileKey }).catch(() => {});
   }
   writeSnapshotMap(map);
 }
@@ -90,7 +116,6 @@ export function getRecoverySnapshot(): { key: string; snapshot: RecoverySnapshot
   const map = readSnapshotMap();
   const entries = Object.entries(map);
   if (entries.length === 0) return null;
-  // 按时间戳降序取最近的一份未保存快照
   entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
   const [key, snapshot] = entries[0];
   return { key, snapshot };
@@ -141,6 +166,7 @@ export function checkAndPromptRecovery(
     const map = readSnapshotMap();
     delete map[key];
     writeSnapshotMap(map);
+    invoke("clear_draft_snapshot", { fileId: key }).catch(() => {});
   };
 
   banner.querySelector(".btn-restore")?.addEventListener("click", () => {

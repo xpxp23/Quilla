@@ -6,11 +6,13 @@ import {
   ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { Range } from "@codemirror/state";
+import { Range, Text } from "@codemirror/state";
 import { imeState } from "./ime-guard";
 import { isTableDelimiter } from "./table-editor";
-import { findMermaidBlocks } from "./mermaid-extension";
-import { findMathBlocks } from "./math-block-extension";
+import { findMermaidBlocks, MermaidBlock } from "./mermaid-extension";
+import { findMathBlocks, MathBlock } from "./math-block-extension";
+import { tokenizeCodeLine } from "./code-highlighter";
+import { getPreferences } from "../../components/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import katex from "katex";
 import { centerElementInTypewriter } from "./typewriter-mode";
@@ -107,18 +109,15 @@ class MathWidget extends WidgetType {
   }
 }
 
-// 2. 任务列表 Checkbox Widget
+// 2. 任务列表 Checkbox Widget (缩进交由行级 CSS padding-left 统一控制，杜绝双重缩进偏移)
 class TaskWidget extends WidgetType {
-  constructor(readonly checked: boolean, readonly pos: number, readonly indentLen: number = 0) {
+  constructor(readonly checked: boolean, readonly pos: number) {
     super();
   }
 
   toDOM(view: EditorView) {
     const wrap = document.createElement("span");
     wrap.className = "task-list-item-prefix";
-    if (this.indentLen > 0) {
-      wrap.style.marginLeft = `${this.indentLen * 6}px`;
-    }
     const input = document.createElement("input");
     input.type = "checkbox";
     input.className = "task-list-item-checkbox";
@@ -135,11 +134,7 @@ class TaskWidget extends WidgetType {
   }
 
   eq(other: TaskWidget) {
-    return (
-      other.checked === this.checked &&
-      other.pos === this.pos &&
-      other.indentLen === this.indentLen
-    );
+    return other.checked === this.checked && other.pos === this.pos;
   }
 }
 
@@ -314,6 +309,7 @@ class CodeBlockHeaderWidget extends WidgetType {
     langBtn.className = "code-lang-tag";
     langBtn.title = "点击选择或输入代码语言，双击编辑围栏源码";
     langBtn.innerHTML = `
+      <span class="code-lang-dot"></span>
       <span>${this.lang ? this.lang.toUpperCase() : "PLAINTEXT"}</span>
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"></polyline></svg>
     `;
@@ -489,7 +485,7 @@ export function stripInlineMarkdown(raw: string): string {
     .trim();
 }
 
-// 5.5 动态 [TOC] 目录树 Widget (自动排除代码块内部 # 注释并剥离行内格式符)
+// 5.5 动态 [TOC] 目录树 Widget
 class TocWidget extends WidgetType {
   constructor(readonly linePos: number, readonly headingsSignature: string) {
     super();
@@ -644,29 +640,35 @@ interface InlineToken {
   data?: any;
 }
 
-function buildDecorations(view: EditorView): DecorationSet {
-  if (typeof document !== "undefined" && document.body.classList.contains("source-mode")) {
-    return Decoration.none;
-  }
+interface CodeRange {
+  startLine: number;
+  endLine: number;
+  lang: string;
+  fencePrefix: string;
+  codeText: string;
+  unclosed: boolean;
+}
 
-  const ranges: Range<Decoration>[] = [];
-  const addDeco = (from: number, to: number, deco: Decoration) => {
-    if (from <= to) {
-      ranges.push(deco.range(from, to));
-    }
-  };
+interface CachedDocStructure {
+  doc: Text;
+  frontMatterEndLine: number;
+  codeRanges: CodeRange[];
+  mermaidBlocks: MermaidBlock[];
+  mathBlocks: MathBlock[];
+  headingsSignature: string;
+}
 
-  const selection = view.state.selection.main;
-  const cursorHead = selection.head;
+let cachedStructure: CachedDocStructure | null = null;
+
+function getDocStructure(view: EditorView): CachedDocStructure {
   const doc = view.state.doc;
-  const cursorLine = doc.lineAt(cursorHead).number;
-  const isMultiLineSelection =
-    !selection.empty && doc.lineAt(selection.from).number !== doc.lineAt(selection.to).number;
+  if (cachedStructure && cachedStructure.doc === doc) {
+    return cachedStructure;
+  }
 
   const mermaidBlocks = findMermaidBlocks(view.state);
   const mathBlocks = findMathBlocks(view.state);
 
-  // 0. 识别顶部 YAML Front Matter (第1行为 --- 且在 35 行内由 --- 或 ... 闭合)
   let frontMatterEndLine = 0;
   if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
     const limit = Math.min(doc.lines, 35);
@@ -679,15 +681,6 @@ function buildDecorations(view: EditorView): DecorationSet {
     }
   }
 
-  // 1. 扫描普通代码块区间 (支持闭合及未闭合代码块实时着色，排除 mermaid)
-  interface CodeRange {
-    startLine: number;
-    endLine: number;
-    lang: string;
-    fencePrefix: string;
-    codeText: string;
-    unclosed: boolean;
-  }
   const codeRanges: CodeRange[] = [];
   let inCode = false;
   let inMermaid = false;
@@ -740,7 +733,6 @@ function buildDecorations(view: EditorView): DecorationSet {
     }
   }
 
-  // 支持正在输入的未闭合代码块实时着色，杜绝未闭合代码块内的 # 注释被渲染成大标题
   if (inCode && codeStart > 0) {
     codeRanges.push({
       startLine: codeStart,
@@ -752,724 +744,882 @@ function buildDecorations(view: EditorView): DecorationSet {
     });
   }
 
-  // 计算标题签名供 [TOC] 实时更新
   let headingsSignature = "";
-  for (let i = 1; i <= doc.lines; i++) {
+  for (let i = Math.max(1, frontMatterEndLine + 1); i <= doc.lines; i++) {
     const t = doc.line(i).text;
     if (/^#{1,6}\s+/.test(t)) {
       headingsSignature += `${i}:${t}|`;
     }
   }
 
-  // 2. 遍历全篇文档逐行构建结构与行内装饰
-  for (let lineNum = 1; lineNum <= doc.lines; lineNum++) {
-    const line = doc.line(lineNum);
-    const text = line.text;
-    const trimmed = text.trim();
+  cachedStructure = {
+    doc,
+    frontMatterEndLine,
+    codeRanges,
+    mermaidBlocks,
+    mathBlocks,
+    headingsSignature,
+  };
+  return cachedStructure;
+}
 
-    // 2.0 顶部 YAML Front Matter 样式渲染
-    if (frontMatterEndLine > 0 && lineNum <= frontMatterEndLine) {
-      const cls =
-        lineNum === 1
-          ? "cm-code-block-first-line cm-frontmatter-line"
-          : lineNum === frontMatterEndLine
-          ? "cm-code-block-last-line cm-frontmatter-line"
-          : "cm-code-block-line cm-frontmatter-line";
-      addDeco(line.from, line.from, Decoration.line({ class: cls }));
-      continue;
+let inlineMathTooltipEl: HTMLElement | null = null;
+function updateInlineMathTooltip(
+  view: EditorView,
+  activeMath: { latex: string; from: number; to: number } | null
+) {
+  if (typeof document === "undefined") return;
+  if (!activeMath || !getPreferences().inlineMathTooltip) {
+    if (inlineMathTooltipEl) inlineMathTooltipEl.classList.add("hidden");
+    return;
+  }
+
+  if (!inlineMathTooltipEl) {
+    inlineMathTooltipEl = document.createElement("div");
+    inlineMathTooltipEl.className = "ty-inline-math-tooltip hidden";
+    document.body.appendChild(inlineMathTooltipEl);
+  }
+
+  try {
+    katex.render(activeMath.latex.trim() || "\\text{...}", inlineMathTooltipEl, {
+      displayMode: false,
+      throwOnError: false,
+      output: "html",
+    });
+    inlineMathTooltipEl.classList.remove("hidden");
+    requestAnimationFrame(() => {
+      if (!inlineMathTooltipEl || inlineMathTooltipEl.classList.contains("hidden")) return;
+      const coords = view.coordsAtPos(activeMath.from);
+      if (!coords) {
+        inlineMathTooltipEl.classList.add("hidden");
+        return;
+      }
+      const w = inlineMathTooltipEl.offsetWidth || 120;
+      const h = inlineMathTooltipEl.offsetHeight || 32;
+      let top = coords.top - h - 8;
+      if (top < 36) top = coords.bottom + 8;
+      const left = Math.max(12, Math.min(coords.left, window.innerWidth - w - 12));
+      inlineMathTooltipEl.style.top = `${top}px`;
+      inlineMathTooltipEl.style.left = `${left}px`;
+    });
+  } catch {
+    inlineMathTooltipEl.classList.add("hidden");
+  }
+}
+
+function buildDecorations(view: EditorView): DecorationSet {
+  if (typeof document !== "undefined" && document.body.classList.contains("source-mode")) {
+    updateInlineMathTooltip(view, null);
+    return Decoration.none;
+  }
+
+  const ranges: Range<Decoration>[] = [];
+  const addDeco = (from: number, to: number, deco: Decoration) => {
+    if (from <= to) {
+      ranges.push(deco.range(from, to));
     }
+  };
 
-    // 2.1 检查是否位于普通代码块中
-    const codeRange = codeRanges.find((r) => lineNum >= r.startLine && lineNum <= r.endLine);
-    if (codeRange) {
-      if (lineNum === codeRange.startLine) {
-        addDeco(
-          line.from,
-          line.from,
-          Decoration.line({ class: "cm-code-block-first-line" })
+  const selection = view.state.selection.main;
+  const cursorHead = selection.head;
+  const doc = view.state.doc;
+  const cursorLine = doc.lineAt(cursorHead).number;
+  const isMultiLineSelection =
+    !selection.empty && doc.lineAt(selection.from).number !== doc.lineAt(selection.to).number;
+
+  const {
+    frontMatterEndLine,
+    codeRanges,
+    mermaidBlocks,
+    mathBlocks,
+    headingsSignature,
+  } = getDocStructure(view);
+
+  const prefs = getPreferences();
+  let activeInlineMath: { latex: string; from: number; to: number } | null = null;
+
+  // 计算视口可见行区间（外扩 45 行缓冲）
+  const visibleLineIntervals: Array<{ startLine: number; endLine: number }> = [];
+  if (view.visibleRanges && view.visibleRanges.length > 0) {
+    for (const vr of view.visibleRanges) {
+      const sLine = Math.max(1, doc.lineAt(vr.from).number - 45);
+      const eLine = Math.min(doc.lines, doc.lineAt(vr.to).number + 45);
+      if (
+        visibleLineIntervals.length > 0 &&
+        sLine <= visibleLineIntervals[visibleLineIntervals.length - 1].endLine + 1
+      ) {
+        visibleLineIntervals[visibleLineIntervals.length - 1].endLine = Math.max(
+          visibleLineIntervals[visibleLineIntervals.length - 1].endLine,
+          eLine
         );
-        const isCursorOnHeader = cursorLine === lineNum && !isMultiLineSelection;
-        if (!isCursorOnHeader) {
+      } else {
+        visibleLineIntervals.push({ startLine: sLine, endLine: eLine });
+      }
+    }
+  } else {
+    visibleLineIntervals.push({ startLine: 1, endLine: doc.lines });
+  }
+
+  const isLineVisible = (ln: number): boolean => {
+    for (const iv of visibleLineIntervals) {
+      if (ln >= iv.startLine && ln <= iv.endLine) return true;
+    }
+    return false;
+  };
+
+  for (const interval of visibleLineIntervals) {
+    for (let lineNum = interval.startLine; lineNum <= interval.endLine; lineNum++) {
+      if (!isLineVisible(lineNum)) continue;
+      const line = doc.line(lineNum);
+      const text = line.text;
+      const trimmed = text.trim();
+
+      // 2.0 顶部 YAML Front Matter 样式渲染
+      if (frontMatterEndLine > 0 && lineNum <= frontMatterEndLine) {
+        const cls =
+          lineNum === 1
+            ? "cm-code-block-first-line cm-frontmatter-line"
+            : lineNum === frontMatterEndLine
+            ? "cm-code-block-last-line cm-frontmatter-line"
+            : "cm-code-block-line cm-frontmatter-line";
+        addDeco(line.from, line.from, Decoration.line({ class: cls }));
+        continue;
+      }
+
+      // 2.1 检查是否位于普通代码块中（含多语言词法高亮与行号属性）
+      const codeRange = codeRanges.find((r) => lineNum >= r.startLine && lineNum <= r.endLine);
+      if (codeRange) {
+        if (lineNum === codeRange.startLine) {
+          addDeco(
+            line.from,
+            line.from,
+            Decoration.line({ class: "cm-code-block-first-line" })
+          );
+          const isCursorOnHeader = cursorLine === lineNum && !isMultiLineSelection;
+          if (!isCursorOnHeader) {
+            addDeco(
+              line.from,
+              line.to,
+              Decoration.replace({
+                widget: new CodeBlockHeaderWidget(
+                  codeRange.lang,
+                  codeRange.codeText,
+                  line.from,
+                  line.to,
+                  codeRange.fencePrefix
+                ),
+              })
+            );
+          }
+        } else if (!codeRange.unclosed && lineNum === codeRange.endLine) {
+          addDeco(
+            line.from,
+            line.from,
+            Decoration.line({ class: "cm-code-block-last-line" })
+          );
+          const isCursorOnFooter = cursorLine === lineNum && !isMultiLineSelection;
+          if (!isCursorOnFooter) {
+            addDeco(line.from, line.to, Decoration.replace({}));
+          }
+        } else {
+          const codeLineIdx = lineNum - codeRange.startLine;
+          addDeco(
+            line.from,
+            line.from,
+            Decoration.line({
+              class: "cm-code-block-line",
+              attributes: { "data-code-line": String(codeLineIdx) },
+            })
+          );
+          const synTokens = tokenizeCodeLine(text, codeRange.lang);
+          for (const st of synTokens) {
+            addDeco(line.from + st.from, line.from + st.to, Decoration.mark({ class: st.cls }));
+          }
+        }
+        continue;
+      }
+
+      // 2.15 Mermaid 流程图块
+      const mermaidBlock = mermaidBlocks.find((b) => lineNum >= b.startLine && lineNum <= b.endLine);
+      if (mermaidBlock) {
+        const isEditingThisMermaid =
+          cursorLine >= mermaidBlock.startLine && cursorLine <= mermaidBlock.endLine;
+        if (isEditingThisMermaid) {
+          if (lineNum === mermaidBlock.startLine) {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-first-line" }));
+          } else if (lineNum === mermaidBlock.endLine) {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-last-line" }));
+          } else {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-line" }));
+          }
+        }
+        continue;
+      }
+
+      // 2.16 多行独立数学公式块
+      const mathBlock = mathBlocks.find((b) => lineNum >= b.startLine && lineNum <= b.endLine);
+      if (mathBlock) {
+        const isEditingThisMath =
+          cursorLine >= mathBlock.startLine && cursorLine <= mathBlock.endLine;
+        if (isEditingThisMath) {
+          if (lineNum === mathBlock.startLine) {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-first-line" }));
+          } else if (lineNum === mathBlock.endLine) {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-last-line" }));
+          } else {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-line" }));
+          }
+        }
+        continue;
+      }
+
+      // 2.2 表格行交由专职 StateField 处理
+      if (trimmed.startsWith("|") || isTableDelimiter(trimmed)) {
+        continue;
+      }
+
+      // 2.3 水平分割线 (--- 或 *** 或 ___)
+      const hrMatch = trimmed.match(/^(\-{3,}|\*{3,}|_{3,})$/);
+      if (hrMatch) {
+        const isCursorOnHr = cursorLine === lineNum && !isMultiLineSelection;
+        if (!isCursorOnHr) {
           addDeco(
             line.from,
             line.to,
             Decoration.replace({
-              widget: new CodeBlockHeaderWidget(
-                codeRange.lang,
-                codeRange.codeText,
-                line.from,
-                line.to,
-                codeRange.fencePrefix
-              ),
+              widget: new HorizontalRuleWidget(line.from),
             })
           );
+          continue;
         }
-      } else if (!codeRange.unclosed && lineNum === codeRange.endLine) {
+      }
+
+      // 2.35 动态 [TOC] 目录树
+      const tocMatch = trimmed.match(/^\[TOC\]$/i);
+      if (tocMatch) {
+        const isCursorOnToc = cursorLine === lineNum && !isMultiLineSelection;
+        if (!isCursorOnToc) {
+          addDeco(
+            line.from,
+            line.to,
+            Decoration.replace({
+              widget: new TocWidget(line.from, headingsSignature),
+            })
+          );
+          continue;
+        }
+      }
+
+      // 2.4 独立单行公式块 ($$ formula $$)
+      const blockMathMatch = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
+      if (blockMathMatch) {
+        const isCursorInMath =
+          !isMultiLineSelection && cursorHead >= line.from && cursorHead <= line.to;
+        if (!isCursorInMath) {
+          addDeco(
+            line.from,
+            line.to,
+            Decoration.replace({
+              widget: new MathWidget(blockMathMatch[1], true, line.from + 2),
+            })
+          );
+          continue;
+        }
+      }
+
+      let prefixEnd = 0;
+
+      // 2.45 脚注定义行 ([^label]: ...)
+      const fnDefMatch = text.match(/^\[\^([^\]\n]+)\]:\s*/);
+      if (fnDefMatch) {
+        addDeco(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
+      }
+
+      // 2.5 引用块 (> Quote，精准只吞掉每个 > 后的单个可选空格，保留内部列表缩进空格)
+      const quoteMatch = text.match(/^(\s*(?:> ?)+)/);
+      if (quoteMatch) {
+        const quotePrefixLen = quoteMatch[0].length;
+        const quoteLevel = (quoteMatch[0].match(/>/g) || []).length;
+        const isPrevQuote =
+          lineNum > 1 && /^\s*>/.test(doc.line(lineNum - 1).text);
+        const isNextQuote =
+          lineNum < doc.lines && /^\s*>/.test(doc.line(lineNum + 1).text);
+        const posClasses = [
+          `cm-blockquote`,
+          `cm-blockquote-level-${Math.min(3, quoteLevel)}`,
+          !isPrevQuote ? "cm-blockquote-first" : "",
+          !isNextQuote ? "cm-blockquote-last" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        const isCursorAtQuotePrefix =
+          !isMultiLineSelection &&
+          cursorHead >= line.from &&
+          cursorHead <= line.from + quotePrefixLen;
+
         addDeco(
           line.from,
           line.from,
-          Decoration.line({ class: "cm-code-block-last-line" })
-        );
-        const isCursorOnFooter = cursorLine === lineNum && !isMultiLineSelection;
-        if (!isCursorOnFooter) {
-          addDeco(line.from, line.to, Decoration.replace({}));
-        }
-      } else {
-        addDeco(
-          line.from,
-          line.from,
-          Decoration.line({ class: "cm-code-block-line" })
-        );
-      }
-      continue;
-    }
-
-    // 2.15 Mermaid 流程图块由 mermaidLiveViewField 专职处理
-    const mermaidBlock = mermaidBlocks.find((b) => lineNum >= b.startLine && lineNum <= b.endLine);
-    if (mermaidBlock) {
-      const isEditingThisMermaid =
-        cursorLine >= mermaidBlock.startLine && cursorLine <= mermaidBlock.endLine;
-      if (isEditingThisMermaid) {
-        if (lineNum === mermaidBlock.startLine) {
-          addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-first-line" }));
-        } else if (lineNum === mermaidBlock.endLine) {
-          addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-last-line" }));
-        } else {
-          addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-line" }));
-        }
-      }
-      continue;
-    }
-
-    // 2.16 多行独立数学公式块由 mathBlockLiveViewField 专职处理
-    const mathBlock = mathBlocks.find((b) => lineNum >= b.startLine && lineNum <= b.endLine);
-    if (mathBlock) {
-      const isEditingThisMath =
-        cursorLine >= mathBlock.startLine && cursorLine <= mathBlock.endLine;
-      if (isEditingThisMath) {
-        if (lineNum === mathBlock.startLine) {
-          addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-first-line" }));
-        } else if (lineNum === mathBlock.endLine) {
-          addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-last-line" }));
-        } else {
-          addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-line" }));
-        }
-      }
-      continue;
-    }
-
-    // 2.2 表格行交由专职 StateField 处理
-    if (trimmed.startsWith("|") || isTableDelimiter(trimmed)) {
-      continue;
-    }
-
-    // 2.3 水平分割线 (--- 或 *** 或 ___)
-    const hrMatch = trimmed.match(/^(\-{3,}|\*{3,}|_{3,})$/);
-    if (hrMatch) {
-      const isCursorOnHr = cursorLine === lineNum && !isMultiLineSelection;
-      if (!isCursorOnHr) {
-        addDeco(
-          line.from,
-          line.to,
-          Decoration.replace({
-            widget: new HorizontalRuleWidget(line.from),
+          Decoration.line({
+            class: posClasses,
           })
         );
-        continue;
-      }
-    }
-
-    // 2.35 动态 [TOC] 目录树
-    const tocMatch = trimmed.match(/^\[TOC\]$/i);
-    if (tocMatch) {
-      const isCursorOnToc = cursorLine === lineNum && !isMultiLineSelection;
-      if (!isCursorOnToc) {
-        addDeco(
-          line.from,
-          line.to,
-          Decoration.replace({
-            widget: new TocWidget(line.from, headingsSignature),
-          })
-        );
-        continue;
-      }
-    }
-
-    // 2.4 独立单行公式块 ($$ formula $$)
-    const blockMathMatch = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
-    if (blockMathMatch) {
-      const isCursorInMath =
-        !isMultiLineSelection && cursorHead >= line.from && cursorHead <= line.to;
-      if (!isCursorInMath) {
-        addDeco(
-          line.from,
-          line.to,
-          Decoration.replace({
-            widget: new MathWidget(blockMathMatch[1], true, line.from + 2),
-          })
-        );
-        continue;
-      }
-    }
-
-    let prefixEnd = 0;
-
-    // 2.45 脚注定义行 ([^label]: ...)
-    const fnDefMatch = text.match(/^\[\^([^\]\n]+)\]:\s*/);
-    if (fnDefMatch) {
-      addDeco(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
-    }
-
-    // 2.5 引用块 (> Quote，支持多级嵌套 >> 及引用块内嵌标题/列表/任务)
-    const quoteMatch = text.match(/^(\s*(?:>\s*)+)/);
-    if (quoteMatch) {
-      const quotePrefixLen = quoteMatch[0].length;
-      const quoteLevel = (quoteMatch[0].match(/>/g) || []).length;
-      const isCursorAtQuotePrefix =
-        !isMultiLineSelection &&
-        cursorHead >= line.from &&
-        cursorHead <= line.from + quotePrefixLen;
-      addDeco(
-        line.from,
-        line.from,
-        Decoration.line({
-          class: `cm-blockquote cm-blockquote-level-${Math.min(3, quoteLevel)}`,
-        })
-      );
-      if (!isCursorAtQuotePrefix) {
-        addDeco(line.from, line.from + quotePrefixLen, Decoration.replace({}));
-      } else {
-        addDeco(
-          line.from,
-          line.from + quotePrefixLen,
-          Decoration.mark({ class: "cm-md-delimiter" })
-        );
-      }
-      prefixEnd = quotePrefixLen;
-    }
-
-    const restText = text.slice(prefixEnd);
-
-    // 2.6 标题识别 (# Title，支持顶层标题及引用块内标题 > ### Title)
-    const headerMatch = restText.match(/^(#{1,6})\s+/);
-    if (headerMatch) {
-      const depth = headerMatch[1].length;
-      const hStart = prefixEnd;
-      const hEnd = prefixEnd + headerMatch[0].length;
-      const isCursorAtPrefix =
-        !isMultiLineSelection && cursorHead >= line.from + hStart && cursorHead <= line.from + hEnd;
-
-      addDeco(
-        line.from,
-        line.from,
-        Decoration.line({ class: `cm-heading cm-heading-${depth}` })
-      );
-      if (!isCursorAtPrefix) {
-        addDeco(line.from + hStart, line.from + hEnd, Decoration.replace({}));
-      } else {
-        addDeco(
-          line.from + hStart,
-          line.from + hEnd,
-          Decoration.mark({ class: "cm-md-delimiter" })
-        );
-      }
-      prefixEnd = hEnd;
-    }
-
-    const tokens: InlineToken[] = [];
-
-    // 2.68 列表项识别与多级缩进引导线 (支持引用块内列表与排版级圆点符号 • / ◦ / ▪)
-    const afterQuoteAndHeader = text.slice(prefixEnd);
-    const taskMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]\s+\[)([ xX])(\]\s*)/);
-    const listMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]|\d+\.)(\s+)/);
-
-    if (taskMatch) {
-      const indentSpaces = taskMatch[1].length;
-      const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
-      addDeco(
-        line.from,
-        line.from,
-        Decoration.line({ class: `cm-list-item cm-task-list-item cm-list-level-${level}` })
-      );
-      const checkRelOffset = prefixEnd + taskMatch[1].length + taskMatch[2].length;
-      const isChecked = taskMatch[3].toLowerCase() === "x";
-      tokens.push({
-        type: "task",
-        start: prefixEnd,
-        end: prefixEnd + taskMatch[0].length,
-        content: taskMatch[0],
-        isOpaque: true,
-        data: { isChecked, checkPos: checkRelOffset, indentLen: indentSpaces },
-      });
-      prefixEnd += taskMatch[0].length;
-    } else if (listMatch) {
-      const indentSpaces = listMatch[1].length;
-      const marker = listMatch[2];
-      const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
-      addDeco(
-        line.from,
-        line.from,
-        Decoration.line({ class: `cm-list-item cm-list-level-${level}` })
-      );
-      // 若为无序列表 (- / * / +)，在非光标处渲染为精致圆点 Widget
-      if (/^[-*+]$/.test(marker)) {
-        const markerStart = prefixEnd + indentSpaces;
-        const markerEnd = markerStart + marker.length;
-        tokens.push({
-          type: "bullet",
-          start: markerStart,
-          end: markerEnd,
-          content: marker,
-          isOpaque: true,
-          data: { level },
-        });
-      }
-      prefixEnd += listMatch[0].length;
-    }
-
-    // 2.7 第一梯队：收集不可嵌套的原子 Token (行内代码、数学公式、图片、脚注引用)
-    let m: RegExpExecArray | null;
-
-    // 行内代码 (`code`)
-    const codeRegex = /`([^`\n]+)`/g;
-    while ((m = codeRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      tokens.push({
-        type: "code",
-        start: m.index,
-        end: m.index + m[0].length,
-        content: m[1],
-        isOpaque: true,
-      });
-    }
-
-    // 行内数学公式 ($formula$) - 严格遵循 Pandoc/Typora 紧邻非空格与非数字后缀规则，杜绝 $5 ... $10 误判
-    const mathRegex = /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g;
-    while ((m = mathRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      tokens.push({
-        type: "math",
-        start: m.index,
-        end: m.index + m[0].length,
-        content: m[1],
-        isOpaque: true,
-      });
-    }
-
-    // 行内图片 (![alt](src)) 与 HTML 图片标签 (<img ... />)
-    const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
-    while ((m = imgRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      tokens.push({
-        type: "image",
-        start: m.index,
-        end: m.index + m[0].length,
-        content: m[0],
-        isOpaque: true,
-        data: { alt: m[1], src: m[2], width: "", align: "left" },
-      });
-    }
-
-    const htmlImgRegex = /<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi;
-    while ((m = htmlImgRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const fullAttrs = `${m[1]} ${m[3]}`;
-      const altMatch = fullAttrs.match(/alt=["']([^"']*)["']/i);
-      const widthMatch = fullAttrs.match(/width=["']([^"']*)["']/i);
-      const alignMatch = fullAttrs.match(/align=["']([^"']*)["']/i);
-      tokens.push({
-        type: "image",
-        start: m.index,
-        end: m.index + m[0].length,
-        content: m[0],
-        isOpaque: true,
-        data: {
-          src: m[2],
-          alt: altMatch ? altMatch[1] : "",
-          width: widthMatch ? widthMatch[1] : "",
-          align: alignMatch ? alignMatch[1] : "left",
-        },
-      });
-    }
-
-    // 行内脚注引用 [^note] (排除定义行)
-    const fnRefRegex = /\[\^([^\]\n]+)\](?!\:)/g;
-    while ((m = fnRefRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      tokens.push({
-        type: "footnote_ref",
-        start: m.index,
-        end: m.index + m[0].length,
-        content: m[0],
-        isOpaque: true,
-        data: { label: m[1] },
-      });
-    }
-
-    // 锁定不透明区间（代码、公式、图片内部的字符绝不再参与加粗/斜体/链接解析）
-    tokens.sort((a, b) => a.start - b.start);
-    const opaqueSpans: Array<{ start: number; end: number }> = [];
-    const acceptedTokens: InlineToken[] = [];
-    let opaqueLimit = 0;
-    for (const tok of tokens) {
-      if (tok.start >= opaqueLimit) {
-        acceptedTokens.push(tok);
-        opaqueSpans.push({ start: tok.start, end: tok.end });
-        opaqueLimit = tok.end;
-      }
-    }
-
-    const OverlapsOpaque = (s: number, e: number): boolean =>
-      opaqueSpans.some((sp) => s < sp.end && e > sp.start);
-
-    // Track delimiter replacement intervals so two Decoration.replace ranges never collide
-    const delimiterIntervals: Array<{ start: number; end: number }> = opaqueSpans.map((sp) => ({
-      start: sp.start,
-      end: sp.end,
-    }));
-    const canPlaceDelimiters = (d1Start: number, d1End: number, d2Start: number, d2End: number) => {
-      const collides = delimiterIntervals.some(
-        (iv) =>
-          (d1Start < iv.end && d1End > iv.start) || (d2Start < iv.end && d2End > iv.start)
-      );
-      if (collides) return false;
-      delimiterIntervals.push({ start: d1Start, end: d1End }, { start: d2Start, end: d2End });
-      return true;
-    };
-
-    // 2.8 第二梯队：收集可组合与嵌套的行内富文本格式 Token (支持 **[链接](url)** 与 **加粗含 `代码`**)
-    // 超链接 ([text](url)) - 排除图片
-    const linkRegex = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
-    while ((m = linkRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      if (m.index > 0 && text[m.index - 1] === "!") continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (OverlapsOpaque(s, e)) continue;
-      const textLen = m[1].length;
-      if (canPlaceDelimiters(s, s + 1, s + 1 + textLen, e)) {
-        acceptedTokens.push({
-          type: "link",
-          start: s,
-          end: e,
-          content: m[0],
-          data: { text: m[1], url: m[2] },
-        });
-      }
-    }
-
-    // 行内加粗斜体 (***bold italic*** 或 ___bold italic___)
-    const boldItalicRegex = /(\*{3}|_{3})([^*_\n]+?)\1/g;
-    while ((m = boldItalicRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if ( canPlaceDelimiters(s, s + 3, e - 3, e)) {
-        acceptedTokens.push({
-          type: "bold_italic",
-          start: s,
-          end: e,
-          content: m[2],
-        });
-      }
-    }
-
-    // 行内加粗 (**bold** 或 __bold__)
-    const boldRegex = /(?<!\*)(\*{2})(?!\*)([^\n]+?)(?<!\*)\1(?!\*)|(?<!_)(_{2})(?!_)([^\n]+?)(?<!_)\3(?!_)/g;
-    while ((m = boldRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
-        acceptedTokens.push({
-          type: "bold",
-          start: s,
-          end: e,
-          content: m[2] || m[4],
-        });
-      }
-    }
-
-    // 行内斜体 (*italic* 或 _italic_)
-    const italicRegex = /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g;
-    while ((m = italicRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
-        acceptedTokens.push({
-          type: "italic",
-          start: s,
-          end: e,
-          content: m[1] || m[2],
-        });
-      }
-    }
-
-    // 行内删除线 (~~del~~)
-    const strikeRegex = /~~([^~\n]+)~~/g;
-    while ((m = strikeRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
-        acceptedTokens.push({
-          type: "strikethrough",
-          start: s,
-          end: e,
-          content: m[1],
-        });
-      }
-    }
-
-    // 行内高亮 (==mark==)
-    const highlightRegex = /==([^=\n]+)==/g;
-    while ((m = highlightRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
-        acceptedTokens.push({
-          type: "highlight",
-          start: s,
-          end: e,
-          content: m[1],
-        });
-      }
-    }
-
-    // 行内下标 (H~2~O)
-    const subRegex = /(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g;
-    while ((m = subRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
-        acceptedTokens.push({
-          type: "subscript",
-          start: s,
-          end: e,
-          content: m[1],
-        });
-      }
-    }
-
-    // 行内上标 (X^2^)
-    const supRegex = /\^([^\^\s\n][^\^\n]*?)\^/g;
-    while ((m = supRegex.exec(text)) !== null) {
-      if (m.index < prefixEnd) continue;
-      const s = m.index;
-      const e = m.index + m[0].length;
-      if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
-        acceptedTokens.push({
-          type: "superscript",
-          start: s,
-          end: e,
-          content: m[1],
-        });
-      }
-    }
-
-    // 核心：Token 级高雅微观局部展开
-    for (const tok of acceptedTokens) {
-      const s = line.from + tok.start;
-      const e = line.from + tok.end;
-
-      const isCursorInside = !isMultiLineSelection && cursorHead >= s && cursorHead <= e;
-
-      if (tok.type === "task") {
-        if (!isCursorInside) {
+        if (!isCursorAtQuotePrefix) {
+          if (quotePrefixLen > 0) {
+            addDeco(line.from, line.from + quotePrefixLen, Decoration.replace({}));
+          }
+        } else {
           addDeco(
-            s,
-            e,
-            Decoration.replace({
-              widget: new TaskWidget(
-                tok.data.isChecked,
-                line.from + tok.data.checkPos,
-                tok.data.indentLen
-              ),
-            })
-          );
-        }
-      } else if (tok.type === "bullet") {
-        if (!isCursorInside) {
-          addDeco(
-            s,
-            e,
-            Decoration.replace({
-              widget: new BulletWidget(tok.data.level, s),
-            })
-          );
-        } else {
-          addDeco(s, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "image") {
-        if (!isCursorInside) {
-          addDeco(
-            s,
-            e,
-            Decoration.replace({
-              widget: new ImageWidget(
-                tok.data.alt,
-                tok.data.src,
-                s,
-                e,
-                tok.data.width,
-                tok.data.align
-              ),
-            })
-          );
-        }
-      } else if (tok.type === "bold_italic") {
-        if (!isCursorInside) {
-          addDeco(s, s + 3, Decoration.replace({}));
-          addDeco(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
-          addDeco(e - 3, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 3, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
-          addDeco(e - 3, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "bold") {
-        if (!isCursorInside) {
-          addDeco(s, s + 2, Decoration.replace({}));
-          addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
-          addDeco(e - 2, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
-          addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "italic") {
-        if (!isCursorInside) {
-          addDeco(s, s + 1, Decoration.replace({}));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
-          addDeco(e - 1, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "strikethrough") {
-        if (!isCursorInside) {
-          addDeco(s, s + 2, Decoration.replace({}));
-          addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
-          addDeco(e - 2, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
-          addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "highlight") {
-        if (!isCursorInside) {
-          addDeco(s, s + 2, Decoration.replace({}));
-          addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
-          addDeco(e - 2, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
-          addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "subscript") {
-        if (!isCursorInside) {
-          addDeco(s, s + 1, Decoration.replace({}));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
-          addDeco(e - 1, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "superscript") {
-        if (!isCursorInside) {
-          addDeco(s, s + 1, Decoration.replace({}));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
-          addDeco(e - 1, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "footnote_ref") {
-        if (!isCursorInside) {
-          addDeco(
-            s,
-            e,
-            Decoration.replace({
-              widget: new FootnoteRefWidget(tok.data.label, s),
-            })
-          );
-        } else {
-          addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 2, e - 1, Decoration.mark({ class: "cm-footnote-ref" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "code") {
-        if (!isCursorInside) {
-          addDeco(s, s + 1, Decoration.replace({}));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
-          addDeco(e - 1, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
-        }
-      } else if (tok.type === "link") {
-        const textLen = tok.data.text.length;
-        const linkAttrs = {
-          "data-href": tok.data.url,
-          "data-text": tok.data.text,
-          "data-from": String(s),
-          "data-to": String(e),
-          title: `Ctrl+点击打开: ${tok.data.url}`,
-        };
-        if (!isCursorInside) {
-          addDeco(s, s + 1, Decoration.replace({}));
-          addDeco(
-            s + 1,
-            s + 1 + textLen,
-            Decoration.mark({
-              class: "cm-link",
-              attributes: linkAttrs,
-            })
-          );
-          addDeco(s + 1 + textLen, e, Decoration.replace({}));
-        } else {
-          addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(
-            s + 1,
-            s + 1 + textLen,
-            Decoration.mark({
-              class: "cm-link",
-              attributes: linkAttrs,
-            })
-          );
-          addDeco(
-            s + 1 + textLen,
-            s + 1 + textLen + 2,
+            line.from,
+            line.from + quotePrefixLen,
             Decoration.mark({ class: "cm-md-delimiter" })
           );
-          addDeco(s + 1 + textLen + 2, e - 1, Decoration.mark({ class: "cm-md-url" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
         }
-      } else if (tok.type === "math") {
-        if (!isCursorInside) {
-          addDeco(
-            s,
-            e,
-            Decoration.replace({
-              widget: new MathWidget(tok.content, false, s + 1),
-            })
-          );
+        prefixEnd = quotePrefixLen;
+      }
+
+      const restText = text.slice(prefixEnd);
+
+      // 2.6 标题识别 (# Title，支持顶层标题及引用块内标题 > ### Title)
+      const headerMatch = restText.match(/^(#{1,6})\s+/);
+      if (headerMatch) {
+        const depth = headerMatch[1].length;
+        const hStart = prefixEnd;
+        const hEnd = prefixEnd + headerMatch[0].length;
+        const isCursorAtPrefix =
+          !isMultiLineSelection && cursorHead >= line.from + hStart && cursorHead <= line.from + hEnd;
+
+        addDeco(
+          line.from,
+          line.from,
+          Decoration.line({ class: `cm-heading cm-heading-${depth}` })
+        );
+        if (!isCursorAtPrefix) {
+          addDeco(line.from + hStart, line.from + hEnd, Decoration.replace({}));
         } else {
-          addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-          addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
-          addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          addDeco(
+            line.from + hStart,
+            line.from + hEnd,
+            Decoration.mark({ class: "cm-md-delimiter" })
+          );
+        }
+        prefixEnd = hEnd;
+      }
+
+      const tokens: InlineToken[] = [];
+
+      // 2.68 列表项识别与多级缩进引导线
+      // 统一将缩进空格交由行级 CSS padding-left 呈现，消除无序/有序/任务列表缩进不一致与展开抖动
+      const afterQuoteAndHeader = text.slice(prefixEnd);
+      const taskMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]\s+\[)([ xX])(\]\s*)/);
+      const listMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]|\d+\.)(\s+)/);
+
+      if (taskMatch) {
+        const indentSpaces = taskMatch[1].length;
+        const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
+        addDeco(
+          line.from,
+          line.from,
+          Decoration.line({ class: `cm-list-item cm-task-list-item cm-list-level-${level}` })
+        );
+        if (indentSpaces > 0) {
+          const indentFrom = line.from + prefixEnd;
+          const indentTo = indentFrom + indentSpaces;
+          const isCursorInIndent =
+            !isMultiLineSelection && cursorHead >= indentFrom && cursorHead <= indentTo;
+          if (!isCursorInIndent) {
+            addDeco(indentFrom, indentTo, Decoration.replace({}));
+          }
+        }
+        const checkRelOffset = prefixEnd + indentSpaces + taskMatch[2].length;
+        const isChecked = taskMatch[3].toLowerCase() === "x";
+        tokens.push({
+          type: "task",
+          start: prefixEnd + indentSpaces,
+          end: prefixEnd + taskMatch[0].length,
+          content: taskMatch[0].slice(indentSpaces),
+          isOpaque: true,
+          data: { isChecked, checkPos: checkRelOffset },
+        });
+        prefixEnd += taskMatch[0].length;
+      } else if (listMatch) {
+        const indentSpaces = listMatch[1].length;
+        const marker = listMatch[2];
+        const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
+        addDeco(
+          line.from,
+          line.from,
+          Decoration.line({ class: `cm-list-item cm-list-level-${level}` })
+        );
+        if (indentSpaces > 0) {
+          const indentFrom = line.from + prefixEnd;
+          const indentTo = indentFrom + indentSpaces;
+          const isCursorInIndent =
+            !isMultiLineSelection && cursorHead >= indentFrom && cursorHead <= indentTo;
+          if (!isCursorInIndent) {
+            addDeco(indentFrom, indentTo, Decoration.replace({}));
+          }
+        }
+        if (/^[-*+]$/.test(marker)) {
+          const markerStart = prefixEnd + indentSpaces;
+          const markerEnd = markerStart + marker.length;
+          tokens.push({
+            type: "bullet",
+            start: markerStart,
+            end: markerEnd,
+            content: marker,
+            isOpaque: true,
+            data: { level },
+          });
+        }
+        prefixEnd += listMatch[0].length;
+      }
+
+      // 2.7 第一梯队：收集不可嵌套的原子 Token
+      let m: RegExpExecArray | null;
+
+      const codeRegex = /`([^`\n]+)`/g;
+      while ((m = codeRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        tokens.push({
+          type: "code",
+          start: m.index,
+          end: m.index + m[0].length,
+          content: m[1],
+          isOpaque: true,
+        });
+      }
+
+      const mathRegex = /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g;
+      while ((m = mathRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        tokens.push({
+          type: "math",
+          start: m.index,
+          end: m.index + m[0].length,
+          content: m[1],
+          isOpaque: true,
+        });
+      }
+
+      const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+      while ((m = imgRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        tokens.push({
+          type: "image",
+          start: m.index,
+          end: m.index + m[0].length,
+          content: m[0],
+          isOpaque: true,
+          data: { alt: m[1], src: m[2], width: "", align: "left" },
+        });
+      }
+
+      const htmlImgRegex = /<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi;
+      while ((m = htmlImgRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const fullAttrs = `${m[1]} ${m[3]}`;
+        const altMatch = fullAttrs.match(/alt=["']([^"']*)["']/i);
+        const widthMatch = fullAttrs.match(/width=["']([^"']*)["']/i);
+        const alignMatch = fullAttrs.match(/align=["']([^"']*)["']/i);
+        tokens.push({
+          type: "image",
+          start: m.index,
+          end: m.index + m[0].length,
+          content: m[0],
+          isOpaque: true,
+          data: {
+            src: m[2],
+            alt: altMatch ? altMatch[1] : "",
+            width: widthMatch ? widthMatch[1] : "",
+            align: alignMatch ? alignMatch[1] : "left",
+          },
+        });
+      }
+
+      const fnRefRegex = /\[\^([^\]\n]+)\](?!\:)/g;
+      while ((m = fnRefRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        tokens.push({
+          type: "footnote_ref",
+          start: m.index,
+          end: m.index + m[0].length,
+          content: m[0],
+          isOpaque: true,
+          data: { label: m[1] },
+        });
+      }
+
+      tokens.sort((a, b) => a.start - b.start);
+      const opaqueSpans: Array<{ start: number; end: number }> = [];
+      const acceptedTokens: InlineToken[] = [];
+      let opaqueLimit = 0;
+      for (const tok of tokens) {
+        if (tok.start >= opaqueLimit) {
+          acceptedTokens.push(tok);
+          opaqueSpans.push({ start: tok.start, end: tok.end });
+          opaqueLimit = tok.end;
+        }
+      }
+
+      const OverlapsOpaque = (s: number, e: number): boolean =>
+        opaqueSpans.some((sp) => s < sp.end && e > sp.start);
+
+      const delimiterIntervals: Array<{ start: number; end: number }> = opaqueSpans.map((sp) => ({
+        start: sp.start,
+        end: sp.end,
+      }));
+      const canPlaceDelimiters = (
+        d1Start: number,
+        d1End: number,
+        d2Start: number,
+        d2End: number
+      ) => {
+        const collides = delimiterIntervals.some(
+          (iv) =>
+            (d1Start < iv.end && d1End > iv.start) || (d2Start < iv.end && d2End > iv.start)
+        );
+        if (collides) return false;
+        delimiterIntervals.push({ start: d1Start, end: d1End }, { start: d2Start, end: d2End });
+        return true;
+      };
+
+      // 2.8 第二梯队：收集可组合与嵌套的行内富文本格式 Token
+      const linkRegex = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+      while ((m = linkRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        if (m.index > 0 && text[m.index - 1] === "!") continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (OverlapsOpaque(s, e)) continue;
+        const textLen = m[1].length;
+        if (canPlaceDelimiters(s, s + 1, s + 1 + textLen, e)) {
+          acceptedTokens.push({
+            type: "link",
+            start: s,
+            end: e,
+            content: m[0],
+            data: { text: m[1], url: m[2] },
+          });
+        }
+      }
+
+      const boldItalicRegex = /(\*{3}|_{3})([^*_\n]+?)\1/g;
+      while ((m = boldItalicRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 3, e - 3, e)) {
+          acceptedTokens.push({
+            type: "bold_italic",
+            start: s,
+            end: e,
+            content: m[2],
+          });
+        }
+      }
+
+      const boldRegex =
+        /(?<!\*)(\*{2})(?!\*)([^\n]+?)(?<!\*)\1(?!\*)|(?<!_)(_{2})(?!_)([^\n]+?)(?<!_)\3(?!_)/g;
+      while ((m = boldRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
+          acceptedTokens.push({
+            type: "bold",
+            start: s,
+            end: e,
+            content: m[2] || m[4],
+          });
+        }
+      }
+
+      const italicRegex =
+        /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g;
+      while ((m = italicRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
+          acceptedTokens.push({
+            type: "italic",
+            start: s,
+            end: e,
+            content: m[1] || m[2],
+          });
+        }
+      }
+
+      const strikeRegex = /~~([^~\n]+)~~/g;
+      while ((m = strikeRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
+          acceptedTokens.push({
+            type: "strikethrough",
+            start: s,
+            end: e,
+            content: m[1],
+          });
+        }
+      }
+
+      const highlightRegex = /==([^=\n]+)==/g;
+      while ((m = highlightRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
+          acceptedTokens.push({
+            type: "highlight",
+            start: s,
+            end: e,
+            content: m[1],
+          });
+        }
+      }
+
+      const subRegex = /(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g;
+      while ((m = subRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
+          acceptedTokens.push({
+            type: "subscript",
+            start: s,
+            end: e,
+            content: m[1],
+          });
+        }
+      }
+
+      const supRegex = /\^([^\^\s\n][^\^\n]*?)\^/g;
+      while ((m = supRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const s = m.index;
+        const e = m.index + m[0].length;
+        if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
+          acceptedTokens.push({
+            type: "superscript",
+            start: s,
+            end: e,
+            content: m[1],
+          });
+        }
+      }
+
+      // 核心：Token 级高雅微观局部展开
+      for (const tok of acceptedTokens) {
+        const s = line.from + tok.start;
+        const e = line.from + tok.end;
+
+        const isCursorInside = !isMultiLineSelection && cursorHead >= s && cursorHead <= e;
+
+        if (tok.type === "task") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new TaskWidget(
+                  tok.data.isChecked,
+                  line.from + tok.data.checkPos
+                ),
+              })
+            );
+          }
+        } else if (tok.type === "bullet") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new BulletWidget(tok.data.level, s),
+              })
+            );
+          } else {
+            addDeco(s, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "image") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new ImageWidget(
+                  tok.data.alt,
+                  tok.data.src,
+                  s,
+                  e,
+                  tok.data.width,
+                  tok.data.align
+                ),
+              })
+            );
+          }
+        } else if (tok.type === "bold_italic") {
+          if (!isCursorInside) {
+            addDeco(s, s + 3, Decoration.replace({}));
+            addDeco(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
+            addDeco(e - 3, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 3, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 3, e - 3, Decoration.mark({ class: "cm-strong cm-emphasis" }));
+            addDeco(e - 3, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "bold") {
+          if (!isCursorInside) {
+            addDeco(s, s + 2, Decoration.replace({}));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
+            addDeco(e - 2, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strong" }));
+            addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "italic") {
+          if (!isCursorInside) {
+            addDeco(s, s + 1, Decoration.replace({}));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
+            addDeco(e - 1, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-emphasis" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "strikethrough") {
+          if (!isCursorInside) {
+            addDeco(s, s + 2, Decoration.replace({}));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
+            addDeco(e - 2, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-strikethrough" }));
+            addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "highlight") {
+          if (!isCursorInside) {
+            addDeco(s, s + 2, Decoration.replace({}));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
+            addDeco(e - 2, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-highlight" }));
+            addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "subscript") {
+          if (!isCursorInside) {
+            addDeco(s, s + 1, Decoration.replace({}));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
+            addDeco(e - 1, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-subscript" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "superscript") {
+          if (!isCursorInside) {
+            addDeco(s, s + 1, Decoration.replace({}));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
+            addDeco(e - 1, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-superscript" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "footnote_ref") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new FootnoteRefWidget(tok.data.label, s),
+              })
+            );
+          } else {
+            addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 2, e - 1, Decoration.mark({ class: "cm-footnote-ref" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "code") {
+          if (!isCursorInside) {
+            addDeco(s, s + 1, Decoration.replace({}));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
+            addDeco(e - 1, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "link") {
+          const textLen = tok.data.text.length;
+          const linkAttrs = {
+            "data-href": tok.data.url,
+            "data-text": tok.data.text,
+            "data-from": String(s),
+            "data-to": String(e),
+            title: `点击查看/编辑链接，Ctrl+点击打开: ${tok.data.url}`,
+          };
+          const isCursorInUrlPart =
+            isCursorInside &&
+            (!prefs.compactLinkExpansion ||
+              cursorHead <= s + 1 ||
+              cursorHead >= s + 1 + textLen);
+
+          if (!isCursorInUrlPart) {
+            addDeco(s, s + 1, Decoration.replace({}));
+            addDeco(
+              s + 1,
+              s + 1 + textLen,
+              Decoration.mark({
+                class: isCursorInside ? "cm-link cm-link-active" : "cm-link",
+                attributes: linkAttrs,
+              })
+            );
+            addDeco(s + 1 + textLen, e, Decoration.replace({}));
+          } else {
+            addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(
+              s + 1,
+              s + 1 + textLen,
+              Decoration.mark({
+                class: "cm-link cm-link-active",
+                attributes: linkAttrs,
+              })
+            );
+            addDeco(
+              s + 1 + textLen,
+              s + 1 + textLen + 2,
+              Decoration.mark({ class: "cm-md-delimiter" })
+            );
+            addDeco(s + 1 + textLen + 2, e - 1, Decoration.mark({ class: "cm-md-url" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "math") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new MathWidget(tok.content, false, s + 1),
+              })
+            );
+          } else {
+            activeInlineMath = { latex: tok.content, from: s, to: e };
+            addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 1, e - 1, Decoration.mark({ class: "cm-inline-code cm-inline-math-src" }));
+            addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
         }
       }
     }
   }
 
+  updateInlineMathTooltip(view, activeInlineMath);
   return Decoration.set(ranges, true);
 }
 
@@ -1490,6 +1640,7 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
       if (
         update.docChanged ||
         update.selectionSet ||
+        update.viewportChanged ||
         update.transactions.some((tr) => tr.effects.some((e) => e.is(forceRefreshEffect)))
       ) {
         this.decorations = buildDecorations(update.view);

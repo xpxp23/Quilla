@@ -25,9 +25,11 @@ pub fn run() {
 
     let app_state = AppState {
         current_workspace: std::sync::Mutex::new(None),
+        window_workspaces: std::sync::Mutex::new(std::collections::HashMap::new()),
         initial_file: std::sync::Mutex::new(initial_file),
         is_new_window: std::sync::Mutex::new(is_new_window),
         document_buffer: std::sync::Mutex::new(buffer::DocumentBuffer::default()),
+        workspace_watcher: watcher::WorkspaceWatcher::default(),
     };
 
     tauri::Builder::default()
@@ -47,6 +49,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::save_file_content,
             commands::read_file_content,
+            commands::sync_document_buffer,
+            commands::clear_draft_snapshot,
             commands::list_workspace_files,
             commands::search_workspace_content,
             commands::select_workspace_folder,

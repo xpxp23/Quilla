@@ -5,12 +5,14 @@ export interface FileItem {
   name: string;
   path: string;
   is_dir: boolean;
+  modified_ms?: number;
   children?: FileItem[];
 }
 
 export interface FileTreeOptions {
   workspaceRoot?: string;
   activeFilePath?: string | null;
+  sortBy?: "name" | "modified";
   onFileSelect: (path: string) => void;
   onRefresh?: () => void;
   onFileRenamed?: (oldPath: string, newPath: string) => void;
@@ -20,6 +22,18 @@ export interface FileTreeOptions {
 const collapsedPaths = new Set<string>();
 let activeContextMenu: HTMLElement | null = null;
 let latestTreeOptions: FileTreeOptions | null = null;
+let currentSortBy: "name" | "modified" =
+  (localStorage.getItem("quilla_tree_sort") as "name" | "modified") || "name";
+
+export function getTreeSortMode(): "name" | "modified" {
+  return currentSortBy;
+}
+
+export function toggleTreeSortMode(): "name" | "modified" {
+  currentSortBy = currentSortBy === "name" ? "modified" : "name";
+  localStorage.setItem("quilla_tree_sort", currentSortBy);
+  return currentSortBy;
+}
 
 function closeContextMenu() {
   if (activeContextMenu && activeContextMenu.parentNode) {
@@ -44,23 +58,40 @@ const ICON_NEW_WIN = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none
 const ICON_RENAME = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>`;
 const ICON_DELETE = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
 const ICON_EXPLORER = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>`;
+const ICON_SORT = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="13" y2="6"></line><line x1="4" y1="12" x2="11" y2="12"></line><line x1="4" y1="18" x2="11" y2="18"></line><polyline points="15 15 18 18 21 15"></polyline><line x1="18" y1="6" x2="18" y2="18"></line></svg>`;
+
+function sortFileItems(items: FileItem[], mode: "name" | "modified"): FileItem[] {
+  const copy = [...items];
+  copy.sort((a, b) => {
+    if (a.is_dir !== b.is_dir) {
+      return a.is_dir ? -1 : 1;
+    }
+    if (mode === "modified" && (a.modified_ms || 0) !== (b.modified_ms || 0)) {
+      return (b.modified_ms || 0) - (a.modified_ms || 0);
+    }
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  });
+  return copy.map((item) =>
+    item.children ? { ...item, children: sortFileItems(item.children, mode) } : item
+  );
+}
 
 /**
- * 在文件树中启动原位内联输入（新建文件 / 新建文件夹），彻底告别原生 window.prompt
+ * 在文件树指定目录容器中启动原位内联输入（新建文件 / 新建文件夹）
  */
 export function triggerInlineCreateInTree(
-  container: HTMLElement | null,
+  mountContainer: HTMLElement | null,
   isFolder: boolean,
   targetDir?: string,
   depth: number = 0
 ) {
-  if (!container || !latestTreeOptions) return;
+  if (!mountContainer || !latestTreeOptions) return;
   const options = latestTreeOptions;
   const dir = targetDir || options.workspaceRoot;
   if (!dir) return;
 
-  // 移除已有的临时输入行
-  container.querySelectorAll(".tree-inline-create-row").forEach((el) => el.remove());
+  // 移除整个文件树中已有的临时输入行
+  document.querySelectorAll(".tree-inline-create-row").forEach((el) => el.remove());
 
   const row = document.createElement("div");
   row.className = "tree-item tree-inline-create-row";
@@ -83,11 +114,10 @@ export function triggerInlineCreateInTree(
   row.appendChild(icon);
   row.appendChild(input);
 
-  // 移除空状态提示（若存在）
-  const emptyHint = container.querySelector(".tree-empty-hint");
+  const emptyHint = mountContainer.querySelector(".tree-empty-hint");
   if (emptyHint) emptyHint.remove();
 
-  container.prepend(row);
+  mountContainer.prepend(row);
   input.focus();
   if (!isFolder && input.value.endsWith(".md")) {
     input.setSelectionRange(0, input.value.length - 3);
@@ -224,7 +254,9 @@ export function renderFileTree(
 
   container.innerHTML = "";
 
-  if (items.length === 0) {
+  const sortedItems = sortFileItems(items, options.sortBy || currentSortBy);
+
+  if (sortedItems.length === 0) {
     container.innerHTML = `<div class="tree-empty-hint" style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">此文件夹为空</div>`;
   }
 
@@ -232,10 +264,10 @@ export function renderFileTree(
     if ((e.target as HTMLElement).closest(".tree-item")) return;
     e.preventDefault();
     e.stopPropagation();
-    showTreeContextMenu(e.clientX, e.clientY, null, null, container, options);
+    showTreeContextMenu(e.clientX, e.clientY, null, null, container, options, 0);
   };
 
-  function createNode(item: FileItem, depth: number): HTMLElement {
+  function createNode(item: FileItem, depth: number, parentMount: HTMLElement): HTMLElement {
     const wrapper = document.createElement("div");
     wrapper.className = "tree-node-wrapper";
 
@@ -271,7 +303,7 @@ export function renderFileTree(
 
       if (item.children && item.children.length > 0) {
         item.children.forEach((child) => {
-          childContainer.appendChild(createNode(child, depth + 1));
+          childContainer.appendChild(createNode(child, depth + 1, childContainer));
         });
       }
 
@@ -336,10 +368,11 @@ export function renderFileTree(
         options.onFileSelect(item.path);
       });
 
+      // 修复 BUG-05：在子文件夹内的文件上右键时，传入其直接父级容器 parentMount，使内联新建输入框精准出现在当前同级目录下
       row.addEventListener("contextmenu", (e: MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        showTreeContextMenu(e.clientX, e.clientY, item, row, container, options, depth);
+        showTreeContextMenu(e.clientX, e.clientY, item, row, parentMount, options, depth);
       });
 
       wrapper.appendChild(row);
@@ -348,8 +381,8 @@ export function renderFileTree(
     return wrapper;
   }
 
-  items.forEach((item) => {
-    container.appendChild(createNode(item, 0));
+  sortedItems.forEach((item) => {
+    container.appendChild(createNode(item, 0, container));
   });
 }
 
@@ -384,7 +417,7 @@ function showTreeContextMenu(
   const menu = document.createElement("div");
   menu.className = "ty-dropdown-menu file-tree-context-menu";
   menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - 240)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 280)}px`;
 
   const targetDir = item
     ? item.is_dir
@@ -426,6 +459,20 @@ function showTreeContextMenu(
       mountContainer.style.display = "block";
     }
     triggerInlineCreateInTree(mountContainer, true, targetDir, depth);
+  });
+
+  addDivider();
+
+  // 2.5 切换排序方式 (按名称 / 按修改时间)
+  const sortLabel =
+    currentSortBy === "name" ? "排序：切换为按修改时间" : "排序：切换为按名称 A-Z";
+  addMenuItem(ICON_SORT, sortLabel, () => {
+    const nextSort = toggleTreeSortMode();
+    options.onRefresh?.();
+    showToast(
+      nextSort === "modified" ? "已切换为按最近修改时间排序" : "已切换为按文件名称排序",
+      "info"
+    );
   });
 
   if (item && rowEl) {

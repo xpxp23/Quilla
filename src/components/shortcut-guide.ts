@@ -17,6 +17,7 @@ const SHORTCUT_LIST: ShortcutItem[] = [
   { category: "常用操作", name: "保存文档", keys: ["Ctrl", "S"] },
   { category: "常用操作", name: "另存为", keys: ["Ctrl", "Shift", "S"] },
   { category: "常用操作", name: "快速文件漫游", keys: ["Ctrl", "P"] },
+  { category: "常用操作", name: "偏好设置中心", keys: ["Ctrl", ","] },
   { category: "常用操作", name: "撤销 / 重做", keys: ["Ctrl", "Z"], desc: "重做 Ctrl+Y" },
   { category: "常用操作", name: "查找 / 替换", keys: ["Ctrl", "F"], desc: "替换 Ctrl+H" },
   { category: "常用操作", name: "打印 / 导出 PDF", keys: ["Ctrl", "Shift", "P"] },

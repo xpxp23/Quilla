@@ -14,6 +14,10 @@
   --title-bar-height: 30px;
   --footer-height: 26px;
   --border-color: rgba(0, 0, 0, 0.08);
+  --quote-border-color: #d0d7de;
+  --editor-font-size: 15px;
+  --editor-line-height: 1.75;
+  --editor-max-width: 860px;
 }
 
 html, body {
@@ -67,19 +71,19 @@ html, body {
   height: 100% !important;
   width: 100% !important;
   font-family: inherit !important;
-  font-size: inherit !important;
+  font-size: var(--editor-font-size, 15px) !important;
 }
 
 .cm-editor .cm-scroller {
   font-family: inherit !important;
-  line-height: 1.75 !important;
+  line-height: var(--editor-line-height, 1.75) !important;
   height: 100% !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
 }
 
 .cm-editor .cm-content {
-  max-width: 860px !important;
+  max-width: var(--editor-max-width, 860px) !important;
   margin: 0 auto !important;
   padding: 36px 48px 150px !important;
   box-sizing: border-box !important;
@@ -147,7 +151,7 @@ html, body {
 
 .md-list-bullet {
   display: inline-block;
-  width: 14px;
+  width: 16px;
   text-align: center;
   color: var(--primary-color, #0969da);
   font-weight: 700;
@@ -163,32 +167,32 @@ html, body {
   font-size: 0.85em;
 }
 
-.cm-line.cm-list-level-2 {
-  padding-left: 20px !important;
+.cm-line.cm-list-level-2:not(.cm-blockquote) {
+  padding-left: 22px !important;
   background-image: linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px);
   background-size: 24px 100%;
   background-position: 8px 0;
   background-repeat: no-repeat;
 }
 
-.cm-line.cm-list-level-3 {
-  padding-left: 40px !important;
+.cm-line.cm-list-level-3:not(.cm-blockquote) {
+  padding-left: 42px !important;
   background-image:
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px),
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px);
   background-size: 24px 100%;
-  background-position: 8px 0, 32px 0;
+  background-position: 8px 0, 30px 0;
   background-repeat: no-repeat;
 }
 
-.cm-line.cm-list-level-4 {
-  padding-left: 60px !important;
+.cm-line.cm-list-level-4:not(.cm-blockquote) {
+  padding-left: 62px !important;
   background-image:
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px),
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px),
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px);
   background-size: 24px 100%;
-  background-position: 8px 0, 32px 0, 56px 0;
+  background-position: 8px 0, 30px 0, 52px 0;
   background-repeat: no-repeat;
 }
 
@@ -196,25 +200,76 @@ p, .cm-paragraph {
   margin: 0.8rem 0;
 }
 
-/* 引用块 (支持多层嵌套引用) */
+/* 引用块 (支持连续无断层竖线、多层平行嵌套引用及引用内多级列表缩进) */
 blockquote, .cm-line.cm-blockquote {
-  border-left: 4px solid var(--border-color, #dfe2e5) !important;
-  padding: 2px 0 2px 16px !important;
-  background-color: transparent !important;
-  color: var(--control-text-color, #6a737d) !important;
+  border-left: 3.5px solid var(--quote-border-color, #d0d7de) !important;
+  padding: 2.5px 12px 2.5px 16px !important;
+  background-color: rgba(127, 127, 127, 0.025) !important;
+  background-image: none !important;
+  color: var(--control-text-color, #57606a) !important;
   border-radius: 0 !important;
-  margin: 0 !important;
-  line-height: 1.65;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  line-height: 1.7;
 }
 
+.cm-line.cm-blockquote.cm-blockquote-first {
+  padding-top: 6px !important;
+  border-top-right-radius: 4px !important;
+}
+
+.cm-line.cm-blockquote.cm-blockquote-last {
+  padding-bottom: 6px !important;
+  border-bottom-right-radius: 4px !important;
+}
+
+/* 消除引用块内标题 margin-top 造成的左侧引用竖线断裂 */
+.cm-line.cm-blockquote.cm-heading {
+  margin-top: 0 !important;
+  padding-top: 0.45rem !important;
+}
+
+/* 多级引用块采用带留白间隙的双/三平行竖线，彻底修复原先 inset box-shadow 粘连成粗块的问题 */
 .cm-line.cm-blockquote-level-2 {
   padding-left: 28px !important;
-  box-shadow: inset 4px 0 0 0 var(--border-color, #dfe2e5);
+  box-shadow: none !important;
+  background-image: linear-gradient(
+    to right,
+    transparent 8px,
+    var(--quote-border-color, #d0d7de) 8px,
+    var(--quote-border-color, #d0d7de) 11px,
+    transparent 11px
+  ) !important;
 }
 
 .cm-line.cm-blockquote-level-3 {
   padding-left: 40px !important;
-  box-shadow: inset 8px 0 0 0 var(--border-color, #dfe2e5);
+  box-shadow: none !important;
+  background-image: linear-gradient(
+    to right,
+    transparent 8px,
+    var(--quote-border-color, #d0d7de) 8px,
+    var(--quote-border-color, #d0d7de) 11px,
+    transparent 11px,
+    transparent 19px,
+    var(--quote-border-color, #d0d7de) 19px,
+    var(--quote-border-color, #d0d7de) 22px,
+    transparent 22px
+  ) !important;
+}
+
+/* 引用块内部嵌套列表分级缩进（与引用块左边框和谐共存，绝不触发双重竖线冲突） */
+.cm-line.cm-blockquote.cm-list-level-1 {
+  padding-left: 16px !important;
+}
+.cm-line.cm-blockquote.cm-list-level-2 {
+  padding-left: 36px !important;
+}
+.cm-line.cm-blockquote.cm-list-level-3 {
+  padding-left: 56px !important;
+}
+.cm-line.cm-blockquote.cm-list-level-4 {
+  padding-left: 76px !important;
 }
 
 /* 水平分割线 (--- / *** / ___) */
@@ -269,6 +324,55 @@ pre, .cm-code-block {
   border: 1px solid var(--border-color);
 }
 
+/* 多语言代码块词法高亮色彩规范 (GitHub / One Dark 标准配色) */
+.cm-syn-keyword {
+  color: #cf222e;
+  font-weight: 600;
+}
+.cm-syn-string {
+  color: #0a3069;
+}
+.cm-syn-comment {
+  color: #6e7781;
+  font-style: italic;
+}
+.cm-syn-number {
+  color: #0550ae;
+}
+.cm-syn-type {
+  color: #953800;
+}
+.cm-syn-function {
+  color: #8250df;
+}
+.cm-syn-attr {
+  color: #116329;
+}
+
+body.theme-night .cm-syn-keyword {
+  color: #c678dd;
+  font-weight: 600;
+}
+body.theme-night .cm-syn-string {
+  color: #98c379;
+}
+body.theme-night .cm-syn-comment {
+  color: #7f848e;
+  font-style: italic;
+}
+body.theme-night .cm-syn-number {
+  color: #d19a66;
+}
+body.theme-night .cm-syn-type {
+  color: #e5c07b;
+}
+body.theme-night .cm-syn-function {
+  color: #61afef;
+}
+body.theme-night .cm-syn-attr {
+  color: #56b6c2;
+}
+
 /* 链接与加粗/斜体/删除线/高亮 */
 a, .cm-link {
   color: var(--primary-color, #0969da);
@@ -278,6 +382,10 @@ a, .cm-link {
 }
 a:hover, .cm-link:hover {
   opacity: 0.85;
+}
+.cm-link.cm-link-active {
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  border-radius: 3px;
 }
 
 strong, .cm-strong { font-weight: 700; color: inherit; }
@@ -388,13 +496,29 @@ body.theme-night .cm-highlight, body.theme-night mark {
   accent-color: var(--primary-color, #0969da);
 }
 
-/* 数学公式与 Mermaid 图表容器 (Typora 极简无边框画布 + 悬浮角标编辑按钮) */
+/* 数学公式与 Mermaid 图表容器 */
 .md-inline-math-preview,
 .tbl-inline-math {
   display: inline-block;
   padding: 0 2px;
   vertical-align: baseline;
   user-select: text;
+}
+
+.ty-inline-math-tooltip {
+  position: fixed;
+  z-index: 9997;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 5px 10px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  pointer-events: none;
+  font-size: 14px;
+  animation: fadeIn 0.1s ease-out;
+}
+.ty-inline-math-tooltip.hidden {
+  display: none !important;
 }
 
 .md-math-block-preview {
@@ -434,6 +558,22 @@ body.theme-night .cm-highlight, body.theme-night mark {
   border: 1px solid var(--border-color);
   background-color: var(--bg-color);
   padding: 0;
+}
+
+.live-preview-fold-btn {
+  background: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  color: var(--primary-color, #0969da);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.live-preview-fold-btn:hover {
+  background: var(--primary-color, #0969da);
+  color: #ffffff;
 }
 
 .floating-corner-edit-btn {
@@ -627,11 +767,12 @@ table.md-table td.cell-range-selected * {
   color: #ffffff !important;
 }
 
-/* 多语言代码块卡片与实时行样式 (固定首行高度消除跳动 + 交互式语言选择下拉菜单) */
+/* 多语言代码块卡片与实时行样式 (含左侧行号与交互式语言选择下拉菜单) */
 .cm-line.cm-code-block-first-line {
-  background-color: rgba(127, 127, 127, 0.05);
+  background-color: rgba(127, 127, 127, 0.06);
   border-top-left-radius: 6px;
   border-top-right-radius: 6px;
+  border-bottom: 1px solid var(--border-color);
   padding: 4px 14px !important;
   font-family: var(--monospace);
   font-size: 13px;
@@ -656,10 +797,18 @@ table.md-table td.cell-range-selected * {
   align-items: center;
 }
 
+.code-lang-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--primary-color, #0969da);
+  opacity: 0.75;
+}
+
 .code-lang-tag {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -765,11 +914,33 @@ table.md-table td.cell-range-selected * {
 }
 
 .cm-line.cm-code-block-line {
+  position: relative;
   background-color: rgba(127, 127, 127, 0.045);
   font-family: var(--monospace);
   font-size: 13.5px;
   padding: 2px 16px !important;
   color: var(--text-color);
+}
+
+body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line) {
+  padding-left: 50px !important;
+}
+
+body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line)::before {
+  content: attr(data-code-line);
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 34px;
+  padding-right: 8px;
+  text-align: right;
+  font-family: var(--monospace);
+  font-size: 11.5px;
+  color: var(--control-text-color);
+  opacity: 0.45;
+  border-right: 1px solid var(--border-color);
+  user-select: none;
+  pointer-events: none;
 }
 
 .cm-line.cm-code-block-last-line {
@@ -820,7 +991,7 @@ table.md-table td.cell-range-selected * {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 12px;
+  padding: 5px 12px;
   background-color: rgba(127, 127, 127, 0.06);
   border-bottom: 1px solid var(--border-color);
   user-select: none;
@@ -1108,6 +1279,7 @@ body.theme-night {
   --primary-color: #4ea1f3;
   --primary-bg-subtle: rgba(78, 161, 243, 0.16);
   --border-color: rgba(255, 255, 255, 0.12);
+  --quote-border-color: #4ea1f3;
 }
 
 body.theme-night table.md-table th {
@@ -1121,8 +1293,8 @@ body.theme-night table.md-table tr:nth-child(2n) {
 
 body.theme-night blockquote,
 body.theme-night .cm-line.cm-blockquote {
-  border-left-color: #444c56 !important;
-  color: #8b949e !important;
+  border-left-color: var(--quote-border-color, #4ea1f3) !important;
+  color: #9da5b4 !important;
 }
 
 body.theme-night hr,

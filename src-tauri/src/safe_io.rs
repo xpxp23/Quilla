@@ -52,13 +52,38 @@ impl SafeIO {
         Ok(())
     }
 
-    /// 安全保存后台崩溃快照 (Draft Snapshot)
+    fn sanitize_file_id(file_id: &str) -> String {
+        file_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    /// 安全保存后台崩溃快照 (Draft Snapshot)，突破浏览器 localStorage 5MB 容量限制
     pub fn save_draft_snapshot(file_id: &str, content: &str) -> io::Result<PathBuf> {
-        let draft_dir = std::env::temp_dir().join("rust-typora-drafts");
+        let draft_dir = std::env::temp_dir().join("quilla-recovery-drafts");
         fs::create_dir_all(&draft_dir)?;
 
-        let draft_path = draft_dir.join(format!("{}.draft", file_id));
-        fs::write(&draft_path, content)?;
+        let safe_id = Self::sanitize_file_id(file_id);
+        let draft_path = draft_dir.join(format!("{}.draft", safe_id));
+        Self::atomic_write(&draft_path, content)?;
         Ok(draft_path)
+    }
+
+    /// 清理指定会话或文件的崩溃恢复草稿
+    pub fn remove_draft_snapshot(file_id: &str) -> io::Result<()> {
+        let draft_dir = std::env::temp_dir().join("quilla-recovery-drafts");
+        let safe_id = Self::sanitize_file_id(file_id);
+        let draft_path = draft_dir.join(format!("{}.draft", safe_id));
+        if draft_path.exists() {
+            let _ = fs::remove_file(draft_path);
+        }
+        Ok(())
     }
 }

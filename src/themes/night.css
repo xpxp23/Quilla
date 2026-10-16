@@ -8,6 +8,7 @@
   --primary-color: #4ea1f3;
   --primary-bg-subtle: rgba(78, 161, 243, 0.16);
   --border-color: rgba(255, 255, 255, 0.12);
+  --quote-border-color: #4ea1f3;
   --item-hover-bg-color: rgba(255, 255, 255, 0.08);
   --item-hover-text-color: #ffffff;
 }
@@ -29,37 +30,29 @@ body.theme-night, body {
 }
 
 #write h1, .cm-line.cm-heading-1 {
-  font-size: 2.2em;
+  font-size: 2.15em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #474d54;
-  margin-top: 1.2em;
 }
 
 #write h2, .cm-line.cm-heading-2 {
-  font-size: 1.75em;
+  font-size: 1.65em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #474d54;
-  margin-top: 1.2em;
 }
 
 #write h3, .cm-line.cm-heading-3 {
-  font-size: 1.4em;
-  margin-top: 1em;
+  font-size: 1.35em;
 }
 
 #write strong, .cm-strong, strong {
   font-weight: 700 !important;
   color: #ffffff !important;
-  text-shadow: 0 0 1px rgba(255, 255, 255, 0.3);
 }
 
 #write blockquote, .cm-line.cm-blockquote {
-  border-left: 4px solid #4ea1f3 !important;
+  border-left: 3.5px solid var(--quote-border-color, #4ea1f3) !important;
   color: #9da5b4 !important;
-  background-color: transparent !important;
-  padding: 2px 0 2px 14px !important;
-  border-radius: 0 !important;
-  margin: 0 !important;
 }
 
 #write .md-fences, #write pre,

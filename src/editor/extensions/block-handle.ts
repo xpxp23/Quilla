@@ -5,7 +5,7 @@ import { findMermaidBlocks } from "./mermaid-extension";
 import { findMathBlocks } from "./math-block-extension";
 
 /**
- * 计算给定行所属的完整语义块行号区间（表格、围栏代码块、Mermaid、多行公式块或单行段落），
+ * 计算给定行所属的完整语义块行号区间（表格、围栏代码块、Mermaid、多行公式块、连续引用块或单行段落），
  * 防止点击或拖拽手柄时将多行块撕裂。
  */
 export function resolveSemanticBlockSpan(
@@ -60,12 +60,30 @@ export function resolveSemanticBlockSpan(
     }
   }
 
+  // 5. 连续引用块 (> ...)：若当前行为纯引用段首或非列表项，整段引用块作为语义块
+  const curText = doc.line(clampedLine).text;
+  if (/^\s*>/.test(curText)) {
+    const afterQuote = curText.replace(/^\s*(?:> ?)+/, "");
+    // 若非引用内独立列表项，则选中整个连续引用块
+    if (!/^(\s*)([-*+]|\d+\.)\s+/.test(afterQuote)) {
+      let qStart = clampedLine;
+      while (qStart > 1 && /^\s*>/.test(doc.line(qStart - 1).text)) {
+        qStart--;
+      }
+      let qEnd = clampedLine;
+      while (qEnd < doc.lines && /^\s*>/.test(doc.line(qEnd + 1).text)) {
+        qEnd++;
+      }
+      return { startLine: qStart, endLine: qEnd };
+    }
+  }
+
   return { startLine: clampedLine, endLine: clampedLine };
 }
 
 /**
  * Typora 经典段落/块级左侧拖拽手柄 (⋮⋮ Block Handle)
- * 鼠标悬浮在任意段落/块左侧显示拖拽点，单击全选该语义块，拖动可上下重排整个块位置。
+ * 鼠标悬浮在任意段落/块左侧显示柔和手柄，单击全选该语义块，拖动可上下重排整个块位置。
  */
 export const blockHandlePlugin = ViewPlugin.fromClass(
   class {
@@ -82,12 +100,12 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       this.handle.title = "点击全选当前块，拖动上下重排位置";
       this.handle.innerHTML = `
         <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
-          <circle cx="3" cy="2" r="1.4" />
-          <circle cx="9" cy="2" r="1.4" />
-          <circle cx="3" cy="7" r="1.4" />
-          <circle cx="9" cy="7" r="1.4" />
-          <circle cx="3" cy="12" r="1.4" />
-          <circle cx="9" cy="12" r="1.4" />
+          <circle cx="3.5" cy="2.5" r="1.25" />
+          <circle cx="8.5" cy="2.5" r="1.25" />
+          <circle cx="3.5" cy="7" r="1.25" />
+          <circle cx="8.5" cy="7" r="1.25" />
+          <circle cx="3.5" cy="11.5" r="1.25" />
+          <circle cx="8.5" cy="11.5" r="1.25" />
         </svg>
       `;
 
@@ -131,7 +149,7 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
 
         if (!lineEl || !lineEl.offsetParent) {
           const contentRect = this.view.contentDOM.getBoundingClientRect();
-          if (e.clientX < contentRect.left - 44 || e.clientX > contentRect.right + 20) {
+          if (e.clientX < contentRect.left - 48 || e.clientX > contentRect.right + 20) {
             this.hideHandle();
           }
           return;
@@ -145,7 +163,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         this.hideHandle();
       });
 
-      // 单击手柄：全选当前语义块（支持整表、整代码块、整公式块或整段落）
       this.handle.addEventListener("click", (e) => {
         e.stopPropagation();
         if (!this.activeLineEl) return;
@@ -163,7 +180,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         }
       });
 
-      // 拖拽手柄开始
       this.handle.addEventListener("dragstart", (e) => {
         if (!this.activeLineEl) return;
         try {
@@ -267,16 +283,16 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
 
       const top = lineRect.top - scrollerRect.top + scroller.scrollTop;
       const contentLeft = this.view.contentDOM.offsetLeft;
-      const left = Math.max(8, contentLeft - 24);
+      const left = Math.max(8, contentLeft - 28);
 
-      this.handle.style.top = `${top + 4}px`;
+      this.handle.style.top = `${top + 3}px`;
       this.handle.style.left = `${left}px`;
-      this.handle.style.opacity = "0.75";
+      this.handle.classList.add("visible");
       this.handle.style.pointerEvents = "auto";
     }
 
     private hideHandle() {
-      this.handle.style.opacity = "0";
+      this.handle.classList.remove("visible");
       this.handle.style.pointerEvents = "none";
     }
 

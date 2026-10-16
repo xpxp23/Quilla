@@ -1,7 +1,7 @@
 import { EditorView } from "@codemirror/view";
 
 /**
- * 递归解析 HTML DOM 节点为标准优雅的 Markdown 格式 (支持多级嵌套列表、保留空表头、代码块与内联样式)
+ * 递归解析 HTML DOM 节点为标准优雅的 Markdown 格式 (支持多级嵌套列表、引用块内列表、保留空表头、代码块与内联样式)
  */
 export function htmlToMarkdown(htmlString: string): string {
   const parser = new DOMParser();
@@ -96,10 +96,16 @@ function processNode(node: Node, listDepth: number = 0): string {
       return `\n\n\`\`\`${lang}\n${text.trim()}\n\`\`\`\n\n`;
     }
     case "blockquote": {
-      const lines = getChildrenText()
+      const normalizedInner = getChildrenText()
         .trim()
+        .replace(/\n{3,}/g, "\n\n");
+      const lines = normalizedInner
         .split("\n")
-        .map((l) => `> ${l}`)
+        .map((l) => {
+          const trimmedRight = l.replace(/\s+$/, "");
+          if (!trimmedRight) return ">";
+          return trimmedRight.startsWith(">") ? `>${trimmedRight}` : `> ${trimmedRight}`;
+        })
         .join("\n");
       return `\n\n${lines}\n\n`;
     }
@@ -141,7 +147,9 @@ function processNode(node: Node, listDepth: number = 0): string {
             inlineContent += processNode(liChild, listDepth + 1);
           }
         });
-        const prefix = isOrdered ? `${idx++}. ` : "- ";
+        const checkbox = child.querySelector("input[type='checkbox']") as HTMLInputElement | null;
+        const taskPrefix = checkbox ? (checkbox.checked ? "[x] " : "[ ] ") : "";
+        const prefix = isOrdered ? `${idx++}. ` : `- ${taskPrefix}`;
         res += `${indent}${prefix}${inlineContent.trim()}${nestedListContent}\n`;
       });
       return listDepth === 0 ? `${res}\n` : res.trimEnd();
@@ -200,7 +208,6 @@ export function initSmartPaste(view: EditorView) {
     (e: ClipboardEvent) => {
       if (isShiftDown) return;
 
-      // 若焦点在表格单元格内部，交由表格单元格专用粘贴处理器处理
       const target = e.target as HTMLElement | null;
       if (target && target.closest(".in-place-edit")) {
         return;

@@ -38,7 +38,7 @@ export function initFloatingToolbars(
   `;
   document.body.appendChild(imgToolbar);
 
-  // 2. 创建超链接悬浮工具栏与内联双字段编辑器 (彻底告别原生 prompt 阻塞弹窗)
+  // 2. 创建超链接悬浮工具栏与内联双字段编辑器
   const linkTooltip = document.createElement("div");
   linkTooltip.className = "ty-link-tooltip hidden";
   linkTooltip.innerHTML = `
@@ -138,6 +138,25 @@ export function initFloatingToolbars(
     activeLinkTarget = null;
   }
 
+  function showLinkTooltipForElement(linkEl: HTMLElement) {
+    const url = linkEl.getAttribute("data-href") || "";
+    const text = linkEl.getAttribute("data-text") || linkEl.textContent || "";
+    const from = parseInt(linkEl.getAttribute("data-from") || "-1", 10);
+    const to = parseInt(linkEl.getAttribute("data-to") || "-1", 10);
+    activeLinkTarget = { elem: linkEl, url, text, from, to };
+
+    const urlSpan = linkTooltip.querySelector("#ty-link-preview-url");
+    if (urlSpan) urlSpan.textContent = url;
+
+    linkTooltip.querySelector("#ty-link-view-row")?.classList.remove("hidden");
+    linkTooltip.querySelector("#ty-link-edit-form")?.classList.add("hidden");
+
+    linkTooltip.classList.remove("hidden");
+    imgToolbar.classList.add("hidden");
+    selToolbar.classList.add("hidden");
+    positionToolbar(linkTooltip, linkEl);
+  }
+
   function refreshImgToolbarState() {
     if (!activeImgTarget) return;
     imgToolbar.querySelectorAll("[data-size]").forEach((btn: any) => {
@@ -151,7 +170,6 @@ export function initFloatingToolbars(
     });
   }
 
-  // 监听鼠标抬起更新选中文本气泡栏
   const checkSelectionBubble = () => {
     setTimeout(() => {
       if (
@@ -190,8 +208,22 @@ export function initFloatingToolbars(
   view.dom.addEventListener("keyup", (e) => {
     if (e.shiftKey && e.key.startsWith("Arrow")) {
       checkSelectionBubble();
-    } else if (e.key === "Escape") {
+      return;
+    }
+    if (e.key === "Escape") {
       hideAllToolbars();
+      return;
+    }
+    // 键盘方向键导航进入超链接时自动无感浮出链接预览工具条，配合紧凑链接模式实现零抖动编辑
+    if (e.key.startsWith("Arrow") && view.state.selection.main.empty) {
+      requestAnimationFrame(() => {
+        const activeLink = view.dom.querySelector<HTMLElement>(".cm-link.cm-link-active");
+        if (activeLink) {
+          showLinkTooltipForElement(activeLink);
+        } else if (!linkTooltip.contains(document.activeElement)) {
+          linkTooltip.classList.add("hidden");
+        }
+      });
     }
   });
 
@@ -226,7 +258,7 @@ export function initFloatingToolbars(
     view.focus();
   });
 
-  // 监听正文点击与悬浮
+  // 监听正文点击
   view.dom.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
 
@@ -256,22 +288,7 @@ export function initFloatingToolbars(
     const linkEl = target.closest(".cm-link") as HTMLElement;
     if (linkEl && !linkEl.classList.contains("tbl-inline-link")) {
       e.stopPropagation();
-      const url = linkEl.getAttribute("data-href") || "";
-      const text = linkEl.getAttribute("data-text") || linkEl.textContent || "";
-      const from = parseInt(linkEl.getAttribute("data-from") || "-1", 10);
-      const to = parseInt(linkEl.getAttribute("data-to") || "-1", 10);
-      activeLinkTarget = { elem: linkEl, url, text, from, to };
-
-      const urlSpan = linkTooltip.querySelector("#ty-link-preview-url");
-      if (urlSpan) urlSpan.textContent = url;
-
-      linkTooltip.querySelector("#ty-link-view-row")?.classList.remove("hidden");
-      linkTooltip.querySelector("#ty-link-edit-form")?.classList.add("hidden");
-
-      linkTooltip.classList.remove("hidden");
-      imgToolbar.classList.add("hidden");
-      selToolbar.classList.add("hidden");
-      positionToolbar(linkTooltip, linkEl);
+      showLinkTooltipForElement(linkEl);
       return;
     }
 
@@ -280,7 +297,7 @@ export function initFloatingToolbars(
     }
   });
 
-  // 图片工具栏按钮事件（支持连续预览缩放与对齐，不强制关闭工具栏）
+  // 图片工具栏按钮事件
   imgToolbar.addEventListener("click", (e) => {
     e.stopPropagation();
     const btn = (e.target as HTMLElement).closest(".ty-toolbar-btn") as HTMLElement;
@@ -322,7 +339,6 @@ export function initFloatingToolbars(
       changes: { from, to, insert: newTag },
     });
 
-    // 更新坐标并保持工具栏开启以便连续预览切换
     activeImgTarget.to = from + newTag.length;
     activeImgTarget.width = width;
     activeImgTarget.align = align;

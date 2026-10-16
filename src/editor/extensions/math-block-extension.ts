@@ -87,7 +87,15 @@ class MathBlockWidget extends WidgetType {
     return true;
   }
 
-  updateDOM(_dom: HTMLElement): boolean {
+  updateDOM(dom: HTMLElement): boolean {
+    if (
+      dom.dataset.isLive === String(this.isLivePreview) &&
+      dom.dataset.latex === this.latex
+    ) {
+      dom.dataset.fromPos = String(this.fromPos);
+      dom.dataset.toPos = String(this.toPos);
+      return true;
+    }
     return false;
   }
 
@@ -98,7 +106,9 @@ class MathBlockWidget extends WidgetType {
       : "md-math-block-card clean-figure-card cm-math-block";
     container.dataset.fromPos = String(this.fromPos);
     container.dataset.toPos = String(this.toPos);
-    container.title = this.isLivePreview ? "实时渲染公式预览" : "点击或双击编辑 LaTeX 公式";
+    container.dataset.isLive = String(this.isLivePreview);
+    container.dataset.latex = this.latex;
+    container.title = this.isLivePreview ? "实时渲染公式预览" : "点击编辑 LaTeX 公式";
 
     const content = document.createElement("div");
     content.className = "math-card-rendered";
@@ -118,8 +128,15 @@ class MathBlockWidget extends WidgetType {
       header.className = "mermaid-header math-header live-preview-header";
       header.innerHTML = `
         <span class="mermaid-badge math-badge">∑ LaTeX 实时预览</span>
-        <span class="live-preview-hint">移出公式块即自动折叠源码</span>
+        <button type="button" class="live-preview-fold-btn" title="完成编辑并收起源码">✓ 完成收起</button>
       `;
+      header.querySelector(".live-preview-fold-btn")?.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const afterPos = Math.min(view.state.doc.length, this.toPos + 1);
+        view.dispatch({ selection: { anchor: afterPos } });
+        view.focus();
+      });
       container.appendChild(header);
     } else {
       const floatingEditBtn = document.createElement("button");
@@ -130,9 +147,10 @@ class MathBlockWidget extends WidgetType {
 
       const enterEditMode = (e: Event) => {
         e.stopPropagation();
-        const targetPos = Math.min(this.fromPos + 3, view.state.doc.length);
+        const firstLine = view.state.doc.lineAt(Math.min(this.fromPos, view.state.doc.length));
+        const targetLine = view.state.doc.line(Math.min(firstLine.number + 1, view.state.doc.lines));
         view.dispatch({
-          selection: { anchor: targetPos },
+          selection: { anchor: targetLine.to },
         });
         view.focus();
       };

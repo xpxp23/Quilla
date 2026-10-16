@@ -100,7 +100,6 @@ export function findTablesInDoc(state: EditorState): TableBlock[] {
 
 /**
  * 将二维数据与对齐方式重新序列化为格式化规范的 Markdown 表格
- * 允许表头留空，不再强制回填“列 X”，并彻底清理可能破坏表格行的裸换行符
  */
 export function serializeMarkdownTable(
   headers: string[],
@@ -151,7 +150,6 @@ export function serializeMarkdownTable(
 
 /**
  * 将单元格文本中的行内 Markdown 转换为富文本 HTML
- * 优先保护行内代码与数学公式，杜绝代码/公式内的下划线或星号被误解析为斜体
  */
 export function formatMarkdownToHTML(text: string): string {
   if (!text) return "";
@@ -177,7 +175,7 @@ export function formatMarkdownToHTML(text: string): string {
     pushPlaceholder(`<code>${codeContent}</code>`)
   );
 
-  // 3. 优先提取行内数学公式 $tex$ (严格遵循 Pandoc/Typora 紧邻非空白且非数字前后缀规则，防止 $5-$10 误判)
+  // 3. 优先提取行内数学公式 $tex$
   working = working.replace(
     /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g,
     (_m, tex) => {
@@ -236,11 +234,14 @@ export function formatMarkdownToHTML(text: string): string {
 
 /**
  * 将单元格 DOM 结构逆向转换为规范的 Markdown 格式文本
+ * 兼容语义标签与跨平台 WebView 产生的内联 style (font-weight/font-style/text-decoration)
  */
 export function formatHTMLToMarkdown(cell: HTMLElement): string {
   function serializeNode(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
-      return (node.textContent || "").replace(/\r?\n/g, " ");
+      return (node.textContent || "")
+        .replace(/\r?\n/g, " ")
+        .replace(/<(?=[a-zA-Z!/])/g, "&lt;");
     }
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node as HTMLElement;
@@ -259,33 +260,45 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
         inner += serializeNode(child);
       });
 
+      if (!inner) return "";
+
       if (tagName === "STRONG" || tagName === "B") {
-        return inner ? `**${inner}**` : "";
+        return `**${inner}**`;
       }
       if (tagName === "EM" || tagName === "I") {
-        return inner ? `*${inner}*` : "";
+        return `*${inner}*`;
       }
       if (tagName === "DEL" || tagName === "S" || tagName === "STRIKE") {
-        return inner ? `~~${inner}~~` : "";
+        return `~~${inner}~~`;
       }
       if (tagName === "MARK") {
-        return inner ? `==${inner}==` : "";
+        return `==${inner}==`;
       }
       if (tagName === "SUB") {
-        return inner ? `~${inner}~` : "";
+        return `~${inner}~`;
       }
       if (tagName === "SUP") {
-        return inner ? `^${inner}^` : "";
+        return `^${inner}^`;
       }
       if (tagName === "CODE") {
-        return inner ? `\`${inner}\`` : "";
+        return `\`${inner}\``;
       }
       if (tagName === "A") {
         const href = el.getAttribute("data-href") || el.getAttribute("href") || "";
         return href ? `[${inner || href}](${href})` : inner;
       }
+      if (tagName === "SPAN") {
+        const fw = el.style?.fontWeight || "";
+        const fs = el.style?.fontStyle || "";
+        const td = el.style?.textDecoration || el.style?.textDecorationLine || "";
+        let wrapped = inner;
+        if (td.includes("line-through")) wrapped = `~~${wrapped}~~`;
+        if (fs === "italic" || fs === "oblique") wrapped = `*${wrapped}*`;
+        if (fw === "bold" || Number(fw) >= 600) wrapped = `**${wrapped}**`;
+        return wrapped;
+      }
       if (tagName === "DIV" || tagName === "P") {
-        return inner ? `<br>${inner}` : "";
+        return `<br>${inner}`;
       }
       return inner;
     }
@@ -304,6 +317,81 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
 }
 
 /**
+ * 现代 Selection/Range 原生 DOM 富文本包裹与插入辅助（彻底替代废弃的 document.execCommand）
+ */
+function insertNodeAtCellSelection(cell: HTMLElement, node: Node) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) {
+    cell.appendChild(node);
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  if (!cell.contains(range.commonAncestorContainer)) {
+    cell.appendChild(node);
+    return;
+  }
+  range.deleteContents();
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function toggleCellInlineTag(cell: HTMLElement, tagName: "strong" | "em" | "del" | "code" | "mark") {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  if (!cell.contains(range.commonAncestorContainer)) return;
+
+  const upper = tagName.toUpperCase();
+  const parentEl =
+    range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? (range.commonAncestorContainer as HTMLElement)
+      : range.commonAncestorContainer.parentElement;
+  const existingTag = parentEl?.closest(tagName);
+
+  if (existingTag && cell.contains(existingTag)) {
+    // 解包已有标签
+    const frag = document.createDocumentFragment();
+    while (existingTag.firstChild) {
+      frag.appendChild(existingTag.firstChild);
+    }
+    existingTag.replaceWith(frag);
+    cell.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  }
+
+  if (!range.collapsed) {
+    const wrapper = document.createElement(tagName);
+    try {
+      range.surroundContents(wrapper);
+    } catch {
+      wrapper.appendChild(range.extractContents());
+      range.insertNode(wrapper);
+    }
+    const newRange = document.createRange();
+    newRange.selectNodeContents(wrapper);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+    cell.dispatchEvent(new Event("input", { bubbles: true }));
+  } else {
+    // 选区为空时若处于某标签内则跳出，否则包装当前整个单元格文字
+    if (cell.children.length === 1 && cell.firstElementChild?.tagName === upper) {
+      const inner = cell.firstElementChild;
+      const frag = document.createDocumentFragment();
+      while (inner.firstChild) frag.appendChild(inner.firstChild);
+      inner.replaceWith(frag);
+    } else if (cell.textContent?.trim()) {
+      const wrapper = document.createElement(tagName);
+      while (cell.firstChild) wrapper.appendChild(cell.firstChild);
+      cell.appendChild(wrapper);
+    }
+    cell.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+
+/**
  * 可视化表格内联可编辑组件 (In-Place Interactive TableWidget)
  */
 class InteractiveTableWidget extends WidgetType {
@@ -316,7 +404,8 @@ class InteractiveTableWidget extends WidgetType {
   constructor(
     readonly lines: string[],
     readonly fromPos: number,
-    readonly toPos: number
+    readonly toPos: number,
+    readonly tableIdx: number
   ) {
     super();
     this.trackedFromPos = fromPos;
@@ -340,6 +429,7 @@ class InteractiveTableWidget extends WidgetType {
     if (dom.dataset.keepAlive === "1" || dom.contains(document.activeElement)) {
       dom.dataset.fromPos = String(this.fromPos);
       dom.dataset.toPos = String(this.toPos);
+      dom.dataset.tableIdx = String(this.tableIdx);
       return true;
     }
     return false;
@@ -350,6 +440,7 @@ class InteractiveTableWidget extends WidgetType {
     container.className = "table-figure interactive-table cm-table-widget";
     container.dataset.fromPos = String(this.fromPos);
     container.dataset.toPos = String(this.toPos);
+    container.dataset.tableIdx = String(this.tableIdx);
 
     container.addEventListener("mousedown", (e) => {
       e.stopPropagation();
@@ -406,11 +497,31 @@ class InteractiveTableWidget extends WidgetType {
 
     const resolveCurrentTableSpan = (): { from: number; to: number } => {
       const attrFrom = Number(container.dataset.fromPos);
+      const attrIdx = Number(container.dataset.tableIdx);
       if (!Number.isNaN(attrFrom)) {
         this.trackedFromPos = attrFrom;
       }
       const allTables = findTablesInDoc(view.state);
       if (allTables.length > 0) {
+        // 1. 精确坐标匹配
+        const exact = allTables.find((t) => t.from === this.trackedFromPos);
+        if (exact) {
+          this.trackedFromPos = exact.from;
+          this.trackedToPos = exact.to;
+          container.dataset.fromPos = String(exact.from);
+          container.dataset.toPos = String(exact.to);
+          return { from: exact.from, to: exact.to };
+        }
+        // 2. 表格序号匹配
+        if (!Number.isNaN(attrIdx) && attrIdx >= 0 && attrIdx < allTables.length) {
+          const byIdx = allTables[attrIdx];
+          this.trackedFromPos = byIdx.from;
+          this.trackedToPos = byIdx.to;
+          container.dataset.fromPos = String(byIdx.from);
+          container.dataset.toPos = String(byIdx.to);
+          return { from: byIdx.from, to: byIdx.to };
+        }
+        // 3. 最近距离回退
         let best = allTables[0];
         let minDiff = Math.abs(best.from - this.trackedFromPos);
         for (const t of allTables) {
@@ -550,7 +661,7 @@ class InteractiveTableWidget extends WidgetType {
       });
     };
 
-    const handleCellPaste = (e: ClipboardEvent, rIdx: number, cIdx: number) => {
+    const handleCellPaste = (e: ClipboardEvent, rIdx: number, cIdx: number, cell: HTMLElement) => {
       e.preventDefault();
       e.stopPropagation();
       const text = e.clipboardData?.getData("text/plain") || "";
@@ -561,7 +672,7 @@ class InteractiveTableWidget extends WidgetType {
       if (hasTabs || (rawLines.length > 1 && selectedRange)) {
         const grid = rawLines
           .filter((l, idx) => !(idx === rawLines.length - 1 && l === ""))
-          .map((l) => l.split("\t").map((cell) => cell.trim()));
+          .map((l) => l.split("\t").map((c) => c.trim()));
 
         if (grid.length > 0) {
           const neededCols = cIdx + Math.max(...grid.map((g) => g.length));
@@ -593,7 +704,8 @@ class InteractiveTableWidget extends WidgetType {
       }
 
       const sanitized = text.replace(/\r?\n/g, " ");
-      document.execCommand("insertText", false, sanitized);
+      insertNodeAtCellSelection(cell, document.createTextNode(sanitized));
+      cell.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
     const bindCellEvents = (cell: HTMLElement, rIdx: number, cIdx: number) => {
@@ -643,7 +755,7 @@ class InteractiveTableWidget extends WidgetType {
         syncToDoc();
       });
 
-      cell.addEventListener("paste", (e) => handleCellPaste(e, rIdx, cIdx));
+      cell.addEventListener("paste", (e) => handleCellPaste(e, rIdx, cIdx, cell));
     };
 
     const renderTableDOM = () => {
@@ -656,7 +768,6 @@ class InteractiveTableWidget extends WidgetType {
           1
         );
 
-        // thead
         const thead = document.createElement("thead");
         const trHead = document.createElement("tr");
         for (let cIdx = 0; cIdx < cols; cIdx++) {
@@ -674,7 +785,6 @@ class InteractiveTableWidget extends WidgetType {
         thead.appendChild(trHead);
         table.appendChild(thead);
 
-        // tbody
         const tbody = document.createElement("tbody");
         this.currentRows.forEach((row, rIdx) => {
           const tr = document.createElement("tr");
@@ -852,7 +962,9 @@ class InteractiveTableWidget extends WidgetType {
           view.dom.querySelectorAll<HTMLElement>("figure.table-figure")
         );
         const matchFig =
-          figures.find((f) => Number(f.dataset.fromPos) === this.trackedFromPos) || figures[0];
+          figures.find((f) => Number(f.dataset.fromPos) === this.trackedFromPos) ||
+          figures[Number(container.dataset.tableIdx) || 0] ||
+          figures[0];
         if (matchFig) {
           const cell =
             matchFig.querySelector<HTMLElement>(`[data-row="${savedR}"][data-col="${savedC}"]`) ||
@@ -862,9 +974,8 @@ class InteractiveTableWidget extends WidgetType {
       });
     };
 
-    // 单元格内键盘快捷导航与全局撤销/重做
     table.addEventListener("keydown", (e: KeyboardEvent) => {
-      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做（撤销后自动重聚目标单元格）
+      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -889,24 +1000,44 @@ class InteractiveTableWidget extends WidgetType {
         return;
       }
 
-      // 1.5 富文本快捷键支持 (Ctrl+B / Ctrl+I / Ctrl+Shift+X)
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "b") {
-        e.preventDefault();
-        e.stopPropagation();
-        document.execCommand("bold");
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "i") {
-        e.preventDefault();
-        e.stopPropagation();
-        document.execCommand("italic");
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "x") {
-        e.preventDefault();
-        e.stopPropagation();
-        document.execCommand("strikeThrough");
-        return;
+      const target = (e.target as HTMLElement).closest("th, td") as HTMLElement | null;
+
+      // 1.5 原生 DOM Selection 富文本快捷键支持 (Ctrl+B / Ctrl+I / Ctrl+Shift+X / Ctrl+E / Ctrl+Shift+H)
+      if (target && target.isContentEditable) {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "b") {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCellInlineTag(target, "strong");
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "i") {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCellInlineTag(target, "em");
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "x") {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCellInlineTag(target, "del");
+          return;
+        }
+        if (
+          (e.ctrlKey || e.metaKey) &&
+          !e.shiftKey &&
+          (e.key.toLowerCase() === "e" || e.key === "`")
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCellInlineTag(target, "code");
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "h") {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCellInlineTag(target, "mark");
+          return;
+        }
       }
 
       // 2. 跨单元格多选复制与清空快捷键
@@ -953,7 +1084,6 @@ class InteractiveTableWidget extends WidgetType {
         return;
       }
 
-      const target = (e.target as HTMLElement).closest("th, td") as HTMLElement | null;
       if (!target || !target.isContentEditable) return;
 
       const r = parseInt(target.dataset.row || "0", 10);
@@ -982,7 +1112,8 @@ class InteractiveTableWidget extends WidgetType {
       if (e.key === "Enter" && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        document.execCommand("insertHTML", false, "<br>");
+        insertNodeAtCellSelection(target, document.createElement("br"));
+        target.dispatchEvent(new Event("input", { bubbles: true }));
         return;
       }
 
@@ -1212,7 +1343,8 @@ class InteractiveTableWidget extends WidgetType {
     if (
       this.lines.length !== other.lines.length ||
       this.fromPos !== other.fromPos ||
-      this.toPos !== other.toPos
+      this.toPos !== other.toPos ||
+      this.tableIdx !== other.tableIdx
     ) {
       return false;
     }
@@ -1230,16 +1362,16 @@ function computeTableDecorations(state: EditorState): DecorationSet {
 
   const builder = new RangeSetBuilder<Decoration>();
 
-  for (const t of tables) {
+  tables.forEach((t, idx) => {
     builder.add(
       t.from,
       t.to,
       Decoration.replace({
-        widget: new InteractiveTableWidget(t.lines, t.from, t.to),
+        widget: new InteractiveTableWidget(t.lines, t.from, t.to, idx),
         block: true,
       })
     );
-  }
+  });
 
   return builder.finish();
 }

@@ -8,15 +8,14 @@
   --primary-color: #8b0000;
   --primary-bg-subtle: rgba(139, 0, 0, 0.1);
   --border-color: #d8d2c4;
+  --quote-border-color: #8b0000;
   --item-hover-bg-color: rgba(0, 0, 0, 0.05);
 }
 
-body, #write, .cm-editor, .cm-editor .cm-content, .cm-editor .cm-line {
+body, #write, .cm-editor, .cm-editor .cm-content {
   background-color: var(--bg-color);
   color: var(--text-color) !important;
   font-family: "Georgia", "Cambria", "Times New Roman", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important;
-  font-weight: 400 !important;
-  line-height: 1.8;
 }
 
 #write strong, .cm-strong, strong {
@@ -33,33 +32,26 @@ body, #write, .cm-editor, .cm-editor .cm-content, .cm-editor .cm-line {
 }
 
 #write h1, .cm-line.cm-heading-1 {
-  font-size: 2.3em;
+  font-size: 2.25em;
   text-align: center;
   padding-bottom: 0.4em;
   border-bottom: 3px double #d8d2c4 !important;
-  margin-top: 1.4em;
   letter-spacing: -0.01em;
 }
 
 #write h2, .cm-line.cm-heading-2 {
-  font-size: 1.7em;
+  font-size: 1.68em;
   padding-bottom: 0.3em;
   border-bottom: 1px solid #d8d2c4 !important;
-  margin-top: 1.2em;
 }
 
 #write h3, .cm-line.cm-heading-3 {
   font-size: 1.35em;
-  margin-top: 1em;
 }
 
 #write blockquote, .cm-line.cm-blockquote {
-  border-left: 3px solid #8b0000 !important;
+  border-left: 3.5px solid var(--quote-border-color, #8b0000) !important;
   color: #444444 !important;
-  background-color: transparent !important;
-  padding: 2px 0 2px 14px !important;
-  border-radius: 0 !important;
-  margin: 0 !important;
   font-style: italic;
 }
 

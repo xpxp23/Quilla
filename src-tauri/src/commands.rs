@@ -1,18 +1,24 @@
-use crate::buffer::DocumentBuffer;
+use crate::buffer::{DocumentBuffer, HeadingItem};
 use crate::safe_io::SafeIO;
 use crate::search::{SearchEngine, SearchMatch};
+use crate::watcher::WorkspaceWatcher;
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
 #[derive(Default)]
 pub struct AppState {
     pub current_workspace: Mutex<Option<String>>,
+    pub window_workspaces: Mutex<HashMap<String, String>>,
     pub initial_file: Mutex<Option<String>>,
     pub is_new_window: Mutex<bool>,
     pub document_buffer: Mutex<DocumentBuffer>,
+    pub workspace_watcher: WorkspaceWatcher,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -20,6 +26,7 @@ pub struct FileItem {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub modified_ms: u64,
     pub children: Option<Vec<FileItem>>,
 }
 
@@ -29,7 +36,9 @@ pub fn save_file_content(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.workspace_watcher.mark_self_save();
     SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))?;
+    state.workspace_watcher.mark_self_save();
     if let Ok(mut buf) = state.document_buffer.lock() {
         buf.set_text(&content);
         buf.mark_clean();
@@ -48,15 +57,41 @@ pub fn read_file_content(path: String, state: State<'_, AppState>) -> Result<Str
 }
 
 #[tauri::command]
+pub fn sync_document_buffer(
+    content: String,
+    file_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<HeadingItem>, String> {
+    if let Some(ref id) = file_id {
+        let _ = SafeIO::save_draft_snapshot(id, &content);
+    }
+    if let Ok(mut buf) = state.document_buffer.lock() {
+        buf.set_text(&content);
+        return Ok(buf.extract_headings());
+    }
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+pub fn clear_draft_snapshot(file_id: String) -> Result<(), String> {
+    SafeIO::remove_draft_snapshot(&file_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_workspace_files(
     root: String,
+    window: tauri::Window,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileItem>, String> {
-    // 关键修复：无论是启动时自动恢复工作区、还是通过外部拖拽文件夹进入，均同步更新 current_workspace，
-    // 彻底解决恢复工作区后侧边栏 Search 全文搜索报“当前未设置工作区目录”的 Bug。
+    // 按窗口标签独立维护工作区目录，并同步更新默认工作区与文件监听器
+    if let Ok(mut map) = state.window_workspaces.lock() {
+        map.insert(window.label().to_string(), root.clone());
+    }
     if let Ok(mut ws) = state.current_workspace.lock() {
         *ws = Some(root.clone());
     }
+    state.workspace_watcher.watch_directory(&root, app);
 
     const MAX_DEPTH: usize = 8;
     const MAX_ITEMS: usize = 3500;
@@ -73,6 +108,15 @@ pub fn list_workspace_files(
                 || ext_str.eq_ignore_ascii_case("markdown")
                 || ext_str.eq_ignore_ascii_case("txt")
         })
+    }
+
+    fn get_modified_ms(path: &Path) -> u64 {
+        fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     fn build_tree(dir: &Path, depth: usize, count: &mut usize) -> Vec<FileItem> {
@@ -92,13 +136,17 @@ pub fn list_workspace_files(
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
+                let lower_name = file_name.to_lowercase();
 
                 if file_name.starts_with('.')
-                    || file_name.eq_ignore_ascii_case("assets")
+                    || lower_name == "assets"
+                    || lower_name.ends_with(".assets")
                     || BLACKLIST.iter().any(|&b| file_name.eq_ignore_ascii_case(b))
                 {
                     continue;
                 }
+
+                let modified_ms = get_modified_ms(&path);
 
                 if path.is_dir() {
                     let children = build_tree(&path, depth + 1, count);
@@ -107,6 +155,7 @@ pub fn list_workspace_files(
                         name: file_name,
                         path: path.to_string_lossy().to_string(),
                         is_dir: true,
+                        modified_ms,
                         children: Some(children),
                     });
                 } else if is_text_file(&path) {
@@ -115,6 +164,7 @@ pub fn list_workspace_files(
                         name: file_name,
                         path: path.to_string_lossy().to_string(),
                         is_dir: false,
+                        modified_ms,
                         children: None,
                     });
                 }
@@ -135,10 +185,22 @@ pub fn list_workspace_files(
 #[tauri::command]
 pub fn search_workspace_content(
     keyword: String,
+    window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<SearchMatch>, String> {
-    let workspace = state.current_workspace.lock().unwrap();
-    if let Some(ref root) = *workspace {
+    let win_root = state
+        .window_workspaces
+        .lock()
+        .ok()
+        .and_then(|m| m.get(window.label()).cloned());
+
+    let fallback_root = state
+        .current_workspace
+        .lock()
+        .ok()
+        .and_then(|ws| ws.clone());
+
+    if let Some(root) = win_root.or(fallback_root) {
         Ok(SearchEngine::search_workspace(root, &keyword))
     } else {
         Err("当前未设置工作区目录".to_string())
@@ -146,15 +208,24 @@ pub fn search_workspace_content(
 }
 
 #[tauri::command]
-pub fn select_workspace_folder(state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub fn select_workspace_folder(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
     let folder = rfd::FileDialog::new()
         .set_title("选择工作区文件夹")
         .pick_folder();
 
     if let Some(path) = folder {
         let path_str = path.to_string_lossy().to_string();
-        let mut ws = state.current_workspace.lock().unwrap();
-        *ws = Some(path_str.clone());
+        if let Ok(mut map) = state.window_workspaces.lock() {
+            map.insert(window.label().to_string(), path_str.clone());
+        }
+        if let Ok(mut ws) = state.current_workspace.lock() {
+            *ws = Some(path_str.clone());
+        }
+        state.workspace_watcher.watch_directory(&path_str, app);
         Ok(Some(path_str))
     } else {
         Ok(None)
@@ -202,14 +273,44 @@ pub fn select_open_file_path() -> Result<Option<String>, String> {
     Ok(file.map(|p| p.to_string_lossy().to_string()))
 }
 
-use base64::prelude::*;
-use std::time::{SystemTime, UNIX_EPOCH};
+fn resolve_assets_folder_name(doc_path: &Option<String>, folder_mode: &Option<String>) -> String {
+    if let Some(mode) = folder_mode {
+        if mode == "filename.assets" {
+            if let Some(ref dp) = doc_path {
+                if let Some(stem) = Path::new(dp).file_stem().and_then(|s| s.to_str()) {
+                    let clean_stem: String = stem
+                        .chars()
+                        .filter(|&c| c != '/' && c != '\\' && c != ':')
+                        .collect();
+                    if !clean_stem.is_empty() {
+                        return format!("{}.assets", clean_stem);
+                    }
+                }
+            }
+        }
+    }
+    "assets".to_string()
+}
+
+fn resolve_base_and_assets_dir(
+    doc_path: &Option<String>,
+    folder_mode: &Option<String>,
+) -> (PathBuf, String) {
+    let folder_name = resolve_assets_folder_name(doc_path, folder_mode);
+    let base_dir = if let Some(ref dp) = doc_path {
+        Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        std::env::temp_dir().join("quilla-unsaved")
+    };
+    (base_dir.join(&folder_name), folder_name)
+}
 
 #[tauri::command]
 pub fn save_image_asset(
     doc_path: Option<String>,
     filename: String,
     base64_data: String,
+    folder_mode: Option<String>,
 ) -> Result<String, String> {
     let clean_base64 = if let Some(idx) = base64_data.find(',') {
         &base64_data[idx + 1..]
@@ -221,22 +322,21 @@ pub fn save_image_asset(
         .decode(clean_base64.trim())
         .map_err(|e| format!("Base64 解码失败: {}", e))?;
 
-    let base_dir = if let Some(ref dp) = doc_path {
-        Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
-    } else {
-        std::env::temp_dir().join("quilla-unsaved")
-    };
-
-    let assets_dir = base_dir.join("assets");
+    let (assets_dir, folder_name) = resolve_base_and_assets_dir(&doc_path, &folder_mode);
     if !assets_dir.exists() {
-        fs::create_dir_all(&assets_dir).map_err(|e| format!("创建 assets 目录失败: {}", e))?;
+        fs::create_dir_all(&assets_dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
     }
 
-    let target_file = assets_dir.join(&filename);
+    let safe_filename = Path::new(&filename)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image.png".to_string());
+
+    let target_file = assets_dir.join(&safe_filename);
     fs::write(&target_file, bytes).map_err(|e| format!("写入图片失败: {}", e))?;
 
     if doc_path.is_some() {
-        Ok(format!("assets/{}", filename))
+        Ok(format!("{}/{}", folder_name, safe_filename))
     } else {
         Ok(target_file.to_string_lossy().replace('\\', "/"))
     }
@@ -246,6 +346,7 @@ pub fn save_image_asset(
 pub fn copy_image_to_assets(
     doc_path: Option<String>,
     source_path: String,
+    folder_mode: Option<String>,
 ) -> Result<String, String> {
     let src = Path::new(&source_path);
     if !src.exists() {
@@ -257,9 +358,10 @@ pub fn copy_image_to_assets(
         .and_then(|s| s.to_str())
         .unwrap_or("png");
 
+    // 使用毫秒级时间戳，防止同一秒内批量拖入或另存为迁移多张图片时发生文件名覆盖冲突
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
 
     let file_stem = src
@@ -269,22 +371,16 @@ pub fn copy_image_to_assets(
 
     let new_filename = format!("{}-{}.{}", file_stem, timestamp, ext);
 
-    let base_dir = if let Some(ref dp) = doc_path {
-        Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
-    } else {
-        std::env::temp_dir().join("quilla-unsaved")
-    };
-
-    let assets_dir = base_dir.join("assets");
+    let (assets_dir, folder_name) = resolve_base_and_assets_dir(&doc_path, &folder_mode);
     if !assets_dir.exists() {
-        fs::create_dir_all(&assets_dir).map_err(|e| format!("创建 assets 目录失败: {}", e))?;
+        fs::create_dir_all(&assets_dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
     }
 
     let target_file = assets_dir.join(&new_filename);
     fs::copy(src, &target_file).map_err(|e| format!("复制图片失败: {}", e))?;
 
     if doc_path.is_some() {
-        Ok(format!("assets/{}", new_filename))
+        Ok(format!("{}/{}", folder_name, new_filename))
     } else {
         Ok(target_file.to_string_lossy().replace('\\', "/"))
     }
@@ -295,15 +391,16 @@ pub fn read_image_base64(
     doc_path: Option<String>,
     rel_path: String,
 ) -> Result<String, String> {
-    let path = if Path::new(&rel_path).is_absolute() {
-        Path::new(&rel_path).to_path_buf()
+    let decoded_rel = urlencoding_decode(&rel_path);
+    let path = if Path::new(&decoded_rel).is_absolute() {
+        Path::new(&decoded_rel).to_path_buf()
     } else {
         let base_dir = if let Some(ref dp) = doc_path {
             Path::new(dp).parent().unwrap_or(Path::new(".")).to_path_buf()
         } else {
             Path::new(".").to_path_buf()
         };
-        base_dir.join(&rel_path)
+        base_dir.join(&decoded_rel)
     };
 
     if !path.exists() {
@@ -327,6 +424,26 @@ pub fn read_image_base64(
 
     let encoded = BASE64_STANDARD.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
+fn urlencoding_decode(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let raw = input.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' && i + 2 < raw.len() {
+            if let Ok(hex_str) = std::str::from_utf8(&raw[i + 1..i + 3]) {
+                if let Ok(val) = u8::from_str_radix(hex_str, 16) {
+                    bytes.push(val);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        bytes.push(raw[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 #[tauri::command]
@@ -386,7 +503,8 @@ pub fn window_set_always_on_top(window: tauri::Window, on_top: bool) -> Result<b
 }
 
 #[tauri::command]
-pub fn create_file(path: String) -> Result<(), String> {
+pub fn create_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.workspace_watcher.mark_self_save();
     let p = Path::new(&path);
     if let Some(parent) = p.parent() {
         if !parent.exists() {
@@ -400,14 +518,20 @@ pub fn create_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn create_folder(path: String) -> Result<(), String> {
+pub fn create_folder(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.workspace_watcher.mark_self_save();
     let p = Path::new(&path);
     fs::create_dir_all(p).map_err(|e| format!("创建文件夹失败: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
+pub fn rename_path(
+    old_path: String,
+    new_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.workspace_watcher.mark_self_save();
     let old_p = Path::new(&old_path);
     let new_p = Path::new(&new_path);
     if !old_p.exists() {
@@ -418,7 +542,8 @@ pub fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn delete_path(path: String) -> Result<(), String> {
+pub fn delete_path(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.workspace_watcher.mark_self_save();
     let p = Path::new(&path);
     if !p.exists() {
         return Ok(());
