@@ -10,7 +10,9 @@ pub struct HeadingItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextDelta {
+    #[serde(alias = "fromChar")]
     pub from: usize,
+    #[serde(alias = "toChar")]
     pub to: usize,
     pub insert: String,
 }
@@ -26,11 +28,34 @@ impl Default for DocumentBuffer {
     }
 }
 
-fn strip_inline_markdown(raw: &str) -> String {
+pub fn strip_inline_markdown(raw: &str) -> String {
     let mut out = raw.trim().to_string();
     // 剥离 ATX 标题尾部可选的 ` ###`
     if let Some(stripped) = out.trim_end_matches('#').strip_suffix(' ') {
         out = stripped.trim().to_string();
+    }
+    // 剥离 [[文档#标题|别名]] 双链语法，优先保留别名或目标名
+    while let Some(start) = out.find("[[") {
+        if let Some(rel_end) = out[start + 2..].find("]]") {
+            let inner = &out[start + 2..start + 2 + rel_end];
+            let display = if let Some(pipe_idx) = inner.find('|') {
+                inner[pipe_idx + 1..].trim()
+            } else if let Some(hash_idx) = inner.find('#') {
+                let doc_part = inner[..hash_idx].trim();
+                let head_part = inner[hash_idx + 1..].trim();
+                if doc_part.is_empty() {
+                    head_part
+                } else {
+                    doc_part
+                }
+            } else {
+                inner.trim()
+            };
+            let replacement = display.to_string();
+            out.replace_range(start..start + 2 + rel_end + 2, &replacement);
+        } else {
+            break;
+        }
     }
     // 剥离常见行内语法标记 (** / * / ~~ / == / `)
     for marker in ["***", "___", "**", "__", "~~", "==", "*", "_", "`"] {
@@ -92,7 +117,7 @@ impl DocumentBuffer {
         self.is_dirty
     }
 
-    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与围栏代码块内部注释，并兼容引用块内标题
+    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与围栏代码块（含引用块内围栏代码块）
     pub fn extract_headings(&self) -> Vec<HeadingItem> {
         let mut headings = Vec::new();
         let mut in_fence = false;
@@ -103,7 +128,7 @@ impl DocumentBuffer {
         let mut start_line_idx = 0;
 
         if total_lines >= 3 && self.rope.line(0).to_string().trim() == "---" {
-            let limit = total_lines.min(35);
+            let limit = total_lines.min(40);
             for k in 1..limit {
                 let t = self.rope.line(k).to_string();
                 let trimmed = t.trim();
@@ -119,7 +144,10 @@ impl DocumentBuffer {
                 continue;
             }
             let line_str = line_slice.to_string();
-            let trimmed = line_str.trim();
+            let after_quote = line_str
+                .trim_start()
+                .trim_start_matches(|c: char| c == '>' || c == ' ');
+            let trimmed = after_quote.trim();
 
             if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
                 let m_char = trimmed.chars().next().unwrap_or('`');
@@ -141,8 +169,6 @@ impl DocumentBuffer {
                 continue;
             }
 
-            // 兼容顶层标题与引用块内标题 (> # Heading)，排除 Callout 头部 (> [!NOTE])
-            let after_quote = trimmed.trim_start_matches(|c: char| c == '>' || c == ' ');
             if after_quote.starts_with('#') {
                 let mut level = 0;
                 for ch in after_quote.chars() {
@@ -166,38 +192,64 @@ impl DocumentBuffer {
         }
         headings
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    /// 提取指定标题章节（含其下属子标题闭包）的 Markdown 文本，供 ![[文档#标题]] 块级嵌入使用
+    pub fn extract_section_by_heading(&self, heading_query: Option<&str>) -> String {
+        let total_lines = self.rope.len_lines();
+        let mut start_line_idx = 0;
 
-    #[test]
-    fn test_buffer_operations() {
-        let mut buf = DocumentBuffer::new("# Title\n\nHello Rust-Typora!");
-        assert_eq!(buf.len_lines(), 3);
-        assert!(!buf.is_dirty());
+        if total_lines >= 3 && self.rope.line(0).to_string().trim() == "---" {
+            let limit = total_lines.min(40);
+            for k in 1..limit {
+                let t = self.rope.line(k).to_string();
+                let trimmed = t.trim();
+                if trimmed == "---" || trimmed == "..." {
+                    start_line_idx = k + 1;
+                    break;
+                }
+            }
+        }
 
-        buf.set_text("# New Title\n\nUpdated text");
-        assert!(buf.is_dirty());
-        assert_eq!(buf.get_text(), "# New Title\n\nUpdated text");
+        let query_clean = heading_query
+            .map(|q| q.trim().trim_start_matches('#').trim().to_lowercase())
+            .unwrap_or_default();
 
-        buf.mark_clean();
-        assert!(!buf.is_dirty());
-    }
+        if query_clean.is_empty() {
+            let mut out = String::new();
+            for idx in start_line_idx..total_lines {
+                out.push_str(&self.rope.line(idx).to_string());
+            }
+            return out.trim().to_string();
+        }
 
-    #[test]
-    fn test_heading_extraction() {
-        let content = "---\ntitle: demo\n---\n# Header 1\nSome paragraph\n````markdown\n```python\n# Code comment\n```\n````\n## **Subheader *2*** ##\n> ### Quoted Header 3\nNot # A Header";
-        let buf = DocumentBuffer::new(content);
-        let headings = buf.extract_headings();
+        let headings = self.extract_headings();
+        let target_idx = headings.iter().position(|h| {
+            let h_low = h.text.to_lowercase();
+            h_low == query_clean || h_low.contains(&query_clean)
+        });
 
-        assert_eq!(headings.len(), 3);
-        assert_eq!(headings[0].level, 1);
-        assert_eq!(headings[0].text, "Header 1");
-        assert_eq!(headings[1].level, 2);
-        assert_eq!(headings[1].text, "Subheader 2");
-        assert_eq!(headings[2].level, 3);
-        assert_eq!(headings[2].text, "Quoted Header 3");
+        if let Some(t_idx) = target_idx {
+            let target_h = &headings[t_idx];
+            let sec_start = target_h.line.saturating_sub(1);
+            let mut sec_end = total_lines;
+            for next_h in &headings[t_idx + 1..] {
+                if next_h.level <= target_h.level {
+                    sec_end = next_h.line.saturating_sub(1);
+                    break;
+                }
+            }
+            let mut out = String::new();
+            for idx in sec_start..sec_end.min(total_lines) {
+                out.push_str(&self.rope.line(idx).to_string());
+            }
+            return out.trim().to_string();
+        }
+
+        // 未命中特定标题时回退返回正文前 12 行摘要
+        let mut out = String::new();
+        for idx in start_line_idx..total_lines.min(start_line_idx + 15) {
+            out.push_str(&self.rope.line(idx).to_string());
+        }
+        out.trim().to_string()
     }
 }

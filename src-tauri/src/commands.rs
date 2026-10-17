@@ -1,6 +1,6 @@
 use crate::buffer::{DocumentBuffer, HeadingItem, TextDelta};
-use crate::safe_io::{DraftSnapshotRecord, SafeIO};
-use crate::search::{SearchEngine, SearchMatch};
+use crate::safe_io::{DraftSnapshotRecord, HistorySnapshotRecord, SafeIO};
+use crate::search::{KnowledgeGraphData, SearchEngine, SearchMatch, TagSummary};
 use crate::watcher::WorkspaceWatcher;
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,22 @@ pub struct FileItem {
     pub children: Option<Vec<FileItem>>,
 }
 
+fn resolve_window_workspace(window: &tauri::Window, state: &AppState) -> Option<String> {
+    let win_root = state
+        .window_workspaces
+        .lock()
+        .ok()
+        .and_then(|m| m.get(window.label()).cloned());
+    if win_root.is_some() {
+        return win_root;
+    }
+    state
+        .current_workspace
+        .lock()
+        .ok()
+        .and_then(|ws| ws.clone())
+}
+
 #[tauri::command]
 pub fn save_file_content(
     path: String,
@@ -41,8 +57,13 @@ pub fn save_file_content(
     state.workspace_watcher.mark_self_save();
     SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))?;
     state.workspace_watcher.mark_self_save();
+
+    // 自动记录本地时间机器 (Time Machine) 版本历史快照
+    let _ = SafeIO::save_file_history_snapshot(&path, &content, Some("保存文档".to_string()));
+
     if let Ok(mut map) = state.document_buffers.lock() {
-        let buf = map.entry(window.label().to_string()).or_default();
+        let key = format!("{}::{}", window.label(), path.replace('\\', "/").to_lowercase());
+        let buf = map.entry(key).or_default();
         buf.set_text(&content);
         buf.mark_clean();
     }
@@ -57,7 +78,8 @@ pub fn read_file_content(
 ) -> Result<String, String> {
     let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
     if let Ok(mut map) = state.document_buffers.lock() {
-        let buf = map.entry(window.label().to_string()).or_default();
+        let key = format!("{}::{}", window.label(), path.replace('\\', "/").to_lowercase());
+        let buf = map.entry(key).or_default();
         buf.set_text(&content);
         buf.mark_clean();
     }
@@ -76,9 +98,19 @@ pub fn sync_document_buffer(
     state: State<'_, AppState>,
 ) -> Result<Vec<HeadingItem>, String> {
     let mut final_content = content.clone().unwrap_or_default();
+    let buffer_key = format!(
+        "{}::{}",
+        window.label(),
+        file_path
+            .as_deref()
+            .or(file_id.as_deref())
+            .unwrap_or("active")
+            .replace('\\', "/")
+            .to_lowercase()
+    );
 
     if let Ok(mut map) = state.document_buffers.lock() {
-        let buf = map.entry(window.label().to_string()).or_default();
+        let buf = map.entry(buffer_key).or_default();
         if let Some(ref d_list) = deltas {
             if !buf.apply_deltas(d_list) {
                 if let Some(ref full_text) = content {
@@ -93,7 +125,7 @@ pub fn sync_document_buffer(
         }
 
         if let Some(ref id) = file_id {
-            if !final_content.is_empty() {
+            if id != "memory_only" && !final_content.is_empty() {
                 let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
             }
         }
@@ -102,7 +134,7 @@ pub fn sync_document_buffer(
             return Ok(buf.extract_headings());
         }
     } else if let Some(ref id) = file_id {
-        if !final_content.is_empty() {
+        if id != "memory_only" && !final_content.is_empty() {
             let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
         }
     }
@@ -115,6 +147,67 @@ pub fn extract_file_headings(path: String) -> Result<Vec<HeadingItem>, String> {
     let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
     let buf = DocumentBuffer::new(&content);
     Ok(buf.extract_headings())
+}
+
+#[tauri::command]
+pub fn read_heading_section(path: String, heading: Option<String>) -> Result<String, String> {
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
+    let buf = DocumentBuffer::new(&content);
+    Ok(buf.extract_section_by_heading(heading.as_deref()))
+}
+
+#[tauri::command]
+pub fn list_file_history(path: String) -> Result<Vec<HistorySnapshotRecord>, String> {
+    Ok(SafeIO::list_file_history_snapshots(&path))
+}
+
+#[tauri::command]
+pub fn create_file_history_snapshot(
+    path: String,
+    content: String,
+    label: Option<String>,
+) -> Result<(), String> {
+    SafeIO::save_file_history_snapshot(&path, &content, label).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_file_history_item(path: String, snapshot_id: String) -> Result<(), String> {
+    SafeIO::delete_file_history_snapshot(&path, &snapshot_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn scan_workspace_tags(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<Vec<TagSummary>, String> {
+    if let Some(root) = resolve_window_workspace(&window, &state) {
+        Ok(SearchEngine::scan_workspace_tags(root))
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+pub fn get_workspace_graph(
+    center_path: Option<String>,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<KnowledgeGraphData, String> {
+    let inferred_root = center_path
+        .as_deref()
+        .and_then(|p| Path::new(p).parent())
+        .map(|p| p.to_string_lossy().to_string());
+    if let Some(root) = resolve_window_workspace(&window, &state).or(inferred_root) {
+        Ok(SearchEngine::build_knowledge_graph(
+            root,
+            center_path.as_deref(),
+        ))
+    } else {
+        Ok(KnowledgeGraphData {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        })
+    }
 }
 
 #[tauri::command]
@@ -260,19 +353,7 @@ pub fn search_workspace_content(
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<SearchMatch>, String> {
-    let win_root = state
-        .window_workspaces
-        .lock()
-        .ok()
-        .and_then(|m| m.get(window.label()).cloned());
-
-    let fallback_root = state
-        .current_workspace
-        .lock()
-        .ok()
-        .and_then(|ws| ws.clone());
-
-    if let Some(root) = win_root.or(fallback_root) {
+    if let Some(root) = resolve_window_workspace(&window, &state) {
         Ok(SearchEngine::search_workspace(
             root,
             &keyword,
@@ -286,32 +367,22 @@ pub fn search_workspace_content(
 #[tauri::command]
 pub fn search_backlinks(
     target_name: String,
+    current_file_path: Option<String>,
     current_path: Option<String>,
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<SearchMatch>, String> {
-    let win_root = state
-        .window_workspaces
-        .lock()
-        .ok()
-        .and_then(|m| m.get(window.label()).cloned());
-
-    let fallback_root = state
-        .current_workspace
-        .lock()
-        .ok()
-        .and_then(|ws| ws.clone());
-
-    let inferred_root = current_path
+    let active_path = current_file_path.or(current_path);
+    let inferred_root = active_path
         .as_deref()
         .and_then(|p| Path::new(p).parent())
         .map(|p| p.to_string_lossy().to_string());
 
-    if let Some(root) = win_root.or(fallback_root).or(inferred_root) {
+    if let Some(root) = resolve_window_workspace(&window, &state).or(inferred_root) {
         Ok(SearchEngine::search_backlinks(
             root,
             &target_name,
-            current_path.as_deref(),
+            active_path.as_deref(),
         ))
     } else {
         Ok(Vec::new())
@@ -365,8 +436,11 @@ pub fn select_save_file_path(default_name: Option<String>) -> Result<Option<Stri
 #[tauri::command]
 pub fn select_export_html_path(default_name: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
-        .set_title("导出为 HTML 文档")
-        .add_filter("HTML 网页 (*.html)", &["html", "htm"]);
+        .set_title("导出文档")
+        .add_filter("HTML 网页 (*.html)", &["html", "htm"])
+        .add_filter("Word 文档 (*.doc)", &["doc"])
+        .add_filter("SVG 矢量海报 (*.svg)", &["svg"])
+        .add_filter("所有文件 (*.*)", &["*"]);
 
     if let Some(name) = default_name {
         dialog = dialog.set_file_name(&name);
@@ -565,15 +639,8 @@ pub fn read_custom_theme_css(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let mut candidates = Vec::new();
-    if let Ok(map) = state.window_workspaces.lock() {
-        if let Some(root) = map.get(window.label()) {
-            candidates.push(Path::new(root).join("base.user.css"));
-        }
-    }
-    if let Ok(ws) = state.current_workspace.lock() {
-        if let Some(ref root) = *ws {
-            candidates.push(Path::new(root).join("base.user.css"));
-        }
+    if let Some(root) = resolve_window_workspace(&window, &state) {
+        candidates.push(Path::new(&root).join("base.user.css"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
@@ -631,7 +698,8 @@ pub fn window_close(window: tauri::Window, state: State<'_, AppState>) {
         map.remove(&label);
     }
     if let Ok(mut bufs) = state.document_buffers.lock() {
-        bufs.remove(&label);
+        let prefix = format!("{}::", label);
+        bufs.retain(|k, _| !k.starts_with(&prefix) && k != &label);
     }
     let _ = window.close();
 }
@@ -777,24 +845,24 @@ fn encode_uri_component(input: &str) -> String {
 }
 
 #[tauri::command]
-pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<(), String> {
-    if let Ok(current_exe) = std::env::current_exe() {
-        let mut cmd = std::process::Command::new(current_exe);
-        if let Some(ref path) = file_path {
-            cmd.arg(path);
-        } else {
-            cmd.arg("--new-window");
-        }
-        if cmd.spawn().is_ok() {
-            return Ok(());
-        }
-    }
-
+pub fn create_new_window(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    file_path: Option<String>,
+) -> Result<(), String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let label = format!("window-{}", timestamp);
+
+    // 继承父窗口的工作区配置但保持窗口间独立隔离
+    if let Some(parent_ws) = resolve_window_workspace(&window, &state) {
+        if let Ok(mut map) = state.window_workspaces.lock() {
+            map.insert(label.clone(), parent_ws);
+        }
+    }
 
     let url = if let Some(ref path) = file_path {
         let normalized = path.replace('\\', "/");
@@ -804,7 +872,7 @@ pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Re
         tauri::WebviewUrl::App("index.html?new=1".into())
     };
 
-    tauri::WebviewWindowBuilder::new(&app, &label, url)
+    if tauri::WebviewWindowBuilder::new(&app, &label, url)
         .title("Quilla")
         .inner_size(1080.0, 760.0)
         .min_inner_size(640.0, 480.0)
@@ -812,7 +880,20 @@ pub fn create_new_window(app: tauri::AppHandle, file_path: Option<String>) -> Re
         .transparent(false)
         .center()
         .build()
-        .map_err(|e| format!("创建新窗口失败: {}", e))?;
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        let mut cmd = std::process::Command::new(current_exe);
+        if let Some(ref path) = file_path {
+            cmd.arg(path);
+        } else {
+            cmd.arg("--new-window");
+        }
+        cmd.spawn().map_err(|e| format!("创建新窗口失败: {}", e))?;
+    }
 
     Ok(())
 }

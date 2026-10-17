@@ -1,5 +1,6 @@
 import { EditorView, KeyBinding } from "@codemirror/view";
 import { ChangeSpec, Text } from "@codemirror/state";
+import { moveCurrentSemanticBlock, duplicateCurrentSemanticBlock } from "./block-handle";
 
 /**
  * 转义正则特殊字符
@@ -31,7 +32,6 @@ export function computeExpectedOrderedNumber(
 
     const curIndentLen = listMatch[1].length;
     if (curIndentLen < targetIndentLen) {
-      // 遇到更浅层级的父列表项，新子列表从 1 开始编号
       return 1;
     }
     if (curIndentLen === targetIndentLen) {
@@ -41,7 +41,6 @@ export function computeExpectedOrderedNumber(
       }
       return 1;
     }
-    // curIndentLen > targetIndentLen：跳过前序兄弟下的深层子项，继续向上寻找同级兄弟
   }
   return 1;
 }
@@ -217,7 +216,6 @@ export function smartToggleFormat(
 
 /**
  * 列表与引用块智能回车续行与退出状态机
- * 完美支持：顶层列表、引用块内嵌套列表、多级缩进逐级退回（自动衔接父层级编号）、有序列表自动重编号
  */
 export function handleListEnter(view: EditorView): boolean {
   const selection = view.state.selection.main;
@@ -423,7 +421,7 @@ export function handleListEnter(view: EditorView): boolean {
 }
 
 /**
- * 列表与引用块退格键智能回退 (Backspace) — 支持有序列表退格降级时自动衔接父级编号并重排后续项
+ * 列表与引用块退格键智能回退 (Backspace)
  */
 export function handleListBackspace(view: EditorView): boolean {
   const selection = view.state.selection.main;
@@ -527,9 +525,7 @@ export function handleListBackspace(view: EditorView): boolean {
 
 /**
  * 列表与引用块缩进/反缩进 (Tab / Shift-Tab)
- * - 完美修复多级有序列表按 Tab 缩进时编号未重置为 1（如 1、2、3 下按 Tab 自动变为 1.，按 Shift+Tab 退回一级自动恢复为 4.）
- * - 支持对原层级与目标层级的后续同级项自动连续重编号
- * - 支持框选多行列表项批量按 Tab / Shift-Tab 增减缩进
+ * 显式维护光标 selection 偏移，彻底杜绝行首按 Tab 后光标滞留在缩进空格或 > 左侧的同类问题
  */
 export function handleListTab(view: EditorView, isShift: boolean): boolean {
   const doc = view.state.doc;
@@ -595,7 +591,6 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       ? oldIndent.slice(Math.min(2, oldIndent.length))
       : `${oldIndent}  `;
 
-    // 计算当前行在目标缩进层级下的正确编号（例如在 3. 下按 Tab 缩进为二级时重置为 1；按 Shift+Tab 退回一级时恢复为 4）
     const newNum = computeExpectedOrderedNumber(
       doc,
       line.number,
@@ -616,7 +611,6 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       },
     ];
 
-    // 重排后续同级项（兼容原层级与新层级）
     const oldExpectedAtCurrent = computeExpectedOrderedNumber(
       doc,
       line.number,
@@ -645,7 +639,7 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
     }
 
     const newCursorHead = Math.max(
-      line.from + quoteLen + newIndent.length,
+      line.from + newPrefix.length,
       selection.head + prefixDelta
     );
 
@@ -657,25 +651,26 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
     return true;
   }
 
-  const isUnorderedList = /^(\s*)([-*+])\s+/.test(restText);
-  if (isUnorderedList) {
+  const unorderedMatch = restText.match(/^(\s*)([-*+]\s+(?:\[[ xX]\]\s+)?)/);
+  if (unorderedMatch) {
     const insertPos = line.from + quoteLen;
+    const oldIndentLen = unorderedMatch[1].length;
+    const markerLen = unorderedMatch[2].length;
     if (isShift) {
-      if (restText.startsWith("  ")) {
+      const rem = restText.startsWith("  ") ? 2 : restText.startsWith(" ") ? 1 : 0;
+      if (rem > 0) {
+        const minRightPos = insertPos + (oldIndentLen - rem) + markerLen;
         view.dispatch({
-          changes: { from: insertPos, to: insertPos + 2, insert: "" },
+          changes: { from: insertPos, to: insertPos + rem, insert: "" },
+          selection: { anchor: Math.max(minRightPos, selection.head - rem) },
         });
-        return true;
-      } else if (restText.startsWith(" ")) {
-        view.dispatch({
-          changes: { from: insertPos, to: insertPos + 1, insert: "" },
-        });
-        return true;
       }
       return true;
     } else {
+      const minRightPos = insertPos + oldIndentLen + 2 + markerLen;
       view.dispatch({
         changes: { from: insertPos, insert: "  " },
+        selection: { anchor: Math.max(minRightPos, selection.head + 2) },
       });
       return true;
     }
@@ -686,15 +681,23 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
     if (isShift) {
       if (quoteDepth > 1) {
         const reduced = "> ".repeat(quoteDepth - 1);
+        const delta = reduced.length - quoteLen;
         view.dispatch({
           changes: { from: line.from, to: line.from + quoteLen, insert: reduced },
+          selection: {
+            anchor: Math.max(line.from + reduced.length, selection.head + delta),
+          },
         });
         return true;
       }
     } else if (quoteDepth < 3) {
       const increased = "> ".repeat(quoteDepth + 1);
+      const delta = increased.length - quoteLen;
       view.dispatch({
         changes: { from: line.from, to: line.from + quoteLen, insert: increased },
+        selection: {
+          anchor: Math.max(line.from + increased.length, selection.head + delta),
+        },
       });
       return true;
     }
@@ -706,6 +709,7 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
 
 /**
  * 切换当前行的标题层级 (H1 ~ H6，支持引用块内标题切换)
+ * 彻底修复按 Ctrl+1~6 后光标落在 ## 左侧而非右侧的问题
  */
 export function toggleHeadingLevel(view: EditorView, level: number): boolean {
   const selection = view.state.selection.main;
@@ -717,29 +721,29 @@ export function toggleHeadingLevel(view: EditorView, level: number): boolean {
   const restText = text.slice(quoteLen);
 
   const currentMatch = restText.match(/^(#{1,6})\s+/);
-  const targetPrefix = level > 0 ? `${"#".repeat(level)} ` : "";
-  const basePos = line.from + quoteLen;
+  const oldPrefixLen = currentMatch ? currentMatch[0].length : 0;
+  const currentLevel = currentMatch ? currentMatch[1].length : 0;
 
-  if (currentMatch) {
-    const currentLevel = currentMatch[1].length;
-    if (currentLevel === level || level === 0) {
-      view.dispatch({
-        changes: { from: basePos, to: basePos + currentMatch[0].length, insert: "" },
-      });
-    } else {
-      view.dispatch({
-        changes: {
-          from: basePos,
-          to: basePos + currentMatch[0].length,
-          insert: targetPrefix,
-        },
-      });
-    }
-  } else if (level > 0) {
-    view.dispatch({
-      changes: { from: basePos, insert: targetPrefix },
-    });
-  }
+  const newPrefix =
+    level === 0 || currentLevel === level ? "" : `${"#".repeat(level)} `;
+  const basePos = line.from + quoteLen;
+  const oldPrefixEnd = basePos + oldPrefixLen;
+  const newPrefixEnd = basePos + newPrefix.length;
+
+  const mapCursor = (pos: number) =>
+    pos <= oldPrefixEnd ? newPrefixEnd : pos + (newPrefix.length - oldPrefixLen);
+
+  view.dispatch({
+    changes: {
+      from: basePos,
+      to: oldPrefixEnd,
+      insert: newPrefix,
+    },
+    selection: {
+      anchor: mapCursor(selection.anchor),
+      head: mapCursor(selection.head),
+    },
+  });
   return true;
 }
 
@@ -759,6 +763,18 @@ export const formattingKeymap: KeyBinding[] = [
   {
     key: "Shift-Tab",
     run: (view) => handleListTab(view, true),
+  },
+  {
+    key: "Alt-ArrowUp",
+    run: (view) => moveCurrentSemanticBlock(view, -1),
+  },
+  {
+    key: "Alt-ArrowDown",
+    run: (view) => moveCurrentSemanticBlock(view, 1),
+  },
+  {
+    key: "Mod-d",
+    run: (view) => duplicateCurrentSemanticBlock(view),
   },
   {
     key: "Mod-b",

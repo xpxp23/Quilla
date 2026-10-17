@@ -21,6 +21,7 @@ import {
   reorderDocumentHeading,
   syncActiveOutlineHeading,
   toggleAllOutlineFold,
+  registerOutlineEditorGetter,
 } from "./components/outline";
 import {
   renderFileTree,
@@ -64,67 +65,89 @@ import {
   registerWikiWorkspaceProvider,
   BacklinksController,
   parseWikiLinksInLine,
+  fetchTransclusionSectionContent,
 } from "./editor/extensions/wiki-link";
 import { navigateToAnchor } from "./editor/extensions/anchor-navigator";
+import {
+  openKnowledgeGraphModal,
+  renderSidebarTagsCloud,
+} from "./components/knowledge-graph";
+import {
+  openTimeMachineModal,
+  saveFallbackLocalHistorySnapshot,
+} from "./components/time-machine";
+import {
+  copyForWeChatOrZhihu,
+  exportWordDocument,
+  openSharePosterModal,
+} from "./components/publisher-export";
 
-const INITIAL_DEMO_DOC = `# 欢迎使用 Quilla (羽墨) v0.4
+const INITIAL_DEMO_DOC = `---
+title: Quilla (羽墨) v0.5 全景工作台指南
+author: Quilla Studio
+tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
+version: 0.5.0
+---
 
-这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与轻量级本地知识库。
+# 欢迎使用 Quilla (羽墨) v0.5
 
-> [!TIP] Quilla v0.4 全新核心特性速览
-> - **斜杠命令面板 (\`/\` Slash Command)**：在任意位置输入 \`/\` 即可快速插入表格、Mermaid 模板、数学公式、Callout 提示卡与日期时间。
-> - **多标签页与左右分屏 (\`Ctrl+\\\` Split View)**：顶部支持多文档标签自由切换（保留独立 Undo 栈与滚动位置）与双栏对照写作。
-> - **双向链接与知识库 (\`[[Wiki Links]]\`)**：输入 \`[[\` 自动补全工作区文档与 \`#标题\`，支持悬停预览卡片与底部反向链接面板。
-> - **Pointer Events 统一拖拽引擎**：大纲章节、正文左侧 6 点抓手（支持多段框选批量拖拽）及表格行列均支持丝滑拖拽排序！
+这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
+
+> [!TIP] Quilla v0.5 三大阶段全新跃迁速览
+> - **第一阶段 · 块级与大纲深度操控**：左侧 6 点抓手采用真实 DOM 几何与悬停桥接锁，点击或右键唤起 **块级命令菜单（Turn Into / 克隆 / 移动 / 章节折叠）**；侧边栏大纲支持右键 **单标题升降级、带子标题整体升级/降级（思源笔记风格）、复制章节双链与整章操作**。
+> - **第二阶段 · 块级嵌入与知识图谱**：支持 \`![[文档#标题]]\` 块级/章节实时嵌入卡片、YAML Front Matter 可视化属性面板、多级 \`#父标签/子标签\` 胶囊检索，以及按 \`Ctrl+G\` 唤起 **交互式双链知识图谱**。
+> - **第三阶段 · 时间机器与多渠道发布**：按 \`Ctrl+Alt+H\` 打开 **本地版本历史（Time Machine）** 进行逐行 Diff 对比与一键无损回滚；支持 **一键复制微信公众号/知乎内联富文本**、导出 **Word (\`.doc\`)** 及 **社交长图分享卡片 (\`.png\`)**。
 
 ---
 
-## 体验 1：多级有序列表自动重排与交互表格
+## 体验 1：章节折叠、块级嵌入与多级列表
+
+点击任意标题右侧的折叠图标（或通过大纲右键菜单）即可收起整章正文。您还可以使用 \`![[#体验 4：一体式代码块卡片与数学公式]]\` 在任意位置实时嵌入其他章节或笔记内容：
+
+![[#体验 4：一体式代码块卡片与数学公式]]
 
 1. 一级核心架构：Rust Ropey 增量缓冲 + CodeMirror 6 Lezer 语法树
-2. 多级列表智能编号（在任意层级按 \`Tab\` / \`Shift+Tab\` 自动归零并重排后续序号）：
+2. 多级列表智能编号（在任意层级按 \`Tab\` / \`Shift+Tab\` 自动归零并重排后续序号，光标始终精准落于文本右侧）：
    1. 子级列表项自动从 \`1.\` 独立起算
-   2. 支持多行框选批量缩进与降级
+   2. 按 \`Alt + ↑/↓\` 可整块上下移动，按 \`Ctrl + D\` 一键克隆当前块
 3. 可视化交互表格（支持拖拽行列换位、拖拽列边缘调宽与 \`Ctrl+K\` 插入超链接）：
 
 | 模块名称 | 核心技术 | 关键特性 | 性能指标 |
 | :--- | :---: | :--- | ---: |
 | Lezer AST Engine | CodeMirror 6 | 增量语法树与单趟结构缓存 | < 0.5ms |
-| Pointer Drag | Pointer Events | 大纲/块手柄/表格全场景统一拖拽 | 60 FPS |
-| Visual Table | DOM Keep-Alive | 完美支持 Ctrl+Z 撤销与列宽拖拽 | 即时响应 |
-| Wiki Knowledge | Rust Rayon | \`[[双链补全]]\` 与多线程反向链接检索 | 毫秒级 |
+| Block & Outline | Real DOM Geometry | 抓手右键菜单 + 思源式子树整体升降级 | 零偏移 |
+| Knowledge Graph | Force SVG + Rayon | \`[[双链]]\` / \`![[嵌入块]]\` / 交互式力导向图谱 | 60 FPS |
+| Time Machine | LCS Visual Diff | 本地历史版本时间轴对比与一键回滚 | 零丢失 |
 
 ---
 
 ## 体验 2：GitHub 风格 Callout 高亮卡片
 
 > [!NOTE] 笔记与提示 (Note / Tip / Important / Warning / Caution)
-> 光标移出时自动渲染为带矢量图标与主题色的精致卡片，点击头部或移入首行即可原位修改类型与标题。
+> 光标移出时自动渲染为带四周边框、矢量图标与主题色的精致卡片，点击头部或移入首行即可原位修改类型与标题。
 
-> [!WARNING] 注意事项
-> 在表格中删除行或调整结构后，随时按 \`Ctrl+Z\` 即可无损撤销且视口平滑锁定不跳动。
+> [!WARNING] 多渠道一键发布提示
+> 点击左上角主菜单或编辑器右键菜单中的 **「复制为公众号 / 知乎富文本」**，即可将全文转化为带内联样式的精美排版，直接粘贴至微信公众号后台！
 
 ---
 
 ## 体验 3：Mermaid 流程图渲染 (实时边写边预览)
 
 \`\`\`mermaid
-flowchart TD
-    Start["启动 Quilla v0.4"] --> AST["Lezer AST 增量语法树解析"]
-    AST --> Slash["输入 / 唤起斜杠命令面板"]
-    AST --> Wiki["输入 [[ 触发双链自动补全"]
-    Slash --> Split["按 Ctrl+\\ 开启左右分屏对照写作"]
-    Wiki --> Split
+flowchart LR
+    Start["Quilla v0.5"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
+    Start --> Phase2["![[块级嵌入]] & 双链知识图谱"]
+    Start --> Phase3["时间机器 Diff & 公众号/长图发布"]
 \`\`\`
 
 ---
 
-## 体验 4：多语言代码块与 KaTeX 数学公式
+## 体验 4：一体式代码块卡片与数学公式
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.4!");
-    let rope = ropey::Rope::from_str("极速 Markdown 所见即所得与双链知识库");
+    println!("Hello, Quilla (羽墨) v0.5!");
+    let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
 \`\`\`
@@ -171,6 +194,21 @@ class App {
 
     document.getElementById("w-settings")?.addEventListener("click", () => {
       openPreferencesModal();
+    });
+    document.getElementById("w-graph-btn")?.addEventListener("click", () => {
+      this.openKnowledgeGraph();
+    });
+    document.getElementById("w-history-btn")?.addEventListener("click", () => {
+      this.openTimeMachine();
+    });
+    document.getElementById("footer-open-graph")?.addEventListener("click", () => {
+      this.openKnowledgeGraph();
+    });
+    document.getElementById("footer-open-history")?.addEventListener("click", () => {
+      this.openTimeMachine();
+    });
+    document.getElementById("footer-save-status")?.addEventListener("click", () => {
+      this.openTimeMachine();
     });
 
     this.initSidebarResizer();
@@ -222,6 +260,35 @@ class App {
           showToast(`创建双链笔记失败: ${err}`, "error");
         }
       },
+      onFilterByTag: (tag: string) => {
+        document.body.classList.add("pin-outline");
+        document.getElementById("tab-search")?.click();
+        const searchInput = document.getElementById(
+          "workspace-search-input"
+        ) as HTMLInputElement | null;
+        if (searchInput) {
+          searchInput.value = `#${tag}`;
+          this.performSearch(`#${tag}`);
+        }
+      },
+    });
+
+    // 监听反向链接面板知识图谱按钮与全局标签点击事件
+    window.addEventListener("quilla-open-graph-view", () => {
+      this.openKnowledgeGraph();
+    });
+    window.addEventListener("quilla-filter-by-tag", (e: any) => {
+      const tag = e.detail?.tag;
+      if (!tag) return;
+      document.body.classList.add("pin-outline");
+      document.getElementById("tab-search")?.click();
+      const searchInput = document.getElementById(
+        "workspace-search-input"
+      ) as HTMLInputElement | null;
+      if (searchInput) {
+        searchInput.value = `#${tag}`;
+        this.performSearch(`#${tag}`);
+      }
     });
 
     const writeContainer = document.getElementById("write")!;
@@ -258,6 +325,9 @@ class App {
     });
     this.tabsManager.init(null, "未命名.md", INITIAL_DEMO_DOC);
 
+    // 注册大纲右键菜单编辑器获取器
+    registerOutlineEditorGetter(() => this.tabsManager?.getFocusedView() || this.editorView);
+
     // 初始化底部 [[Wiki Links]] 反向链接面板
     const writeWrapper = document.getElementById("write-wrapper");
     if (writeWrapper) {
@@ -291,11 +361,23 @@ class App {
           effects: forceRefreshEffect.of(true),
         });
       }
+      const secView = this.tabsManager?.getSecondaryView();
+      if (secView) {
+        secView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
+      }
       this.setupAutoSaveTimer();
     });
     window.addEventListener("app-theme-changed", () => {
       if (this.editorView) {
         this.editorView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
+      }
+      const secView = this.tabsManager?.getSecondaryView();
+      if (secView) {
+        secView.dispatch({
           effects: forceRefreshEffect.of(true),
         });
       }
@@ -363,11 +445,12 @@ class App {
           toggleSourceBtn.innerHTML = isSource ? "&lt;/&gt; 实时预览" : "&lt;/&gt; 源码模式";
         }
       }
-      if (this.editorView) {
-        this.editorView.dispatch({
+      const activeView = this.tabsManager?.getFocusedView() || this.editorView;
+      if (activeView) {
+        activeView.dispatch({
           effects: forceRefreshEffect.of(true),
         });
-        this.editorView.focus();
+        activeView.focus();
       }
     };
     toggleSourceBtn?.addEventListener("click", toggleSourceMode);
@@ -376,9 +459,10 @@ class App {
     const focusBtn = document.getElementById("footer-toggle-focus");
 
     const syncModeButtons = () => {
-      if (this.editorView) {
-        const isTW = isTypewriterModeActive(this.editorView);
-        const isFC = isFocusModeActive(this.editorView);
+      const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+      if (targetView) {
+        const isTW = isTypewriterModeActive(targetView);
+        const isFC = isFocusModeActive(targetView);
         if (typewriterBtn) {
           typewriterBtn.classList.toggle("active-mode", isTW);
           typewriterBtn.title = isTW ? "打字机模式 (已开启, 按 F9 关闭)" : "打字机模式 (F9)";
@@ -391,18 +475,20 @@ class App {
     };
 
     const toggleTW = () => {
-      if (this.editorView) {
-        toggleTypewriterMode(this.editorView);
+      const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+      if (targetView) {
+        toggleTypewriterMode(targetView);
         syncModeButtons();
-        this.editorView.focus();
+        targetView.focus();
       }
     };
 
     const toggleFC = () => {
-      if (this.editorView) {
-        toggleFocusMode(this.editorView);
+      const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+      if (targetView) {
+        toggleFocusMode(targetView);
         syncModeButtons();
-        this.editorView.focus();
+        targetView.focus();
       }
     };
 
@@ -423,6 +509,12 @@ class App {
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") {
         e.preventDefault();
         document.body.classList.toggle("pin-outline");
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        this.openKnowledgeGraph();
+      } else if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        this.openTimeMachine();
       } else if (e.key === "F9") {
         e.preventDefault();
         toggleTW();
@@ -448,7 +540,8 @@ class App {
         e.preventDefault();
         this.printDocument();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
-        if (this.editorView && this.editorView.hasFocus) {
+        const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+        if (targetView && targetView.hasFocus) {
           return;
         }
         const active = document.activeElement as HTMLElement;
@@ -460,15 +553,16 @@ class App {
         ) {
           return;
         }
-        if (this.editorView) {
+        if (targetView) {
           e.preventDefault();
-          undo(this.editorView);
+          undo(targetView);
         }
       } else if (
         ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") ||
         ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")
       ) {
-        if (this.editorView && this.editorView.hasFocus) {
+        const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+        if (targetView && targetView.hasFocus) {
           return;
         }
         const active = document.activeElement as HTMLElement;
@@ -480,14 +574,15 @@ class App {
         ) {
           return;
         }
-        if (this.editorView) {
+        if (targetView) {
           e.preventDefault();
-          redo(this.editorView);
+          redo(targetView);
         }
       }
     });
 
     initMenus(this.editorView, {
+      getActiveView: () => this.tabsManager?.getFocusedView() || this.editorView!,
       onNewFile: () => this.newFile(),
       onNewWindow: () => this.createNewWindow(),
       onOpenFile: () => this.promptOpenFile(),
@@ -495,6 +590,11 @@ class App {
       onOpenFolder: () => this.openWorkspaceFolder(),
       onSaveFile: () => this.saveFile(),
       onSaveFileAs: () => this.saveFileAs(),
+      onOpenTimeMachine: () => this.openTimeMachine(),
+      onOpenKnowledgeGraph: () => this.openKnowledgeGraph(),
+      onCopyWeChatHtml: () => this.handleCopyWeChatHtml(),
+      onExportWordDoc: () => this.handleExportWordDoc(),
+      onExportSharePoster: () => this.handleExportSharePoster(),
       onToggleSidebar: () => document.body.classList.toggle("pin-outline"),
       onToggleSourceMode: toggleSourceMode,
       onToggleTypewriterMode: toggleTW,
@@ -587,6 +687,9 @@ class App {
       }
     }
 
+    // 刷新侧边栏标签云
+    this.refreshSidebarTags();
+
     await checkAndPromptRecovery(async (snapshot) => {
       this.currentFilePath = snapshot.filePath;
       setActiveDocumentPath(snapshot.filePath);
@@ -625,6 +728,119 @@ class App {
     });
   }
 
+  private refreshSidebarTags() {
+    const tagsCloudEl = document.getElementById("workspace-tags-cloud");
+    const docText = this.editorView?.state.doc.toString() || "";
+    renderSidebarTagsCloud(tagsCloudEl, docText, (tag) => {
+      const searchInput = document.getElementById(
+        "workspace-search-input"
+      ) as HTMLInputElement | null;
+      if (searchInput) {
+        searchInput.value = `#${tag}`;
+        this.performSearch(`#${tag}`);
+      }
+    });
+  }
+
+  private openKnowledgeGraph() {
+    const activeTab = this.tabsManager?.getActiveTab();
+    const activeTitle =
+      activeTab?.title ||
+      (this.currentFilePath ? this.currentFilePath.split(/[\\/]/).pop()! : "未命名.md");
+    openKnowledgeGraphModal({
+      view: this.tabsManager?.getFocusedView() || this.editorView,
+      activeFilePath: this.currentFilePath,
+      activeTitle,
+      hasWorkspace: Boolean(this.currentWorkspaceRoot),
+      onOpenNote: async (pathOrName, exists) => {
+        if (exists) {
+          await this.loadFile(pathOrName);
+        } else if (this.currentWorkspaceRoot) {
+          const cleanName = pathOrName.replace(/[\\/:*?"<>|]/g, "_").trim();
+          const fileName = cleanName.toLowerCase().endsWith(".md")
+            ? cleanName
+            : `${cleanName}.md`;
+          const sep = this.currentWorkspaceRoot.includes("\\") ? "\\" : "/";
+          const fullPath = `${this.currentWorkspaceRoot.replace(/[\\/]+$/, "")}${sep}${fileName}`;
+          try {
+            await invoke("save_file_content", {
+              path: fullPath,
+              content: `# ${cleanName.replace(/\.md$/i, "")}\n\n`,
+            });
+            await this.loadWorkspace(this.currentWorkspaceRoot, true);
+            await this.loadFile(fullPath);
+            showToast(`已创建并打开双链节点：${fileName}`, "success");
+          } catch (e) {
+            showToast(`创建节点失败: ${e}`, "error");
+          }
+        } else {
+          showToast(`节点「${pathOrName}」尚未创建本地文件（请先打开工作区文件夹）`, "info");
+        }
+      },
+    });
+  }
+
+  private openTimeMachine() {
+    const focusedView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
+    if (!focusedView) return;
+
+    const filePath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const docTitle =
+      focusedTab?.title ||
+      (filePath ? filePath.split(/[\\/]/).pop()! : "未命名.md");
+
+    openTimeMachineModal({
+      view: focusedView,
+      filePath,
+      docTitle,
+      onRestored: (newContent) => {
+        if (focusedView === this.editorView) {
+          this.handleContentChange(newContent);
+        }
+      },
+    });
+  }
+
+  private async handleCopyWeChatHtml() {
+    const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    if (!targetView) return;
+    const docText = targetView.state.doc.toString();
+    const title = this.currentFilePath
+      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : "羽墨笔记";
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    await copyForWeChatOrZhihu(bodyHtml, title);
+  }
+
+  private async handleExportWordDoc() {
+    const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    if (!targetView) return;
+    const docText = targetView.state.doc.toString();
+    const title = this.currentFilePath
+      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : "document-export";
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    await exportWordDocument(bodyHtml, title);
+  }
+
+  private async handleExportSharePoster() {
+    const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    if (!targetView) return;
+    const docText = targetView.state.doc.toString();
+    const title = this.currentFilePath
+      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : "羽墨分享卡片";
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const words = countMixedWords(docText);
+    openSharePosterModal({
+      bodyHtml,
+      title,
+      wordCount: words,
+      charCount: docText.length,
+    });
+  }
+
   /**
    * 当通过多标签栏切换当前激活标签时，完整同步 App 状态、标题栏、文件树高亮、大纲、字数与反向链接
    */
@@ -658,6 +874,7 @@ class App {
 
     this.findReplaceCtrl?.notifyDocChanged();
     this.backlinksCtrl?.refresh();
+    this.refreshSidebarTags();
   }
 
   private async refreshWorkspaceMarkdownIndex(): Promise<
@@ -765,6 +982,7 @@ class App {
         document.getElementById(`tab-${tab}`)?.classList.add("active");
         document.getElementById(`panel-${tab}`)?.classList.add("active");
         if (tab === "search") {
+          this.refreshSidebarTags();
           const searchInput = document.getElementById("workspace-search-input") as HTMLInputElement;
           searchInput?.focus();
         }
@@ -858,6 +1076,38 @@ class App {
   }
 
   public async saveFile(silent: boolean = false): Promise<boolean> {
+    // 若用户当前焦点位于分屏右侧副面板且副面板打开的是另一篇已命名文档，优先保存副面板对应标签
+    if (
+      !silent &&
+      this.tabsManager?.isSecondaryPaneFocused() &&
+      this.tabsManager.getSecondaryTab() &&
+      this.tabsManager.getSecondaryTab()?.id !== this.tabsManager.getActiveTab()?.id
+    ) {
+      const secTab = this.tabsManager.getSecondaryTab()!;
+      const secView = this.tabsManager.getSecondaryView();
+      if (secTab.filePath && secView) {
+        const secContent = secView.state.doc.toString();
+        try {
+          await invoke("save_file_content", {
+            path: secTab.filePath,
+            content: secContent,
+          });
+          this.tabsManager.updateTabSavedMetaById(
+            secTab.id,
+            secTab.filePath,
+            secTab.title,
+            secContent
+          );
+          clearRecoverySnapshot(secTab.filePath);
+          showToast(`已保存右侧分屏文档：${secTab.title}`, "success");
+          return true;
+        } catch (err) {
+          showToast(`保存分屏文件失败: ${err}`, "error");
+          return false;
+        }
+      }
+    }
+
     if (!this.currentFilePath) {
       if (silent) return false;
       return this.saveFileAs();
@@ -884,6 +1134,7 @@ class App {
         saveStatus.classList.remove("is-dirty");
       }
       this.backlinksCtrl?.refresh();
+      this.refreshSidebarTags();
       return true;
     } catch (err) {
       if (!silent) {
@@ -979,6 +1230,7 @@ class App {
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, targetPath);
       this.backlinksCtrl?.refresh();
+      this.refreshSidebarTags();
 
       showToast(`已保存至 ${fileName}`, "success");
       return true;
@@ -1064,6 +1316,7 @@ class App {
     const treeContainer = document.getElementById("file-library-tree");
     if (treeContainer) treeContainer.innerHTML = "";
     this.backlinksCtrl?.refresh();
+    this.refreshSidebarTags();
   }
 
   private async promptOpenFile() {
@@ -1080,7 +1333,7 @@ class App {
   /**
    * 完整出版级 Markdown -> HTML 递归异步渲染管线：
    * 支持：连续段落合并、引用块内递归块级语法、GitHub 风格 Callout 高亮卡片、[[Wiki Links]] 双链胶囊、
-   * 多语言代码块词法高亮与行号、Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注定义及内联 Base64 图片。
+   * ![[文档#标题]] 块级嵌入卡片、#多级标签、标准 W3C 嵌套列表树、Mermaid 矢量 SVG、KaTeX 公式及内联 Base64 图片。
    */
   private async renderMarkdownToHtmlBody(md: string): Promise<string> {
     const rawLines = md.replace(/\r\n/g, "\n").split("\n");
@@ -1168,8 +1421,10 @@ class App {
           const wl = wikiLinks[wIdx];
           const displayLabel = wl.alias
             ? wl.alias
-            : wl.heading
+            : wl.heading && wl.target
             ? `${wl.target} › ${wl.heading}`
+            : wl.heading
+            ? `#${wl.heading}`
             : wl.target;
           const pillHtml = `<span class="cm-wikilink">${this.escapeHtml(displayLabel)}</span>`;
           working =
@@ -1221,6 +1476,15 @@ class App {
         return pushPh(`<a href="${safeHref}" target="_blank" rel="noopener">${text}</a>`);
       });
 
+      // 5.5 提取内联 #标签 胶囊
+      working = working.replace(
+        /(^|[\s,，。；;（(])(#([\u4e00-\u9fa5a-zA-Z0-9_\-]+(?:\/[\u4e00-\u9fa5a-zA-Z0-9_\-]+)*))/g,
+        (full, prefix, rawTag, tagBody) => {
+          if (/^\d+$/.test(tagBody) || /^[0-9a-fA-F]{3,8}$/.test(tagBody)) return full;
+          return `${prefix}${pushPh(`<span class="cm-hashtag">${rawTag}</span>`)}`;
+        }
+      );
+
       // 6. 加粗斜体 / 加粗 / 斜体 / 删除线 / 高亮 / 上下标
       working = working.replace(/(\*{3}|_{3})([^*_\n]+?)\1/g, "<strong><em>$2</em></strong>");
       working = working.replace(/(\*{2}|_{2})([^*_\n]+?)\1/g, "<strong>$2</strong>");
@@ -1248,7 +1512,7 @@ class App {
       let fChar = "";
       let fLen = 0;
       for (let k = startIdx; k < rawLines.length; k++) {
-        const t = rawLines[k].trim();
+        const t = rawLines[k].replace(/^\s*(?:>\s*)*/, "").trim();
         const fm = t.match(/^(`{3,}|~{3,})/);
         if (fm) {
           const mChar = fm[1][0];
@@ -1289,6 +1553,7 @@ class App {
       if (/^(`{3,}|~{3,})/.test(trimmed)) return true;
       if (trimmed === "$$" || /^\$\$\s*(.+?)\s*\$\$$/.test(trimmed)) return true;
       if (/^\[TOC\]$/i.test(trimmed)) return true;
+      if (/^!\[\[([^\[\]\n]+)\]\]$/.test(trimmed)) return true;
       if (trimmed.includes("|") && idx + 1 < lines.length && isTableDelimiter(lines[idx + 1])) {
         return true;
       }
@@ -1320,6 +1585,36 @@ class App {
         if (!trimmed) {
           i++;
           continue;
+        }
+
+        // 0.5 块级/章节嵌入引用 ![[文档#标题]]
+        const embedMatch = trimmed.match(/^!\[\[([^\[\]\n]+)\]\]$/);
+        if (embedMatch) {
+          const parsedLinks = parseWikiLinksInLine(trimmed);
+          if (parsedLinks.length === 1 && parsedLinks[0].isEmbed) {
+            const wl = parsedLinks[0];
+            const res = await fetchTransclusionSectionContent(
+              wl.target,
+              wl.heading,
+              rawLines.join("\n")
+            );
+            const titleLabel = wl.alias
+              ? wl.alias
+              : wl.target && wl.heading
+              ? `${wl.target} › #${wl.heading}`
+              : wl.heading
+              ? `本篇 › #${wl.heading}`
+              : wl.target;
+            out.push(
+              `<blockquote><strong>🔗 嵌入引用 · ${this.escapeHtml(
+                titleLabel
+              )}</strong><pre style="white-space:pre-wrap;margin-top:6px;">${this.escapeHtml(
+                res.content
+              )}</pre></blockquote>`
+            );
+            i++;
+            continue;
+          }
         }
 
         // 1. 围栏代码块与 Mermaid 矢量图渲染 (支持 4 反引号嵌套)
@@ -1514,70 +1809,85 @@ class App {
           continue;
         }
 
-        // 8. 多级无序/有序/任务列表
+        // 8. 多级无序/有序/任务列表 (生成严格符合 W3C 标准的嵌套 <ul>/<ol><li>...<ul>...</ul></li> 结构)
         if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-          const listLines: Array<{
+          interface ParsedListItem {
             indent: number;
             ordered: boolean;
-            html: string;
-          }> = [];
+            isTask: boolean;
+            bodyHtml: string;
+          }
+          const listItems: ParsedListItem[] = [];
           while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
             const cur = lines[i];
-            const indent = (cur.match(/^\s*/)?.[0] || "").length;
+            const indent = (cur.match(/^\s*/)?.[0] || "").replace(/\t/g, "  ").length;
             const taskM = cur.match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
             const ordM = cur.match(/^\s*\d+\.\s+(.*)$/);
             if (taskM) {
               const checked = taskM[1].toLowerCase() === "x" ? " checked disabled" : " disabled";
-              listLines.push({
+              listItems.push({
                 indent,
                 ordered: false,
-                html: `<li class="task-list-item"><input type="checkbox"${checked} /> ${await renderInline(taskM[2])}</li>`,
+                isTask: true,
+                bodyHtml: `<input type="checkbox"${checked} /> ${await renderInline(taskM[2])}`,
               });
             } else if (ordM) {
-              listLines.push({
+              listItems.push({
                 indent,
                 ordered: true,
-                html: `<li>${await renderInline(ordM[1])}</li>`,
+                isTask: false,
+                bodyHtml: await renderInline(ordM[1]),
               });
             } else {
               const itemTxt = cur.replace(/^\s*[-*+]\s+/, "");
-              listLines.push({
+              listItems.push({
                 indent,
                 ordered: false,
-                html: `<li>${await renderInline(itemTxt)}</li>`,
+                isTask: false,
+                bodyHtml: await renderInline(itemTxt),
               });
             }
             i++;
           }
 
-          let listHtml = "";
-          const tagStack: Array<{ tag: "ul" | "ol"; indent: number }> = [];
-          for (const item of listLines) {
-            const tag = item.ordered ? "ol" : "ul";
-            if (tagStack.length === 0 || item.indent > tagStack[tagStack.length - 1].indent) {
-              listHtml += `<${tag}>`;
-              tagStack.push({ tag, indent: item.indent });
-            } else {
-              while (
-                tagStack.length > 1 &&
-                item.indent < tagStack[tagStack.length - 1].indent
-              ) {
-                const popped = tagStack.pop()!;
-                listHtml += `</${popped.tag}>`;
+          const buildNestedListHtml = (startIdxInList: number, minIndent: number): { html: string; nextIdx: number } => {
+            if (startIdxInList >= listItems.length) return { html: "", nextIdx: startIdxInList };
+            const firstItem = listItems[startIdxInList];
+            const listTag = firstItem.ordered ? "ol" : "ul";
+            let html = `<${listTag}>`;
+            let k = startIdxInList;
+
+            while (k < listItems.length) {
+              const item = listItems[k];
+              if (item.indent < minIndent) break;
+
+              const itemTag = item.ordered ? "ol" : "ul";
+              if (item.indent === minIndent && itemTag !== listTag) {
+                break;
               }
-              if (tagStack[tagStack.length - 1].tag !== tag) {
-                const popped = tagStack.pop()!;
-                listHtml += `</${popped.tag}><${tag}>`;
-                tagStack.push({ tag, indent: item.indent });
+
+              const liClass = item.isTask ? ` class="task-list-item"` : "";
+              html += `<li${liClass}>${item.bodyHtml}`;
+              k++;
+
+              while (k < listItems.length && listItems[k].indent > item.indent) {
+                const sub = buildNestedListHtml(k, listItems[k].indent);
+                html += sub.html;
+                k = sub.nextIdx;
               }
+              html += `</li>`;
             }
-            listHtml += item.html;
+
+            html += `</${listTag}>`;
+            return { html, nextIdx: k };
+          };
+
+          let listCursor = 0;
+          while (listCursor < listItems.length) {
+            const built = buildNestedListHtml(listCursor, listItems[listCursor].indent);
+            out.push(built.html);
+            listCursor = built.nextIdx;
           }
-          while (tagStack.length > 0) {
-            const popped = tagStack.pop()!;
-            listHtml += `</${popped.tag}>`;
-          }
-          out.push(listHtml);
           continue;
         }
 
@@ -1681,17 +1991,17 @@ class App {
     body.theme-night .cm-syn-function { color: #61afef; }
     body.theme-night .cm-syn-attr { color: #56b6c2; }
     blockquote { border-left: 3.5px solid var(--quote-border-color, #d0d7de); margin: 1rem 0; padding: 4px 16px; color: var(--control-text-color, #57606a); background: rgba(127, 127, 127, 0.03); }
-    .cm-callout-export { border-left: 4px solid #0969da; border-radius: 6px; padding: 10px 16px; margin: 1rem 0; background: rgba(9, 105, 218, 0.06); }
-    .cm-callout-export.cm-callout-tip { border-left-color: #1a7f37; background: rgba(26, 127, 55, 0.06); }
-    .cm-callout-export.cm-callout-important { border-left-color: #8250df; background: rgba(130, 80, 223, 0.06); }
-    .cm-callout-export.cm-callout-warning { border-left-color: #9a6700; background: rgba(154, 103, 0, 0.07); }
-    .cm-callout-export.cm-callout-caution { border-left-color: #cf222e; background: rgba(207, 34, 46, 0.07); }
+    .cm-callout-export { border: 1px solid rgba(9, 105, 218, 0.22); border-left: 4px solid #0969da; border-radius: 6px; padding: 10px 16px; margin: 1rem 0; background: rgba(9, 105, 218, 0.06); }
+    .cm-callout-export.cm-callout-tip { border-color: rgba(26, 127, 55, 0.22); border-left-color: #1a7f37; background: rgba(26, 127, 55, 0.06); }
+    .cm-callout-export.cm-callout-important { border-color: rgba(130, 80, 223, 0.22); border-left-color: #8250df; background: rgba(130, 80, 223, 0.06); }
+    .cm-callout-export.cm-callout-warning { border-color: rgba(154, 103, 0, 0.22); border-left-color: #9a6700; background: rgba(154, 103, 0, 0.07); }
+    .cm-callout-export.cm-callout-caution { border-color: rgba(207, 34, 46, 0.22); border-left-color: #cf222e; background: rgba(207, 34, 46, 0.07); }
     .cm-callout-header-widget { font-weight: 700; margin-bottom: 4px; color: #0969da; }
     .cm-callout-header-tip { color: #1a7f37; }
     .cm-callout-header-important { color: #8250df; }
     .cm-callout-header-warning { color: #9a6700; }
     .cm-callout-header-caution { color: #cf222e; }
-    .cm-wikilink { color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.08); padding: 1px 6px; border-radius: 4px; font-weight: 500; }
+    .cm-wikilink, .cm-hashtag { color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.08); padding: 1px 7px; border-radius: 10px; font-weight: 500; font-size: 0.92em; }
     li.task-list-item { list-style: none; }
     .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
     .cm-footnote-def { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--border-color, #d0d7de); font-size: 0.92em; color: var(--control-text-color, #57606a); }
@@ -1862,6 +2172,7 @@ ${bodyHtml}
       });
 
       this.backlinksCtrl?.refresh();
+      this.refreshSidebarTags();
     } catch (e) {
       console.error("加载工作区失败:", e);
       if (!silent) {
@@ -1945,6 +2256,7 @@ ${bodyHtml}
       setActiveDocumentPath(filePath);
       addRecentFile(filePath);
       localStorage.setItem("typora_last_file", filePath);
+      saveFallbackLocalHistorySnapshot(filePath, content, "打开文件初始快照");
 
       if (this.tabsManager) {
         const tab = this.tabsManager.openOrActivateFileTab(filePath, fileName, content, true);
@@ -1962,6 +2274,7 @@ ${bodyHtml}
         const treeContainer = document.getElementById("file-library-tree");
         syncActiveTreeItem(treeContainer, filePath);
         this.backlinksCtrl?.refresh();
+        this.refreshSidebarTags();
       }
       return true;
     } catch (e) {
@@ -2017,7 +2330,41 @@ ${bodyHtml}
       );
       resultsContainer.innerHTML = "";
       if (matches.length === 0) {
-        resultsContainer.innerHTML = `<div class="search-status-hint">无匹配结果</div>`;
+        // 若未打开工作区但在当前文档中有匹配，展示当前文档内匹配行
+        const localDoc = this.editorView?.state.doc;
+        const localHits: Array<{ line: number; text: string }> = [];
+        if (localDoc) {
+          const kwCmp = this.searchCaseSensitive ? keyword : keyword.toLowerCase();
+          for (let i = 1; i <= localDoc.lines; i++) {
+            const lText = localDoc.line(i).text;
+            const hay = this.searchCaseSensitive ? lText : lText.toLowerCase();
+            if (hay.includes(kwCmp)) {
+              localHits.push({ line: i, text: lText.trim() });
+            }
+          }
+        }
+        if (localHits.length === 0) {
+          resultsContainer.innerHTML = `<div class="search-status-hint">无匹配结果</div>`;
+          return;
+        }
+        if (metaEl) {
+          metaEl.textContent = `当前文档内共 ${localHits.length} 处匹配`;
+          metaEl.classList.remove("hidden");
+        }
+        localHits.forEach((h) => {
+          const item = document.createElement("div");
+          item.className = "search-result-item";
+          item.innerHTML = `
+            <div class="search-result-file">当前文档</div>
+            <div class="search-result-text"><span class="search-result-line">L${h.line}</span> ${this.highlightKeywordHtml(h.text, keyword)}</div>
+          `;
+          item.addEventListener("click", () => {
+            if (this.editorView) {
+              pulseSearchMatch(this.editorView, h.line, keyword);
+            }
+          });
+          resultsContainer.appendChild(item);
+        });
         return;
       }
 

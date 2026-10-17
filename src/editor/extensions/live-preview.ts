@@ -8,7 +8,7 @@ import {
 } from "@codemirror/view";
 import { Range } from "@codemirror/state";
 import { imeState } from "./ime-guard";
-import { tokenizeCodeLine } from "./code-highlighter";
+import { tokenizeCodeLine, CodeTokenSpan } from "./code-highlighter";
 import { getPreferences } from "../../components/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import katex from "katex";
@@ -20,13 +20,55 @@ import {
   stripInlineMarkdown,
   parseBalancedLinksAndImages,
   CalloutType,
+  FrontMatterProperty,
 } from "./doc-structure";
-import { parseWikiLinksInLine, handleWikiLinkTrigger } from "./wiki-link";
+import {
+  parseWikiLinksInLine,
+  handleWikiLinkTrigger,
+  fetchTransclusionSectionContent,
+  handleTagClickTrigger,
+} from "./wiki-link";
+import { showToast } from "../../components/save-dialog";
 
 export { stripInlineMarkdown };
 
 export let activeDocumentPath: string | null = null;
 const imageBase64Cache = new Map<string, string>();
+const katexHtmlCache = new Map<string, string>();
+const codeTokenCache = new Map<string, CodeTokenSpan[]>();
+
+// 维护正文标题折叠集合 (支持跨章节折叠) & 代码块折叠集合
+const foldedHeadingKeys = new Set<string>();
+const collapsedCodeBlocks = new Set<string>();
+const expandedMaxHeightCodeBlocks = new Set<string>();
+
+function getHeadingFoldKey(lineNum: number, text: string): string {
+  return `${lineNum}::${text}`;
+}
+
+export function isHeadingFoldedAtLine(view: EditorView, lineNum: number): boolean {
+  const struct = getDocStructureFromState(view.state);
+  const h = struct.headings.find((item) => item.line === lineNum);
+  if (!h) return false;
+  return foldedHeadingKeys.has(getHeadingFoldKey(h.line, h.text));
+}
+
+export function toggleHeadingFoldAtLine(view: EditorView, lineNum: number): boolean {
+  const struct = getDocStructureFromState(view.state);
+  const h = struct.headings.find((item) => item.line === lineNum);
+  if (!h) return false;
+  const key = getHeadingFoldKey(h.line, h.text);
+  const nextState = !foldedHeadingKeys.has(key);
+  if (nextState) {
+    foldedHeadingKeys.add(key);
+  } else {
+    foldedHeadingKeys.delete(key);
+  }
+  view.dispatch({
+    effects: forceRefreshEffect.of(true),
+  });
+  return nextState;
+}
 
 export function setActiveDocumentPath(path: string | null) {
   activeDocumentPath = path;
@@ -34,10 +76,46 @@ export function setActiveDocumentPath(path: string | null) {
 
 export function clearImageCache() {
   imageBase64Cache.clear();
+  foldedHeadingKeys.clear();
+  collapsedCodeBlocks.clear();
 }
 
 export function getImageBase64FromCache(key: string): string | undefined {
   return imageBase64Cache.get(key);
+}
+
+function renderKatexCached(latex: string, displayMode: boolean): string {
+  const key = `${displayMode ? "B" : "I"}::${latex}`;
+  const hit = katexHtmlCache.get(key);
+  if (hit !== undefined) return hit;
+  try {
+    const html = katex.renderToString(latex, {
+      displayMode,
+      throwOnError: false,
+      output: "html",
+    });
+    if (katexHtmlCache.size > 600) {
+      const firstKey = katexHtmlCache.keys().next().value;
+      if (firstKey) katexHtmlCache.delete(firstKey);
+    }
+    katexHtmlCache.set(key, html);
+    return html;
+  } catch {
+    return `[Math Error: ${latex}]`;
+  }
+}
+
+function tokenizeCodeLineCached(lineText: string, lang: string): CodeTokenSpan[] {
+  const key = `${lang}::${lineText}`;
+  const hit = codeTokenCache.get(key);
+  if (hit !== undefined) return hit;
+  const spans = tokenizeCodeLine(lineText, lang);
+  if (codeTokenCache.size > 1200) {
+    const firstKey = codeTokenCache.keys().next().value;
+    if (firstKey) codeTokenCache.delete(firstKey);
+  }
+  codeTokenCache.set(key, spans);
+  return spans;
 }
 
 const COMMON_CODE_LANGUAGES = [
@@ -67,7 +145,232 @@ const COMMON_CODE_LANGUAGES = [
   "mermaid",
 ];
 
-// 1. KaTeX 数学公式 Widget (强制 HTML 矢量输出，无 MathML 冗余)
+/**
+ * 轻量多语言代码自动格式化器（支持 JSON 美化与花括号语言缩进重排）
+ */
+function formatCodeSnippet(code: string, lang: string): string {
+  const cleanLang = (lang || "").trim().toLowerCase();
+  if (cleanLang === "json") {
+    try {
+      return JSON.stringify(JSON.parse(code), null, 2);
+    } catch {
+      // fallback
+    }
+  }
+  const lines = code.replace(/\r\n/g, "\n").split("\n");
+  if (
+    [
+      "rust",
+      "typescript",
+      "javascript",
+      "js",
+      "ts",
+      "go",
+      "c",
+      "cpp",
+      "csharp",
+      "java",
+      "kotlin",
+      "swift",
+      "css",
+    ].includes(cleanLang)
+  ) {
+    let depth = 0;
+    const indentUnit = cleanLang === "rust" || cleanLang === "java" ? "    " : "  ";
+    return lines
+      .map((raw) => {
+        const trimmed = raw.trim();
+        if (!trimmed) return "";
+        if (/^[}\])]/.test(trimmed)) {
+          depth = Math.max(0, depth - 1);
+        }
+        const formatted = `${indentUnit.repeat(depth)}${trimmed}`;
+        const openCount = (trimmed.match(/[{[(]/g) || []).length;
+        const closeCount = (trimmed.match(/[}\])]/g) || []).length;
+        const net = openCount - closeCount + (/^[}\])]/.test(trimmed) ? 1 : 0);
+        depth = Math.max(0, depth + net);
+        return formatted;
+      })
+      .join("\n");
+  }
+  return lines.map((l) => l.replace(/\s+$/, "")).join("\n");
+}
+
+// 0. 顶部 YAML Front Matter 可视化属性面板 Widget (Properties UI)
+class FrontMatterCardWidget extends WidgetType {
+  constructor(
+    readonly props: FrontMatterProperty[],
+    readonly endLine: number,
+    readonly editPos: number
+  ) {
+    super();
+  }
+
+  get estimatedHeight(): number {
+    return Math.max(54, this.props.length * 28 + 36);
+  }
+
+  ignoreEvent(_event: Event): boolean {
+    return true;
+  }
+
+  toDOM(view: EditorView) {
+    const card = document.createElement("div");
+    card.className = "cm-frontmatter-card";
+    card.dataset.from = "0";
+    card.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+    const header = document.createElement("div");
+    header.className = "cm-frontmatter-header";
+    header.innerHTML = `
+      <div class="cm-frontmatter-title">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"></path><path d="M7 7h.01"></path></svg>
+        <span>文档属性 (YAML Properties)</span>
+      </div>
+      <div class="cm-frontmatter-actions">
+        <button type="button" class="cm-fm-btn" data-act="add-prop" title="新增 YAML 属性字段">+ 属性</button>
+        <button type="button" class="cm-fm-btn" data-act="edit-yaml" title="编辑原始 YAML Front Matter">编辑源码</button>
+      </div>
+    `;
+    card.appendChild(header);
+
+    const grid = document.createElement("div");
+    grid.className = "cm-frontmatter-grid";
+
+    if (this.props.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "cm-frontmatter-empty";
+      empty.textContent = "空的 YAML 头部（点击右上角“编辑源码”或“+ 属性”添加元数据）";
+      grid.appendChild(empty);
+    } else {
+      for (const p of this.props) {
+        const row = document.createElement("div");
+        row.className = "cm-frontmatter-row";
+
+        const keyEl = document.createElement("span");
+        keyEl.className = "cm-fm-key";
+        keyEl.textContent = p.key;
+
+        const valEl = document.createElement("div");
+        valEl.className = "cm-fm-val";
+
+        if (p.key.toLowerCase() === "tags" || p.key.toLowerCase() === "tag") {
+          const clean = p.value.replace(/^\[|\]$/g, "");
+          const tags = clean
+            .split(",")
+            .map((s) => s.trim().replace(/^['"#]|['"]$/g, ""))
+            .filter(Boolean);
+          tags.forEach((t) => {
+            const pill = document.createElement("span");
+            pill.className = "cm-hashtag cm-fm-tag-pill";
+            pill.textContent = `#${t}`;
+            pill.addEventListener("click", (e) => {
+              e.stopPropagation();
+              handleTagClickTrigger(t);
+            });
+            valEl.appendChild(pill);
+          });
+        } else {
+          valEl.textContent = p.value.replace(/^['"]|['"]$/g, "") || "-";
+        }
+
+        row.addEventListener("click", (e) => {
+          if ((e.target as HTMLElement).classList.contains("cm-fm-tag-pill")) return;
+          e.stopPropagation();
+          const line = view.state.doc.line(Math.min(p.line, view.state.doc.lines));
+          view.dispatch({ selection: { anchor: line.to } });
+          view.focus();
+        });
+
+        row.appendChild(keyEl);
+        row.appendChild(valEl);
+        grid.appendChild(row);
+      }
+    }
+
+    card.appendChild(grid);
+
+    header.querySelector('[data-act="edit-yaml"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      view.dispatch({ selection: { anchor: this.editPos } });
+      view.focus();
+    });
+
+    header.querySelector('[data-act="add-prop"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const closingLine = view.state.doc.line(Math.min(this.endLine, view.state.doc.lines));
+      const insertText = `category: 默认分类\n`;
+      view.dispatch({
+        changes: { from: closingLine.from, to: closingLine.from, insert: insertText },
+        selection: { anchor: closingLine.from + 10, head: closingLine.from + insertText.length - 1 },
+      });
+      view.focus();
+    });
+
+    return card;
+  }
+
+  eq(other: FrontMatterCardWidget) {
+    if (other.endLine !== this.endLine || other.props.length !== this.props.length) {
+      return false;
+    }
+    return this.props.every(
+      (p, i) => p.key === other.props[i].key && p.value === other.props[i].value
+    );
+  }
+}
+
+// 0.5 正文标题左侧折叠/展开小三角 Widget
+class HeadingFoldWidget extends WidgetType {
+  constructor(
+    readonly lineNum: number,
+    readonly isFolded: boolean,
+    readonly foldedLineCount: number
+  ) {
+    super();
+  }
+
+  ignoreEvent(_event: Event): boolean {
+    return true;
+  }
+
+  toDOM(view: EditorView) {
+    const wrap = document.createElement("span");
+    wrap.className = `cm-heading-fold-btn ${this.isFolded ? "folded" : "expanded"}`;
+    wrap.title = this.isFolded
+      ? `点击展开章节 (已折叠 ${this.foldedLineCount} 行)`
+      : "点击折叠本章节";
+    wrap.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
+
+    if (this.isFolded && this.foldedLineCount > 0) {
+      const badge = document.createElement("span");
+      badge.className = "cm-heading-folded-badge";
+      badge.textContent = `${this.foldedLineCount} 行已折叠`;
+      wrap.appendChild(badge);
+    }
+
+    wrap.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    wrap.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleHeadingFoldAtLine(view, this.lineNum);
+    });
+    return wrap;
+  }
+
+  eq(other: HeadingFoldWidget) {
+    return (
+      other.lineNum === this.lineNum &&
+      other.isFolded === this.isFolded &&
+      other.foldedLineCount === this.foldedLineCount
+    );
+  }
+}
+
+// 1. KaTeX 数学公式 Widget (带全局缓存)
 class MathWidget extends WidgetType {
   constructor(
     readonly mathStr: string,
@@ -90,15 +393,7 @@ class MathWidget extends WidgetType {
     span.className = this.isBlock ? "md-math-block-preview" : "md-inline-math-preview";
     span.style.cursor = "pointer";
     span.title = "点击编辑 LaTeX 公式";
-    try {
-      katex.render(this.mathStr, span, {
-        displayMode: this.isBlock,
-        throwOnError: false,
-        output: "html",
-      });
-    } catch {
-      span.textContent = `[Math Error: ${this.mathStr}]`;
-    }
+    span.innerHTML = renderKatexCached(this.mathStr, this.isBlock);
     span.addEventListener("click", (e) => {
       e.stopPropagation();
       view.dispatch({ selection: { anchor: this.clickPos } });
@@ -122,6 +417,10 @@ class TaskWidget extends WidgetType {
     super();
   }
 
+  ignoreEvent(_event: Event): boolean {
+    return true;
+  }
+
   toDOM(view: EditorView) {
     const wrap = document.createElement("span");
     wrap.className = "task-list-item-prefix";
@@ -129,11 +428,15 @@ class TaskWidget extends WidgetType {
     input.type = "checkbox";
     input.className = "task-list-item-checkbox";
     input.checked = this.checked;
+    input.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+    });
     input.addEventListener("click", (e) => {
       e.stopPropagation();
       const newChar = input.checked ? "x" : " ";
       view.dispatch({
         changes: { from: this.pos, to: this.pos + 1, insert: newChar },
+        userEvent: "input.checkbox",
       });
     });
     wrap.appendChild(input);
@@ -168,7 +471,7 @@ class BulletWidget extends WidgetType {
   }
 }
 
-// 2.6 有序列表等宽排版序号 Widget (tabular-nums 右对齐徽标)
+// 2.6 有序列表等宽排版序号 Widget
 class OrderedListMarkerWidget extends WidgetType {
   constructor(
     readonly numText: string,
@@ -199,7 +502,7 @@ class OrderedListMarkerWidget extends WidgetType {
   }
 }
 
-// 2.7 GitHub 风格 Callout / Admonition 头部卡片 Widget (> [!NOTE] / TIP / IMPORTANT / WARNING / CAUTION)
+// 2.7 GitHub 风格 Callout / Admonition 头部卡片 Widget
 const CALLOUT_ICONS: Record<CalloutType, string> = {
   note: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
   tip: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>`,
@@ -260,7 +563,7 @@ class CalloutHeaderWidget extends WidgetType {
   }
 }
 
-// 2.8 双向链接 [[Wiki Link]] 胶囊 Widget
+// 2.8 双向链接 [[Wiki Link]] 胶囊 Widget (采用精致 SVG 矢量双链图标)
 class WikiLinkWidget extends WidgetType {
   constructor(
     readonly targetDoc: string,
@@ -286,7 +589,7 @@ class WikiLinkWidget extends WidgetType {
 
     const icon = document.createElement("span");
     icon.className = "cm-wiki-link-icon";
-    icon.textContent = "🔗";
+    icon.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>`;
 
     const label = document.createElement("span");
     label.className = "cm-wiki-link-label";
@@ -295,6 +598,7 @@ class WikiLinkWidget extends WidgetType {
     span.appendChild(icon);
     span.appendChild(label);
 
+    span.addEventListener("pointerdown", (e) => e.stopPropagation());
     span.addEventListener("click", (e) => {
       e.stopPropagation();
       if (e.altKey) {
@@ -309,6 +613,84 @@ class WikiLinkWidget extends WidgetType {
   }
 
   eq(other: WikiLinkWidget) {
+    return (
+      other.targetDoc === this.targetDoc &&
+      other.heading === this.heading &&
+      other.displayText === this.displayText &&
+      other.clickPos === this.clickPos
+    );
+  }
+}
+
+// 2.9 块级/章节嵌入 ![[文档名#标题]] 原位引用卡片 Widget (Transclusion Card)
+class TransclusionWidget extends WidgetType {
+  constructor(
+    readonly targetDoc: string,
+    readonly heading: string,
+    readonly displayText: string,
+    readonly clickPos: number
+  ) {
+    super();
+  }
+
+  get estimatedHeight(): number {
+    return 110;
+  }
+
+  ignoreEvent(_event: Event): boolean {
+    return true;
+  }
+
+  toDOM(view: EditorView) {
+    const card = document.createElement("div");
+    card.className = "cm-transclusion-card";
+    card.dataset.from = String(this.clickPos);
+    card.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+    const header = document.createElement("div");
+    header.className = "cm-transclusion-header";
+    header.innerHTML = `
+      <div class="cm-transclusion-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9h4"/><path d="M14 15h4"/></svg>
+        <span>嵌入引用：${this.displayText}</span>
+      </div>
+      <div class="cm-transclusion-actions">
+        <button type="button" class="cm-trans-btn" data-act="jump" title="跳转到源文档章节">跳转源文 ↗</button>
+        <button type="button" class="cm-trans-btn" data-act="edit" title="编辑嵌入语法">源码</button>
+      </div>
+    `;
+
+    const body = document.createElement("div");
+    body.className = "cm-transclusion-body";
+    body.textContent = "正在加载嵌入章节...";
+
+    card.appendChild(header);
+    card.appendChild(body);
+
+    fetchTransclusionSectionContent(this.targetDoc, this.heading).then((res) => {
+      if (!res.found) {
+        body.innerHTML = `<span class="cm-transclusion-missing">未找到目标笔记 “${this.targetDoc}”，点击右上角“跳转源文”可一键创建该笔记</span>`;
+      } else {
+        body.textContent = res.content || "(目标章节内容为空)";
+      }
+      view.requestMeasure();
+    });
+
+    header.querySelector('[data-act="jump"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      handleWikiLinkTrigger(view, this.targetDoc, this.heading);
+    });
+
+    header.querySelector('[data-act="edit"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      view.dispatch({ selection: { anchor: this.clickPos + 3 } });
+      view.focus();
+    });
+
+    return card;
+  }
+
+  eq(other: TransclusionWidget) {
     return (
       other.targetDoc === this.targetDoc &&
       other.heading === this.heading &&
@@ -434,20 +816,23 @@ class ImageWidget extends WidgetType {
   }
 }
 
-// 4. 代码块头部语言选择器与复制/源码按钮 Widget
+// 4. 代码块头部语言选择器、折叠、格式化与复制按钮 Widget (v0.5 全新卡片化设计)
 class CodeBlockHeaderWidget extends WidgetType {
   constructor(
     readonly lang: string,
     readonly codeText: string,
     readonly headerLineFrom: number,
     readonly headerLineTo: number,
-    readonly fencePrefix: string
+    readonly fencePrefix: string,
+    readonly startLine: number,
+    readonly endLine: number,
+    readonly isCollapsed: boolean
   ) {
     super();
   }
 
   get estimatedHeight(): number {
-    return 32;
+    return 34;
   }
 
   ignoreEvent(_event: Event): boolean {
@@ -456,7 +841,16 @@ class CodeBlockHeaderWidget extends WidgetType {
 
   toDOM(view: EditorView) {
     const header = document.createElement("div");
-    header.className = "code-block-header-bar";
+    header.className = `code-block-header-bar ${this.isCollapsed ? "is-collapsed" : ""}`;
+
+    // 关键修复：彻底阻止 pointerdown / mousedown 向 view.contentDOM 冒泡，
+    // 根治打字机模式下点击代码块复制按钮、语言按钮、折叠按钮导致视口跳回远端光标处的问题
+    header.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+    });
+    header.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+    });
 
     const resolveDynamicHeaderLine = () => {
       try {
@@ -468,6 +862,28 @@ class CodeBlockHeaderWidget extends WidgetType {
         );
       }
     };
+
+    const leftWrap = document.createElement("div");
+    leftWrap.className = "code-header-left";
+
+    // 代码块折叠/展开按钮
+    const foldBtn = document.createElement("button");
+    foldBtn.type = "button";
+    foldBtn.className = `code-fold-btn ${this.isCollapsed ? "collapsed" : "expanded"}`;
+    const codeLinesCount = Math.max(0, this.endLine - this.startLine - 1);
+    foldBtn.title = this.isCollapsed ? "展开代码块" : "折叠代码块";
+    foldBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="6 9 12 15 18 9"></polyline></svg>`;
+    foldBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = `${this.startLine}`;
+      if (collapsedCodeBlocks.has(key)) {
+        collapsedCodeBlocks.delete(key);
+      } else {
+        collapsedCodeBlocks.add(key);
+      }
+      view.dispatch({ effects: forceRefreshEffect.of(true) });
+    });
 
     const langWrap = document.createElement("div");
     langWrap.className = "code-lang-selector-wrap";
@@ -500,6 +916,7 @@ class CodeBlockHeaderWidget extends WidgetType {
       const line = resolveDynamicHeaderLine();
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: newLineText },
+        userEvent: "input.code.lang",
       });
       dropdown.classList.add("hidden");
     };
@@ -513,7 +930,9 @@ class CodeBlockHeaderWidget extends WidgetType {
       }
       matched.forEach((l) => {
         const item = document.createElement("div");
-        item.className = `code-lang-option ${l === (this.lang || "plaintext").toLowerCase() ? "active" : ""}`;
+        item.className = `code-lang-option ${
+          l === (this.lang || "plaintext").toLowerCase() ? "active" : ""
+        }`;
         item.textContent = l;
         item.addEventListener("mousedown", (e) => {
           e.preventDefault();
@@ -563,22 +982,51 @@ class CodeBlockHeaderWidget extends WidgetType {
     langWrap.appendChild(langBtn);
     langWrap.appendChild(dropdown);
 
+    leftWrap.appendChild(foldBtn);
+    leftWrap.appendChild(langWrap);
+
+    if (this.isCollapsed) {
+      const foldedHint = document.createElement("span");
+      foldedHint.className = "code-collapsed-badge";
+      foldedHint.textContent = `已折叠 ${codeLinesCount} 行代码`;
+      foldedHint.addEventListener("click", (e) => {
+        e.stopPropagation();
+        collapsedCodeBlocks.delete(`${this.startLine}`);
+        view.dispatch({ effects: forceRefreshEffect.of(true) });
+      });
+      leftWrap.appendChild(foldedHint);
+    } else {
+      const lineCountHint = document.createElement("span");
+      lineCountHint.className = "code-line-count-meta";
+      lineCountHint.textContent = `${codeLinesCount} lines`;
+      leftWrap.appendChild(lineCountHint);
+    }
+
     const actionsWrap = document.createElement("div");
     actionsWrap.className = "code-header-actions";
 
-    const editFenceBtn = document.createElement("button");
-    editFenceBtn.className = "code-copy-btn code-fence-btn";
-    editFenceBtn.type = "button";
-    editFenceBtn.title = "定位并编辑代码块围栏行";
-    editFenceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg><span>围栏</span>`;
-    editFenceBtn.addEventListener("click", (e) => {
+    // 一键格式化代码按钮
+    const formatBtn = document.createElement("button");
+    formatBtn.className = "code-copy-btn code-format-btn";
+    formatBtn.type = "button";
+    formatBtn.title = "一键规范代码缩进与格式";
+    formatBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg><span>格式化</span>`;
+    formatBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const line = resolveDynamicHeaderLine();
-      view.dispatch({ selection: { anchor: line.to } });
-      view.focus();
+      const formatted = formatCodeSnippet(this.codeText, this.lang);
+      if (formatted !== this.codeText && this.endLine > this.startLine + 1) {
+        const bodyStart = view.state.doc.line(this.startLine + 1).from;
+        const bodyEnd = view.state.doc.line(this.endLine - 1).to;
+        view.dispatch({
+          changes: { from: bodyStart, to: bodyEnd, insert: formatted },
+          userEvent: "input.code.format",
+        });
+        showToast("代码缩进已自动格式化", "success");
+      }
     });
 
+    // 复制按钮
     const copyBtn = document.createElement("button");
     copyBtn.className = "code-copy-btn";
     copyBtn.type = "button";
@@ -599,18 +1047,20 @@ class CodeBlockHeaderWidget extends WidgetType {
       });
     });
 
-    actionsWrap.appendChild(editFenceBtn);
+    actionsWrap.appendChild(formatBtn);
     actionsWrap.appendChild(copyBtn);
 
+    // 点击顶栏空白处时，将光标温和定位于代码块第一行代码（而非展开 ``` 围栏），彻底避免误改围栏
     header.addEventListener("click", (e) => {
-      if (e.target === header) {
-        const line = resolveDynamicHeaderLine();
-        view.dispatch({ selection: { anchor: line.to } });
+      if (e.target === header || e.target === leftWrap) {
+        const firstCodeLine = Math.min(this.startLine + 1, this.endLine);
+        const targetLine = view.state.doc.line(firstCodeLine);
+        view.dispatch({ selection: { anchor: targetLine.from } });
         view.focus();
       }
     });
 
-    header.appendChild(langWrap);
+    header.appendChild(leftWrap);
     header.appendChild(actionsWrap);
     return header;
   }
@@ -619,7 +1069,10 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       other.lang === this.lang &&
       other.codeText === this.codeText &&
-      other.fencePrefix === this.fencePrefix
+      other.fencePrefix === this.fencePrefix &&
+      other.startLine === this.startLine &&
+      other.endLine === this.endLine &&
+      other.isCollapsed === this.isCollapsed
     );
   }
 }
@@ -673,6 +1126,7 @@ class TocWidget extends WidgetType {
   toDOM(view: EditorView) {
     const card = document.createElement("div");
     card.className = "cm-toc-card";
+    card.addEventListener("pointerdown", (e) => e.stopPropagation());
     const title = document.createElement("div");
     title.className = "cm-toc-title";
     title.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>目录 (Table of Contents)</span>`;
@@ -771,6 +1225,8 @@ interface InlineToken {
     | "math"
     | "image"
     | "wiki_link"
+    | "transclusion"
+    | "hashtag"
     | "bold"
     | "italic"
     | "bold_italic"
@@ -808,11 +1264,10 @@ function updateInlineMathTooltip(
   }
 
   try {
-    katex.render(activeMath.latex.trim() || "\\text{...}", inlineMathTooltipEl, {
-      displayMode: false,
-      throwOnError: false,
-      output: "html",
-    });
+    inlineMathTooltipEl.innerHTML = renderKatexCached(
+      activeMath.latex.trim() || "\\text{...}",
+      false
+    );
     inlineMathTooltipEl.classList.remove("hidden");
     requestAnimationFrame(() => {
       if (!inlineMathTooltipEl || inlineMathTooltipEl.classList.contains("hidden")) return;
@@ -854,15 +1309,28 @@ function buildDecorations(view: EditorView): DecorationSet {
   const isMultiLineSelection =
     !selection.empty && doc.lineAt(selection.from).number !== doc.lineAt(selection.to).number;
 
-  // O(1) 读取缓存结构，彻底消除按键与移动光标时的重复全文扫描
+  // O(1) 读取缓存结构
   const {
     frontMatterEndLine,
+    frontMatterProps,
     codeRanges,
     mermaidBlocks,
     mathBlocks,
     callouts,
+    headings,
     headingsSignature,
   } = getDocStructureFromState(view.state);
+
+  // 计算当前被折叠章节覆盖的行号集合
+  const foldedLinesSet = new Set<number>();
+  for (const h of headings) {
+    const key = getHeadingFoldKey(h.line, h.text);
+    if (foldedHeadingKeys.has(key)) {
+      for (let ln = h.line + 1; ln <= h.endLine; ln++) {
+        foldedLinesSet.add(ln);
+      }
+    }
+  }
 
   const prefs = getPreferences();
   let activeInlineMath: { latex: string; from: number; to: number } | null = null;
@@ -894,8 +1362,34 @@ function buildDecorations(view: EditorView): DecorationSet {
       const text = line.text;
       const trimmed = text.trim();
 
-      // 2.0 顶部 YAML Front Matter 样式渲染
+      // 若该行处于已折叠的标题章节内部，直接附加折叠隐藏类并跳过
+      if (foldedLinesSet.has(lineNum)) {
+        addDeco(line.from, line.from, Decoration.line({ class: "cm-folded-section-line" }));
+        continue;
+      }
+
+      // 2.0 顶部 YAML Front Matter 可视化属性面板 (Properties UI)
       if (frontMatterEndLine > 0 && lineNum <= frontMatterEndLine) {
+        const isCursorInsideFM = cursorLine >= 1 && cursorLine <= frontMatterEndLine;
+        if (!isCursorInsideFM && !isMultiLineSelection) {
+          if (lineNum === 1) {
+            const editLine = doc.line(Math.min(2, frontMatterEndLine));
+            addDeco(
+              line.from,
+              line.to,
+              Decoration.replace({
+                widget: new FrontMatterCardWidget(
+                  frontMatterProps,
+                  frontMatterEndLine,
+                  editLine.to
+                ),
+              })
+            );
+          } else {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-folded-section-line" }));
+          }
+          continue;
+        }
         const cls =
           lineNum === 1
             ? "cm-code-block-first-line cm-frontmatter-line"
@@ -906,17 +1400,19 @@ function buildDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 2.1 普通代码块
+      // 2.1 普通代码块（彻底重构：所见即所得模式下恒定展示优雅顶栏，底部围栏行隐藏为 6px 卡片圆角底边，消除上下 ``` 割裂误触）
       const codeRange = codeRanges.find((r) => lineNum >= r.startLine && lineNum <= r.endLine);
       if (codeRange) {
+        const isCodeCollapsed = collapsedCodeBlocks.has(`${codeRange.startLine}`);
         if (lineNum === codeRange.startLine) {
           addDeco(
             line.from,
             line.from,
-            Decoration.line({ class: "cm-code-block-first-line" })
+            Decoration.line({
+              class: `cm-code-block-first-line ${isCodeCollapsed ? "cm-code-block-collapsed-header" : ""}`,
+            })
           );
-          const isCursorOnHeader = cursorLine === lineNum && !isMultiLineSelection;
-          if (!isCursorOnHeader) {
+          if (!isMultiLineSelection) {
             addDeco(
               line.from,
               line.to,
@@ -926,7 +1422,10 @@ function buildDecorations(view: EditorView): DecorationSet {
                   codeRange.codeText,
                   line.from,
                   line.to,
-                  codeRange.fencePrefix
+                  codeRange.fencePrefix,
+                  codeRange.startLine,
+                  codeRange.endLine,
+                  isCodeCollapsed
                 ),
               })
             );
@@ -935,13 +1434,20 @@ function buildDecorations(view: EditorView): DecorationSet {
           addDeco(
             line.from,
             line.from,
-            Decoration.line({ class: "cm-code-block-last-line" })
+            Decoration.line({
+              class: isCodeCollapsed
+                ? "cm-folded-section-line"
+                : "cm-code-block-last-line cm-code-block-cap",
+            })
           );
-          const isCursorOnFooter = cursorLine === lineNum && !isMultiLineSelection;
-          if (!isCursorOnFooter) {
+          if (!isMultiLineSelection) {
             addDeco(line.from, line.to, Decoration.replace({}));
           }
         } else {
+          if (isCodeCollapsed) {
+            addDeco(line.from, line.from, Decoration.line({ class: "cm-folded-section-line" }));
+            continue;
+          }
           const codeLineIdx = lineNum - codeRange.startLine;
           addDeco(
             line.from,
@@ -951,7 +1457,7 @@ function buildDecorations(view: EditorView): DecorationSet {
               attributes: { "data-code-line": String(codeLineIdx) },
             })
           );
-          const synTokens = tokenizeCodeLine(text, codeRange.lang);
+          const synTokens = tokenizeCodeLineCached(text, codeRange.lang);
           for (const st of synTokens) {
             addDeco(line.from + st.from, line.from + st.to, Decoration.mark({ class: st.cls }));
           }
@@ -959,7 +1465,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 2.15 Mermaid 流程图块（编辑态下底部代码块与预览卡无缝直角衔接）
+      // 2.15 Mermaid 流程图块
       const mermaidBlock = mermaidBlocks.find((b) => lineNum >= b.startLine && lineNum <= b.endLine);
       if (mermaidBlock) {
         const isEditingThisMermaid =
@@ -1063,7 +1569,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         addDeco(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
       }
 
-      // 2.48 GitHub 风格 Callout / Admonition 块渲染 (> [!NOTE] / TIP / IMPORTANT / WARNING / CAUTION)
+      // 2.48 GitHub 风格 Callout / Admonition 块渲染
       const activeCallout = callouts.find((c) => lineNum >= c.startLine && lineNum <= c.endLine);
       if (activeCallout) {
         const isFirstCalloutLine = lineNum === activeCallout.startLine;
@@ -1130,7 +1636,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         const isCursorAtQuotePrefix =
           !isMultiLineSelection &&
           cursorHead >= line.from &&
-          cursorHead <= line.from + quotePrefixLen;
+          cursorHead < line.from + quotePrefixLen;
 
         if (!isCursorAtQuotePrefix) {
           if (quotePrefixLen > 0) {
@@ -1148,19 +1654,29 @@ function buildDecorations(view: EditorView): DecorationSet {
 
       const restText = text.slice(prefixEnd);
 
-      // 2.6 标题识别 (# Title)
+      // 2.6 标题识别 (# Title) + 章节折叠指示器
       const headerMatch = restText.match(/^(#{1,6})\s+/);
       if (headerMatch) {
         const depth = headerMatch[1].length;
         const hStart = prefixEnd;
         const hEnd = prefixEnd + headerMatch[0].length;
+        // 仅当光标真正进入 `#` 定界符内部（< line.from + hEnd）时才展开 #，确保 Ctrl+2 后直接打标题处于完美预览态
         const isCursorAtPrefix =
-          !isMultiLineSelection && cursorHead >= line.from + hStart && cursorHead <= line.from + hEnd;
+          !isMultiLineSelection &&
+          cursorHead >= line.from + hStart &&
+          cursorHead < line.from + hEnd;
+
+        const headingMeta = headings.find((h) => h.line === lineNum);
+        const foldKey = headingMeta ? getHeadingFoldKey(headingMeta.line, headingMeta.text) : "";
+        const isFolded = foldKey ? foldedHeadingKeys.has(foldKey) : false;
+        const foldedCount = headingMeta ? Math.max(0, headingMeta.endLine - headingMeta.line) : 0;
 
         addDeco(
           line.from,
           line.from,
-          Decoration.line({ class: `cm-heading cm-heading-${depth}` })
+          Decoration.line({
+            class: `cm-heading cm-heading-${depth}${isFolded ? " cm-heading-is-folded" : ""}`,
+          })
         );
         if (!isCursorAtPrefix) {
           addDeco(line.from + hStart, line.from + hEnd, Decoration.replace({}));
@@ -1171,12 +1687,22 @@ function buildDecorations(view: EditorView): DecorationSet {
             Decoration.mark({ class: "cm-md-delimiter" })
           );
         }
+        if (headingMeta && foldedCount > 0) {
+          addDeco(
+            line.to,
+            line.to,
+            Decoration.widget({
+              widget: new HeadingFoldWidget(lineNum, isFolded, foldedCount),
+              side: 1,
+            })
+          );
+        }
         prefixEnd = hEnd;
       }
 
       const tokens: InlineToken[] = [];
 
-      // 2.68 列表项识别（无序列表圆点 Widget + 有序列表等宽对齐序号 Widget + 任务列表复选框 Widget）
+      // 2.68 列表项识别
       const afterQuoteAndHeader = text.slice(prefixEnd);
       const taskMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]\s+\[)([ xX])(\]\s*)/);
       const listMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]|\d+\.)(\s+)/);
@@ -1193,7 +1719,7 @@ function buildDecorations(view: EditorView): DecorationSet {
           const indentFrom = line.from + prefixEnd;
           const indentTo = indentFrom + indentSpaces;
           const isCursorInIndent =
-            !isMultiLineSelection && cursorHead >= indentFrom && cursorHead <= indentTo;
+            !isMultiLineSelection && cursorHead >= indentFrom && cursorHead < indentTo;
           if (!isCursorInIndent) {
             addDeco(indentFrom, indentTo, Decoration.replace({}));
           }
@@ -1222,7 +1748,7 @@ function buildDecorations(view: EditorView): DecorationSet {
           const indentFrom = line.from + prefixEnd;
           const indentTo = indentFrom + indentSpaces;
           const isCursorInIndent =
-            !isMultiLineSelection && cursorHead >= indentFrom && cursorHead <= indentTo;
+            !isMultiLineSelection && cursorHead >= indentFrom && cursorHead < indentTo;
           if (!isCursorInIndent) {
             addDeco(indentFrom, indentTo, Decoration.replace({}));
           }
@@ -1281,11 +1807,11 @@ function buildDecorations(view: EditorView): DecorationSet {
         });
       }
 
-      // 双向知识库链接 [[Wiki Links]]
+      // 双向知识库链接 [[Wiki Links]] 与块级嵌入 ![[Transclusion]]
       const wikiLinks = parseWikiLinksInLine(text, prefixEnd);
       for (const wl of wikiLinks) {
         tokens.push({
-          type: "wiki_link",
+          type: wl.isEmbed ? "transclusion" : "wiki_link",
           start: wl.start,
           end: wl.end,
           content: wl.raw,
@@ -1341,6 +1867,22 @@ function buildDecorations(view: EditorView): DecorationSet {
           content: m[0],
           isOpaque: true,
           data: { label: m[1] },
+        });
+      }
+
+      // 行内 #标签 (#tag / #parent/child)
+      const tagRegex = /(?:^|(?<=\s))#([a-zA-Z0-9_\-\u4e00-\u9fa5]+(?:\/[a-zA-Z0-9_\-\u4e00-\u9fa5]+)*)(?=\s|$|[，。！？、；：,.!?;:])/g;
+      while ((m = tagRegex.exec(text)) !== null) {
+        if (m.index < prefixEnd) continue;
+        const tagBody = m[1];
+        if (/^\d+$/.test(tagBody)) continue;
+        tokens.push({
+          type: "hashtag",
+          start: m.index,
+          end: m.index + m[0].length,
+          content: m[0],
+          isOpaque: true,
+          data: { tag: tagBody },
         });
       }
 
@@ -1566,6 +2108,37 @@ function buildDecorations(view: EditorView): DecorationSet {
             addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-wiki-link-src" }));
             addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
           }
+        } else if (tok.type === "transclusion") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new TransclusionWidget(
+                  tok.data.targetDoc,
+                  tok.data.heading,
+                  tok.data.displayText,
+                  s
+                ),
+              })
+            );
+          } else {
+            addDeco(s, s + 3, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 3, e - 2, Decoration.mark({ class: "cm-wiki-link-src" }));
+            addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "hashtag") {
+          addDeco(
+            s,
+            e,
+            Decoration.mark({
+              class: "cm-hashtag",
+              attributes: {
+                "data-tag": tok.data.tag,
+                title: `标签 #${tok.data.tag} (点击在侧边栏检索全部关联笔记)`,
+              },
+            })
+          );
         } else if (tok.type === "image") {
           if (!isCursorInside) {
             addDeco(
@@ -1754,7 +2327,7 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
-      if (imeState.isComposing) {
+      if (imeState.isViewComposing(update.view)) {
         this.decorations = this.decorations.map(update.changes);
         return;
       }

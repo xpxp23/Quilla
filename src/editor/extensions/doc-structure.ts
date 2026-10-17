@@ -47,7 +47,14 @@ export interface HeadingEntry {
   level: number;
   text: string;
   line: number;
+  endLine: number;
   from: number;
+}
+
+export interface FrontMatterProperty {
+  key: string;
+  value: string;
+  line: number;
 }
 
 export interface BalancedLinkOrImage {
@@ -61,6 +68,7 @@ export interface BalancedLinkOrImage {
 
 export interface DocStructure {
   frontMatterEndLine: number;
+  frontMatterProps: FrontMatterProperty[];
   codeRanges: CodeFenceRange[];
   mermaidBlocks: MermaidBlock[];
   mathBlocks: MathBlock[];
@@ -80,7 +88,7 @@ export function stripInlineMarkdown(raw: string): string {
     .replace(/\s+#+\s*$/, "")
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_m, target, alias) =>
+    .replace(/!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_m, target, alias) =>
       (alias || target).trim()
     )
     .replace(/(\*{1,3}|_{1,3}|~~|==|`)/g, "")
@@ -127,7 +135,19 @@ export function parseBalancedLinksAndImages(
       }
     }
 
-    // 跳过双链 [[...]] 与脚注 [^...]
+    // 跳过双链 [[...]]、嵌入 ![[...]] 与脚注 [^...]
+    if (
+      lineText[i] === "!" &&
+      i + 2 < len &&
+      lineText[i + 1] === "[" &&
+      lineText[i + 2] === "["
+    ) {
+      const closeBracket = lineText.indexOf("]]", i + 3);
+      if (closeBracket !== -1) {
+        i = closeBracket + 2;
+        continue;
+      }
+    }
     if (lineText[i] === "[" && (lineText[i + 1] === "[" || lineText[i + 1] === "^")) {
       const closeBracket = lineText.indexOf("]", i + 2);
       if (closeBracket !== -1) {
@@ -242,6 +262,7 @@ export function isInsideCodeContextAST(state: EditorState, pos: number): boolean
  */
 export function buildDocStructure(doc: Text, state?: EditorState): DocStructure {
   const totalLines = doc.lines;
+  const frontMatterProps: FrontMatterProperty[] = [];
   const codeRanges: CodeFenceRange[] = [];
   const mermaidBlocks: MermaidBlock[] = [];
   const mathBlocks: MathBlock[] = [];
@@ -250,10 +271,10 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
   const headings: HeadingEntry[] = [];
   const codeLineSet = new Set<number>();
 
-  // 1. 识别顶部 YAML Front Matter
+  // 1. 识别顶部 YAML Front Matter 并解析键值属性
   let frontMatterEndLine = 0;
   if (totalLines >= 3 && doc.line(1).text.trim() === "---") {
-    const limit = Math.min(totalLines, 40);
+    const limit = Math.min(totalLines, 45);
     for (let k = 2; k <= limit; k++) {
       const t = doc.line(k).text.trim();
       if (t === "---" || t === "...") {
@@ -262,6 +283,19 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
           codeLineSet.add(m);
         }
         break;
+      }
+    }
+    if (frontMatterEndLine > 0) {
+      for (let k = 2; k < frontMatterEndLine; k++) {
+        const rawLine = doc.line(k).text;
+        const kvMatch = rawLine.match(/^\s*([a-zA-Z0-9_\-\u4e00-\u9fa5]+)\s*:\s*(.*)$/);
+        if (kvMatch) {
+          frontMatterProps.push({
+            key: kvMatch[1].trim(),
+            value: kvMatch[2].trim(),
+            line: k,
+          });
+        }
       }
     }
   }
@@ -296,14 +330,15 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
     const text = lineObj.text;
     const trimmed = text.trim();
 
-    // 3.1 围栏代码块（支持 3+ 反引号或波浪号，闭合并需匹配相同字符且长度 >= 开启长度）
-    const fenceOpenMatch = text.match(/^(\s*(`{3,}|~{3,}))\s*([^\s`~]*).*$/);
+    // 3.1 围栏代码块（支持顶层及引用块内的 3+ 反引号或波浪号）
+    const fenceOpenMatch = text.match(/^(\s*(?:>\s*)*(`{3,}|~{3,}))\s*([^\s`~]*).*$/);
     if (fenceOpenMatch) {
       const fencePrefix = fenceOpenMatch[1];
       const fenceMarker = fenceOpenMatch[2];
       const fenceChar = fenceMarker[0];
       const fenceLen = fenceMarker.length;
       const lang = (fenceOpenMatch[3] || "").toLowerCase();
+      const isQuotedFence = /^\s*>/.test(text);
       const startLine = lineIdx;
       const fromPos = lineObj.from;
       const codeLines: string[] = [];
@@ -316,9 +351,9 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
 
       while (lineIdx <= totalLines) {
         const curLine = doc.line(lineIdx);
-        const curTrim = curLine.text.trim();
+        const curStripQuote = curLine.text.replace(/^\s*(?:>\s*)*/, "").trim();
         codeLineSet.add(lineIdx);
-        const closeMatch = curTrim.match(/^(`{3,}|~{3,})\s*$/);
+        const closeMatch = curStripQuote.match(/^(`{3,}|~{3,})\s*$/);
         if (
           closeMatch &&
           closeMatch[1][0] === fenceChar &&
@@ -330,14 +365,19 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
           lineIdx++;
           break;
         }
-        codeLines.push(curLine.text);
+        if (isQuotedFence && !/^\s*>/.test(curLine.text)) {
+          break;
+        }
+        codeLines.push(
+          isQuotedFence ? curLine.text.replace(/^\s*>\s?/, "") : curLine.text
+        );
         endLine = lineIdx;
         toPos = curLine.to;
         lineIdx++;
       }
 
       const codeText = codeLines.join("\n");
-      if (lang === "mermaid" && closed) {
+      if (lang === "mermaid" && closed && !isQuotedFence) {
         mermaidBlocks.push({
           startLine,
           endLine,
@@ -345,7 +385,7 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
           to: toPos,
           code: codeText,
         });
-      } else {
+      } else if (!isQuotedFence) {
         codeRanges.push({
           startLine,
           endLine,
@@ -448,11 +488,19 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
       const startLine = lineIdx;
       let endLine = lineIdx;
       lineIdx++;
+      let inCalloutFence = false;
       while (lineIdx <= totalLines) {
         const nextText = doc.line(lineIdx).text;
         if (!/^\s*>/.test(nextText)) break;
         if (/^\s*>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.test(nextText)) {
           break;
+        }
+        const strippedQuote = nextText.replace(/^\s*(?:>\s*)*/, "").trim();
+        if (/^(`{3,}|~{3,})/.test(strippedQuote)) {
+          inCalloutFence = !inCalloutFence;
+        }
+        if (inCalloutFence) {
+          codeLineSet.add(lineIdx);
         }
         endLine = lineIdx;
         lineIdx++;
@@ -466,30 +514,46 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
       continue;
     }
 
-    // 3.5 标题行（兼容顶层标题与普通引用块内标题）
-    const headingMatch = text.match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
-    if (headingMatch) {
-      const rawHeading = headingMatch[2];
-      const cleaned = stripInlineMarkdown(rawHeading);
-      if (cleaned) {
-        headings.push({
-          level: headingMatch[1].length,
-          text: cleaned,
-          line: lineIdx,
-          from: lineObj.from,
-        });
+    // 3.5 标题行（兼容顶层标题与普通引用块内标题，严格跳过任何代码块）
+    if (!codeLineSet.has(lineIdx)) {
+      const headingMatch = text.match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
+      if (headingMatch) {
+        const rawHeading = headingMatch[2];
+        const cleaned = stripInlineMarkdown(rawHeading);
+        if (cleaned) {
+          headings.push({
+            level: headingMatch[1].length,
+            text: cleaned,
+            line: lineIdx,
+            endLine: totalLines,
+            from: lineObj.from,
+          });
+        }
+        lineIdx++;
+        continue;
       }
-      lineIdx++;
-      continue;
     }
 
     lineIdx++;
+  }
+
+  // 4. 计算每个标题的章节闭包结束行 (endLine)，供正文标题折叠与大纲子树操作 O(1) 使用
+  for (let i = 0; i < headings.length; i++) {
+    let secEnd = totalLines;
+    for (let j = i + 1; j < headings.length; j++) {
+      if (headings[j].level <= headings[i].level) {
+        secEnd = Math.max(headings[i].line, headings[j].line - 1);
+        break;
+      }
+    }
+    headings[i].endLine = secEnd;
   }
 
   const headingsSignature = headings.map((h) => `${h.level}:${h.line}:${h.text}`).join("|");
 
   return {
     frontMatterEndLine,
+    frontMatterProps,
     codeRanges,
     mermaidBlocks,
     mathBlocks,

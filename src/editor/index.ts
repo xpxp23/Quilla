@@ -7,6 +7,8 @@ import {
   livePreviewPlugin,
   activeDocumentPath,
   stripInlineMarkdown,
+  toggleHeadingFoldAtLine,
+  isHeadingFoldedAtLine,
 } from "./extensions/live-preview";
 import { docStructureField } from "./extensions/doc-structure";
 import { imeGuardPlugin } from "./extensions/ime-guard";
@@ -33,7 +35,7 @@ import { emojiAutocompletion } from "./extensions/emoji-autocomplete";
 import { smartAutopairExtension } from "./extensions/smart-autopair";
 import { blockHandlePlugin } from "./extensions/block-handle";
 import { slashCommandExtension } from "./extensions/slash-command";
-import { setupWikiLinkInteractions } from "./extensions/wiki-link";
+import { setupWikiLinkInteractions, handleTagClickTrigger } from "./extensions/wiki-link";
 import { TextDeltaPayload } from "../components/auto-recovery";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -159,8 +161,8 @@ export function extractOutlineHeadings(
 
   for (let i = startScanLine; i <= doc.lines; i++) {
     const lineText = doc.line(i).text;
-    const trimmed = lineText.trim();
-    const fenceM = trimmed.match(/^(`{3,}|~{3,})/);
+    const strippedQuote = lineText.replace(/^\s*(?:>\s*)*/, "").trim();
+    const fenceM = strippedQuote.match(/^(`{3,}|~{3,})/);
     if (fenceM) {
       const marker = fenceM[1][0];
       const len = fenceM[1].length;
@@ -168,7 +170,11 @@ export function extractOutlineHeadings(
         inFence = true;
         fenceChar = marker;
         fenceLen = len;
-      } else if (marker === fenceChar && len >= fenceLen && /^(`{3,}|~{3,})\s*$/.test(trimmed)) {
+      } else if (
+        marker === fenceChar &&
+        len >= fenceLen &&
+        /^(`{3,}|~{3,})\s*$/.test(strippedQuote)
+      ) {
         inFence = false;
       }
       continue;
@@ -191,7 +197,14 @@ export function extractOutlineHeadings(
   return headings;
 }
 
-export { toggleTypewriterMode, isTypewriterModeActive, toggleFocusMode, isFocusModeActive };
+export {
+  toggleTypewriterMode,
+  isTypewriterModeActive,
+  toggleFocusMode,
+  isFocusModeActive,
+  toggleHeadingFoldAtLine,
+  isHeadingFoldedAtLine,
+};
 
 /**
  * 为指定编辑器实例创建全新的 EditorState（含独立 Undo/Redo 历史栈，供多标签页切换或文件重置使用）
@@ -234,9 +247,11 @@ export function createEditor(
 ): EditorView {
   let debounceTimer: any = null;
   let pendingDeltas: TextDeltaPayload[] = [];
+  let lastEditTime = 0;
 
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
+      lastEditTime = performance.now();
       update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
         pendingDeltas.push({
           fromChar: fromA,
@@ -291,8 +306,50 @@ export function createEditor(
     boundaryTraversalExtension,
     livePreviewPlugin,
     EditorView.domEventHandlers({
+      mousedown: (event, view) => {
+        // 代码块开启行号时，点击左侧行号槽区域 (40px 内) 直接选中整行代码
+        if (
+          event.button === 0 &&
+          document.documentElement.classList.contains("show-code-line-numbers")
+        ) {
+          const codeLineEl = (event.target as HTMLElement).closest(
+            ".cm-code-block-line"
+          ) as HTMLElement | null;
+          if (codeLineEl) {
+            const rect = codeLineEl.getBoundingClientRect();
+            const relX = event.clientX - rect.left;
+            if (relX >= 0 && relX <= 42) {
+              try {
+                const pos = view.posAtDOM(codeLineEl, 0);
+                const line = view.state.doc.lineAt(pos);
+                event.preventDefault();
+                event.stopPropagation();
+                view.dispatch({
+                  selection: { anchor: line.from, head: line.to },
+                });
+                view.focus();
+                return true;
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+        return false;
+      },
       click: (event, view) => {
-        const linkElem = (event.target as HTMLElement).closest(".cm-link") as HTMLElement;
+        const target = event.target as HTMLElement;
+
+        // 点击内联 #标签 胶囊，一键打开侧边栏标签聚合检索
+        const tagElem = target.closest(".cm-hashtag") as HTMLElement | null;
+        if (tagElem && tagElem.dataset.tag) {
+          event.preventDefault();
+          event.stopPropagation();
+          handleTagClickTrigger(tagElem.dataset.tag);
+          return true;
+        }
+
+        const linkElem = target.closest(".cm-link") as HTMLElement;
         if (linkElem && linkElem.dataset.href) {
           const href = linkElem.dataset.href.trim();
           if (href.startsWith("#")) {
@@ -352,19 +409,42 @@ export function createEditor(
     return (origPosAndSideAtCoords as any)(coords, precise);
   };
 
-  // 视口滚动联动大纲 Scroll Spy
+  // 视口滚动联动大纲 Scroll Spy：
+  // 采用真实 DOM 几何检测替代虚拟高度，并在打字/光标移动后 350ms 内优先以光标所在章节为准，彻底消除大纲高亮抢跳
   let scrollSpyRaf: number | null = null;
+  let lastWheelTime = 0;
+  view.scrollDOM.addEventListener(
+    "wheel",
+    () => {
+      lastWheelTime = performance.now();
+    },
+    { passive: true }
+  );
+
   view.scrollDOM.addEventListener(
     "scroll",
     () => {
       if (!callbacks.onCursorLineChange || scrollSpyRaf !== null) return;
+      // 若刚刚由打字触发了滚动且并非鼠标滚轮浏览，交由光标行更新大纲高亮
+      if (performance.now() - lastEditTime < 350 && performance.now() - lastWheelTime > 400) {
+        return;
+      }
       scrollSpyRaf = requestAnimationFrame(() => {
         scrollSpyRaf = null;
         try {
-          const topY = view.scrollDOM.scrollTop + 60;
-          const block = view.lineBlockAtHeight(topY);
-          const lineNum = view.state.doc.lineAt(block.from).number;
-          callbacks.onCursorLineChange?.(lineNum);
+          const scrollerRect = view.scrollDOM.getBoundingClientRect();
+          const probeY = scrollerRect.top + 64;
+          const children = view.contentDOM.children;
+          for (let i = 0; i < children.length; i++) {
+            const child = children[i] as HTMLElement;
+            const rect = child.getBoundingClientRect();
+            if (rect.height > 0 && rect.bottom >= probeY) {
+              const pos = view.posAtDOM(child, 0);
+              const lineNum = view.state.doc.lineAt(pos).number;
+              callbacks.onCursorLineChange?.(lineNum);
+              return;
+            }
+          }
         } catch {
           // ignore
         }

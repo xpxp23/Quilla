@@ -3,9 +3,8 @@ import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { resolveSemanticBlockSpanFromState } from "./doc-structure";
 
 /**
- * 专注模式状态管理与段落级视差聚焦插件 (F8)
- * - 当前光标所在段落/列表项/标题/代码块/公式块/表格/Callout：保持 100% 不透明度高清高亮
- * - 其余所有非当前段落与行：平滑淡化至 28% 不透明度
+ * 专注模式状态管理与段落级视差聚焦插件 (F8 v0.5)
+ * - 严格按单个 EditorView 实例 `.cm-editor.focus-mode` 作用域生效，绝不污染左右分屏副编辑器
  */
 
 export const setFocusMode = StateEffect.define<boolean>();
@@ -29,7 +28,6 @@ const focusActiveLineDeco = Decoration.line({ class: "cm-focus-active-block" });
 function getBlockRange(state: any, cursorLineNum: number): { start: number; end: number } {
   const doc = state.doc;
 
-  // 0. 优先 O(1) 检查多行语义块（围栏代码块、Mermaid 块、多行数学公式块、表格块、Callout 块）
   const semanticSpan = resolveSemanticBlockSpanFromState(state, cursorLineNum);
   if (semanticSpan.startLine !== semanticSpan.endLine) {
     return { start: semanticSpan.startLine, end: semanticSpan.endLine };
@@ -154,13 +152,7 @@ export const focusModePlugin = ViewPlugin.fromClass(
     }
 
     private updateDomClass(isActive: boolean) {
-      if (isActive) {
-        this.view.dom.classList.add("focus-mode");
-        document.body.classList.add("focus-mode-active");
-      } else {
-        this.view.dom.classList.remove("focus-mode");
-        document.body.classList.remove("focus-mode-active");
-      }
+      this.view.dom.classList.toggle("focus-mode", isActive);
     }
 
     private buildDecorations(state: any): DecorationSet {
@@ -192,8 +184,6 @@ export function toggleFocusMode(view: EditorView, force?: boolean): boolean {
   const current = view.state.field(focusModeState);
   const next = typeof force === "boolean" ? force : !current;
   localStorage.setItem("typora_focus_mode", String(next));
-
-  document.body.classList.toggle("focus-mode-active", next);
   view.dom.classList.toggle("focus-mode", next);
 
   view.dispatch({

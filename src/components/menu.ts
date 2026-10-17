@@ -22,8 +22,14 @@ export interface MenuActions {
   onToggleFocusMode?: () => void;
   onSwitchTheme?: (themeName: string) => void;
   onExportHtml: () => void;
+  onExportWordDoc?: () => void;
+  onExportSharePoster?: () => void;
+  onCopyWeChatHtml?: () => void;
+  onOpenTimeMachine?: () => void;
+  onOpenKnowledgeGraph?: () => void;
   onPrint?: () => void;
   onQuickOpen?: () => void;
+  getActiveView?: () => EditorView;
 }
 
 function escapeHtml(str: string): string {
@@ -40,10 +46,14 @@ const SVG = {
   window: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line></svg>`,
   folderOpen: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`,
   clock: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
+  history: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>`,
+  graph: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="12" cy="18" r="3"></circle><line x1="8.6" y1="7.5" x2="15.4" y2="7.5"></line><line x1="7.5" y1="8.6" x2="10.5" y2="15.4"></line><line x1="16.5" y1="8.6" x2="13.5" y2="15.4"></line></svg>`,
   save: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`,
   saveAs: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`,
   print: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>`,
   globe: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>`,
+  sparkles: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3z"></path></svg>`,
+  image: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`,
   undo: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>`,
   redo: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`,
   search: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`,
@@ -61,7 +71,8 @@ const SVG = {
 /**
  * 初始化左上角汉堡弹出菜单与右键上下文菜单
  */
-export function initMenus(view: EditorView, actions: MenuActions) {
+export function initMenus(defaultView: EditorView, actions: MenuActions) {
+  const getView = () => (actions.getActiveView ? actions.getActiveView() : defaultView);
   const mod = formatModKey();
   const menuContainer = document.createElement("div");
   menuContainer.id = "app-hamburger-menu";
@@ -69,11 +80,11 @@ export function initMenus(view: EditorView, actions: MenuActions) {
   menuContainer.innerHTML = `
     <div class="menu-section">
       <div class="menu-item" data-action="new">
-        <div class="menu-item-left"><span class="m-icon">${SVG.file}</span><span>新建</span></div>
+        <div class="menu-item-left"><span class="m-icon">${SVG.file}</span><span>新建标签</span></div>
         <span class="shortcut">${mod}+N</span>
       </div>
       <div class="menu-item" data-action="new-window">
-        <div class="menu-item-left"><span class="m-icon">${SVG.window}</span><span>新建窗口</span></div>
+        <div class="menu-item-left"><span class="m-icon">${SVG.window}</span><span>新建独立窗口</span></div>
         <span class="shortcut">${mod}+Shift+N</span>
       </div>
       <div class="menu-item" data-action="open-file">
@@ -97,12 +108,26 @@ export function initMenus(view: EditorView, actions: MenuActions) {
         <div class="menu-item-left"><span class="m-icon">${SVG.saveAs}</span><span>另存为...</span></div>
         <span class="shortcut">${mod}+Shift+S</span>
       </div>
+      <div class="menu-item" data-action="time-machine">
+        <div class="menu-item-left"><span class="m-icon">${SVG.history}</span><span>版本历史 / 时间机器...</span></div>
+        <span class="shortcut">${mod}+Alt+H</span>
+      </div>
+      <div class="menu-divider"></div>
+      <div class="menu-item" data-action="copy-wechat">
+        <div class="menu-item-left"><span class="m-icon">${SVG.sparkles}</span><span>复制为公众号 / 知乎富文本</span></div>
+      </div>
+      <div class="menu-item" data-action="export-html">
+        <div class="menu-item-left"><span class="m-icon">${SVG.globe}</span><span>导出为独立 HTML...</span></div>
+      </div>
+      <div class="menu-item" data-action="export-word">
+        <div class="menu-item-left"><span class="m-icon">${SVG.file}</span><span>导出为 Word 文档 (.doc)...</span></div>
+      </div>
+      <div class="menu-item" data-action="export-poster">
+        <div class="menu-item-left"><span class="m-icon">${SVG.image}</span><span>导出为社交长图卡片 (.png)...</span></div>
+      </div>
       <div class="menu-item" data-action="print">
         <div class="menu-item-left"><span class="m-icon">${SVG.print}</span><span>打印 / 导出为 PDF...</span></div>
         <span class="shortcut">${mod}+Shift+P</span>
-      </div>
-      <div class="menu-item" data-action="export-html">
-        <div class="menu-item-left"><span class="m-icon">${SVG.globe}</span><span>导出为 HTML</span></div>
       </div>
     </div>
     <div class="menu-divider"></div>
@@ -114,6 +139,10 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       <div class="menu-item" data-action="redo">
         <div class="menu-item-left"><span class="m-icon">${SVG.redo}</span><span>重做</span></div>
         <span class="shortcut">${mod}+Y</span>
+      </div>
+      <div class="menu-item" data-action="knowledge-graph">
+        <div class="menu-item-left"><span class="m-icon">${SVG.graph}</span><span>双链知识图谱...</span></div>
+        <span class="shortcut">${mod}+G</span>
       </div>
       <div class="menu-item" data-action="quick-open">
         <div class="menu-item-left"><span class="m-icon">${SVG.search}</span><span>快速漫游...</span></div>
@@ -200,6 +229,7 @@ export function initMenus(view: EditorView, actions: MenuActions) {
 
     const action = item.dataset.action;
     const recentPath = item.dataset.path;
+    const view = getView();
 
     if (recentPath) {
       actions.onOpenFileByPath?.(decodeURIComponent(recentPath));
@@ -216,7 +246,12 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     else if (action === "open-folder") actions.onOpenFolder();
     else if (action === "save") actions.onSaveFile();
     else if (action === "save-as") actions.onSaveFileAs?.();
+    else if (action === "time-machine") actions.onOpenTimeMachine?.();
+    else if (action === "knowledge-graph") actions.onOpenKnowledgeGraph?.();
+    else if (action === "copy-wechat") actions.onCopyWeChatHtml?.();
     else if (action === "export-html") actions.onExportHtml();
+    else if (action === "export-word") actions.onExportWordDoc?.();
+    else if (action === "export-poster") actions.onExportSharePoster?.();
     else if (action === "print") (actions.onPrint ? actions.onPrint() : window.print());
     else if (action === "quick-open") actions.onQuickOpen?.();
     else if (action === "undo") {
@@ -245,8 +280,13 @@ export function initMenus(view: EditorView, actions: MenuActions) {
 
   const writeArea = document.getElementById("content");
   writeArea?.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
     const target = e.target as HTMLElement;
+    // 若右键点击在左侧块抓手上，交由块抓手菜单处理
+    if (target.closest(".cm-block-handle, .cm-block-context-menu")) {
+      return;
+    }
+
+    e.preventDefault();
 
     const tableEl = target.closest(".in-place-edit") as HTMLElement;
     const imgEl = target.closest(".md-image-card") as HTMLElement;
@@ -320,6 +360,9 @@ export function initMenus(view: EditorView, actions: MenuActions) {
             <div class="menu-item-left"><span class="m-icon">${SVG.copy}</span><span>复制</span></div>
             <span class="shortcut">${mod}+C</span>
           </div>
+          <div class="menu-item" data-action="copy-wechat">
+            <div class="menu-item-left"><span class="m-icon">${SVG.sparkles}</span><span>复制为公众号富文本</span></div>
+          </div>
           <div class="menu-item" data-action="paste">
             <div class="menu-item-left"><span class="m-icon">${SVG.clipboard}</span><span>智能粘贴</span></div>
             <span class="shortcut">${mod}+V</span>
@@ -371,8 +414,8 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     }
 
     contextMenu.classList.remove("hidden");
-    const menuWidth = 220;
-    const menuHeight = contextMenu.offsetHeight || 280;
+    const menuWidth = 230;
+    const menuHeight = contextMenu.offsetHeight || 290;
     const posX = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
     const posY = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
     contextMenu.style.top = `${posY}px`;
@@ -383,6 +426,7 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     const item = (e.target as HTMLElement).closest(".menu-item") as HTMLElement;
     if (!item) return;
     const act = item.dataset.action;
+    const view = getView();
 
     if (act?.startsWith("tbl-") && currentContextTarget?.element) {
       const btnAct = act.replace("tbl-", "");
@@ -429,6 +473,8 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     } else if (act === "link-copy" && currentContextTarget?.element) {
       const href = currentContextTarget.element.dataset.href;
       if (href) navigator.clipboard.writeText(href);
+    } else if (act === "copy-wechat") {
+      actions.onCopyWeChatHtml?.();
     } else if (act === "cut") {
       const { from, to } = view.state.selection.main;
       if (from < to) {

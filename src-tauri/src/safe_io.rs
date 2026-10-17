@@ -14,6 +14,22 @@ pub struct DraftSnapshotRecord {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistorySnapshotRecord {
+    pub id: String,
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    pub timestamp: u64,
+    pub label: String,
+    pub content: String,
+    #[serde(rename = "charCount")]
+    pub char_count: usize,
+    #[serde(rename = "lineCount")]
+    pub line_count: usize,
+}
+
+const MAX_HISTORY_SNAPSHOTS_PER_FILE: usize = 25;
+
 pub struct SafeIO;
 
 impl SafeIO {
@@ -75,7 +91,7 @@ impl SafeIO {
     }
 
     /// 计算确定性 64-bit FNV-1a 哈希，彻底解决中文或特殊符号文件路径转化为下划线后的文件名碰撞覆盖问题
-    fn fnv1a_hash(input: &str) -> u64 {
+    pub fn fnv1a_hash(input: &str) -> u64 {
         let mut hash: u64 = 0xcbf29ce484222325;
         for byte in input.as_bytes() {
             hash ^= *byte as u64;
@@ -203,5 +219,88 @@ impl SafeIO {
 
         records.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         records
+    }
+
+    fn build_history_store_path(file_path: &str) -> PathBuf {
+        let norm = file_path.replace('\\', "/").to_lowercase();
+        let hash = Self::fnv1a_hash(&norm);
+        let history_dir = std::env::temp_dir().join("quilla-version-history");
+        let _ = fs::create_dir_all(&history_dir);
+        history_dir.join(format!("hist_{:016x}.json", hash))
+    }
+
+    /// 保存本地时间机器 (Time Machine) 历史版本快照（自动去重并保留最近 25 个版本）
+    pub fn save_file_history_snapshot(
+        file_path: &str,
+        content: &str,
+        label: Option<String>,
+    ) -> io::Result<()> {
+        if file_path.trim().is_empty() {
+            return Ok(());
+        }
+        let store_path = Self::build_history_store_path(file_path);
+        let mut list = Self::list_file_history_snapshots(file_path);
+
+        // 若与最新一条快照内容完全一致，跳过重复记录
+        if let Some(latest) = list.first() {
+            if latest.content == content {
+                return Ok(());
+            }
+        }
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let record = HistorySnapshotRecord {
+            id: format!("v-{}", timestamp),
+            file_path: file_path.to_string(),
+            timestamp,
+            label: label.unwrap_or_else(|| "自动快照".to_string()),
+            content: content.to_string(),
+            char_count: content.chars().count(),
+            line_count: content.lines().count().max(1),
+        };
+
+        list.insert(0, record);
+        if list.len() > MAX_HISTORY_SNAPSHOTS_PER_FILE {
+            list.truncate(MAX_HISTORY_SNAPSHOTS_PER_FILE);
+        }
+
+        let serialized = serde_json::to_string(&list)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Self::atomic_write_with_options(&store_path, &serialized, false)
+    }
+
+    /// 读取指定文件的所有历史版本记录（按时间倒序）
+    pub fn list_file_history_snapshots(file_path: &str) -> Vec<HistorySnapshotRecord> {
+        if file_path.trim().is_empty() {
+            return Vec::new();
+        }
+        let store_path = Self::build_history_store_path(file_path);
+        if !store_path.exists() {
+            return Vec::new();
+        }
+        if let Ok(raw) = fs::read_to_string(&store_path) {
+            if let Ok(mut list) = serde_json::from_str::<Vec<HistorySnapshotRecord>>(&raw) {
+                list.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                return list;
+            }
+        }
+        Vec::new()
+    }
+
+    /// 删除单条历史版本快照
+    pub fn delete_file_history_snapshot(file_path: &str, snapshot_id: &str) -> io::Result<()> {
+        let store_path = Self::build_history_store_path(file_path);
+        if !store_path.exists() {
+            return Ok(());
+        }
+        let mut list = Self::list_file_history_snapshots(file_path);
+        list.retain(|item| item.id != snapshot_id);
+        let serialized = serde_json::to_string(&list)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Self::atomic_write_with_options(&store_path, &serialized, false)
     }
 }

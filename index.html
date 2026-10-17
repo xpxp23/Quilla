@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="show-code-line-numbers">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quilla (羽墨) - 极简所见即所得 Markdown 编辑器</title>
+  <title>Quilla (羽墨) v0.5 - 极简所见即所得 Markdown 编辑器与双链知识库</title>
   <link rel="stylesheet" href="./src/themes/base.css" />
   <link rel="stylesheet" href="./src/themes/window.css" />
   <link rel="stylesheet" id="base_user_css" />
@@ -22,6 +22,23 @@
       <span class="title-text" id="title-text" data-tauri-drag-region>未命名.md - Quilla</span>
     </div>
     <div id="w-traffic-lights">
+      <button type="button" class="toolbar-icon btn" id="w-graph-btn" title="双链知识图谱 (Ctrl+G)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="6" cy="6" r="3"></circle>
+          <circle cx="18" cy="6" r="3"></circle>
+          <circle cx="12" cy="18" r="3"></circle>
+          <line x1="8.6" y1="7.5" x2="15.4" y2="7.5"></line>
+          <line x1="7.5" y1="8.6" x2="10.5" y2="15.4"></line>
+          <line x1="16.5" y1="8.6" x2="13.5" y2="15.4"></line>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-icon btn" id="w-history-btn" title="本地版本历史 / 时间机器 (Ctrl+Alt+H)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+          <path d="M3 3v5h5"></path>
+          <path d="M12 7v5l4 2"></path>
+        </svg>
+      </button>
       <button type="button" class="toolbar-icon btn" id="w-settings" title="偏好设置 (Ctrl+,)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -55,12 +72,12 @@
           <div class="info-panel-tab-title">文件</div>
           <div class="info-panel-tab-border"></div>
         </div>
-        <div class="info-panel-tab" id="tab-outline" title="大纲目录">
+        <div class="info-panel-tab" id="tab-outline" title="大纲目录 (支持右键升级/降级/子树操作)">
           <div class="info-panel-tab-title">大纲</div>
           <div class="info-panel-tab-border"></div>
         </div>
-        <div class="info-panel-tab" id="tab-search" title="全文搜索">
-          <div class="info-panel-tab-title">搜索</div>
+        <div class="info-panel-tab" id="tab-search" title="全文搜索与 #标签 聚合">
+          <div class="info-panel-tab-title">搜索 · 标签</div>
           <div class="info-panel-tab-border"></div>
         </div>
       </div>
@@ -137,7 +154,7 @@
         <!-- 2.2.2 大纲视图 -->
         <div id="panel-outline" class="panel-view">
           <div class="outline-filter-bar">
-            <span class="outline-filter-title">文档大纲</span>
+            <span class="outline-filter-title">文档大纲 (支持右键菜单)</span>
             <button type="button" id="outline-toggle-all-btn" class="sidebar-icon-btn" title="全部展开 / 折叠子章节">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="7 15 12 20 17 15"></polyline>
@@ -148,16 +165,17 @@
           <div id="outline-content" class="outline-content"></div>
         </div>
 
-        <!-- 2.2.3 全文搜索面板 -->
+        <!-- 2.2.3 全文搜索与标签面板 -->
         <div id="panel-search" class="panel-view">
           <div class="search-input-wrapper">
             <svg class="search-input-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"></circle>
               <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
             </svg>
-            <input type="text" id="workspace-search-input" placeholder="在工作区中实时搜索..." autocomplete="off" spellcheck="false" />
+            <input type="text" id="workspace-search-input" placeholder="搜索全文或输入 #标签..." autocomplete="off" spellcheck="false" />
             <button type="button" id="workspace-search-case-btn" class="search-case-toggle-btn" title="区分大小写">Aa</button>
           </div>
+          <div id="workspace-tags-cloud" class="workspace-tags-cloud hidden"></div>
           <div id="workspace-search-meta" class="workspace-search-meta hidden"></div>
           <div id="workspace-search-results" class="workspace-search-results"></div>
         </div>
@@ -245,13 +263,21 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
         <span class="footer-btn-label">专注</span>
       </span>
+      <span id="footer-open-graph" class="footer-btn" title="双链知识图谱 (Ctrl+G)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="12" cy="18" r="3"></circle><line x1="8.6" y1="7.5" x2="15.4" y2="7.5"></line><line x1="7.5" y1="8.6" x2="10.5" y2="15.4"></line><line x1="16.5" y1="8.6" x2="13.5" y2="15.4"></line></svg>
+        <span class="footer-btn-label">图谱</span>
+      </span>
+      <span id="footer-open-history" class="footer-btn" title="本地版本历史 / 时间机器 (Ctrl+Alt+H)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>
+        <span class="footer-btn-label">历史</span>
+      </span>
       <span id="footer-theme-selector" class="footer-btn" title="切换主题">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line></svg>
         <span class="footer-btn-label">主题</span>
       </span>
     </div>
     <div class="footer-right">
-      <span id="footer-save-status" class="save-status">已保存</span>
+      <span id="footer-save-status" class="save-status" title="点击打开版本历史时间机器 (Ctrl+Alt+H)">已保存</span>
       <span id="footer-word-count" class="footer-stat-btn" title="点击查看字数与阅读时间详情">0 词</span>
       <span id="footer-char-count" class="footer-stat-btn" title="点击查看字数与阅读时间详情">0 字符</span>
     </div>

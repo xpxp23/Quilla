@@ -28,6 +28,8 @@ function getShortcutList(): ShortcutItem[] {
     { category: "常用操作", name: "打开文件", keys: [mod, "O"] },
     { category: "常用操作", name: "保存文档", keys: [mod, "S"] },
     { category: "常用操作", name: "另存为", keys: [mod, "Shift", "S"] },
+    { category: "常用操作", name: "版本历史 / 时间机器", keys: [mod, "Alt", "H"], desc: "可视 Diff 对比与一键回滚" },
+    { category: "常用操作", name: "双链知识图谱", keys: [mod, "G"], desc: "可视化局部/全局笔记关系网络" },
     { category: "常用操作", name: "快速文件漫游", keys: [mod, "P"] },
     { category: "常用操作", name: "偏好设置中心", keys: [mod, ","] },
     { category: "常用操作", name: "撤销 / 重做", keys: [mod, "Z"], desc: `重做 ${mod}+Y` },
@@ -37,6 +39,9 @@ function getShortcutList(): ShortcutItem[] {
     // 文本排版
     { category: "文本排版", name: "唤起斜杠命令面板", keys: ["/"], desc: "一键插入表格/流程图/Callout/公式" },
     { category: "文本排版", name: "双向链接补全", keys: ["[["], desc: "[[文档#标题]] 知识库双向引用" },
+    { category: "文本排版", name: "块级章节嵌入引用", keys: ["![["], desc: "![[文档#标题]] 实时嵌入卡片" },
+    { category: "文本排版", name: "整块向上 / 向下移动", keys: ["Alt", "↑/↓"], desc: "自动识别完整代码块/表格/列表" },
+    { category: "文本排版", name: "克隆当前段落或语义块", keys: [mod, "D"], desc: "在下方原样复制一份当前块" },
     { category: "文本排版", name: "加粗", keys: [mod, "B"], desc: "**文本** (支持智能反解)" },
     { category: "文本排版", name: "斜体", keys: [mod, "I"], desc: "*文本* (支持智能反解)" },
     { category: "文本排版", name: "行内代码", keys: [mod, "E"], desc: `或 ${mod}+\`` },
@@ -47,9 +52,9 @@ function getShortcutList(): ShortcutItem[] {
     { category: "文本排版", name: "多级列表缩进 / 降级", keys: ["Tab"], desc: "Shift+Tab 降级 (自动重排多级序号)" },
 
     // 标题层级
-    { category: "标题层级", name: "一级标题 (H1)", keys: [mod, "1"], desc: `支持 ${mod}+Alt+1` },
-    { category: "标题层级", name: "二级标题 (H2)", keys: [mod, "2"], desc: `支持 ${mod}+Alt+2` },
-    { category: "标题层级", name: "三级标题 (H3)", keys: [mod, "3"], desc: `支持 ${mod}+Alt+3` },
+    { category: "标题层级", name: "一级标题 (H1)", keys: [mod, "1"], desc: `支持 ${mod}+Alt+1 · 光标自动落于右侧` },
+    { category: "标题层级", name: "二级标题 (H2)", keys: [mod, "2"], desc: `支持 ${mod}+Alt+2 · 光标自动落于右侧` },
+    { category: "标题层级", name: "三级标题 (H3)", keys: [mod, "3"], desc: `支持 ${mod}+Alt+3 · 光标自动落于右侧` },
     { category: "标题层级", name: "四级标题 (H4)", keys: [mod, "4"], desc: `支持 ${mod}+Alt+4` },
     { category: "标题层级", name: "五级标题 (H5)", keys: [mod, "5"], desc: `支持 ${mod}+Alt+5` },
     { category: "标题层级", name: "六级标题 (H6)", keys: [mod, "6"], desc: `支持 ${mod}+Alt+6` },
@@ -60,7 +65,7 @@ function getShortcutList(): ShortcutItem[] {
     { category: "表格与图表", name: "表格下方插入行", keys: [mod, "Enter"], desc: "末格 Tab/Enter 自动加行" },
     { category: "表格与图表", name: "表格删除当前行", keys: [mod, "Shift", "Backspace"], desc: "完美支持 Ctrl+Z 撤销" },
     { category: "表格与图表", name: "单元格内换行", keys: ["Shift", "Enter"], desc: "自动插入安全 <br>" },
-    { category: "表格与图表", name: "插入代码块", keys: [mod, "Shift", "K"], desc: "点击右上角切换语言" },
+    { category: "表格与图表", name: "插入代码块", keys: [mod, "Shift", "K"], desc: "支持一键折叠/格式化/点击行号选行" },
     { category: "表格与图表", name: "插入数学公式块", keys: [mod, "Shift", "M"], desc: "$$ 独立公式块 $$" },
 
     // 视图与多标签
@@ -99,7 +104,7 @@ export function openShortcutGuide() {
         <div class="modal-title">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6.01" y2="8"></line><line x1="10" y1="8" x2="10.01" y2="8"></line><line x1="14" y1="8" x2="14.01" y2="8"></line><line x1="18" y1="8" x2="18.01" y2="8"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>
           <span>快捷键速查指南</span>
-          <span class="modal-badge">Quilla v0.4</span>
+          <span class="modal-badge">Quilla v0.5</span>
         </div>
         <button type="button" class="modal-close-btn" title="关闭 (Esc)">✕</button>
       </div>
@@ -115,7 +120,7 @@ export function openShortcutGuide() {
       <div class="shortcut-categories-container" id="shortcut-items-grid"></div>
 
       <div class="ty-modal-footer">
-        <span class="footer-tip">提示：输入 <kbd>/</kbd> 唤起斜杠命令菜单，输入 <kbd>[[</kbd> 插入双向链接，按 <kbd>${mod}</kbd>+<kbd>\\</kbd> 开启左右分屏</span>
+        <span class="footer-tip">提示：输入 <kbd>/</kbd> 唤起斜杠命令，输入 <kbd>[[</kbd> 或 <kbd>![[</kbd> 引用笔记，按 <kbd>${mod}</kbd>+<kbd>G</kbd> 查看知识图谱</span>
         <button type="button" class="modal-confirm-btn">我知道了</button>
       </div>
     </div>

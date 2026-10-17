@@ -1,4 +1,4 @@
-import { EditorState } from "@codemirror/state";
+import { ChangeSet, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
   createEditor,
@@ -8,6 +8,8 @@ import {
   isFocusModeActive,
   toggleFocusMode,
 } from "../editor";
+import { initFloatingToolbars } from "../editor/extensions/floating-toolbars";
+import { initSmartPaste } from "../editor/extensions/smart-paste";
 
 export interface DocumentTab {
   id: string;
@@ -38,10 +40,43 @@ function escapeHtml(str: string): string {
 }
 
 /**
+ * 计算两段文本之间的最小公共前后缀增量区间，避免双栏同步时整篇替换导致 Undo 栈与选区丢失
+ */
+function computeMinimalTextDiff(
+  oldText: string,
+  newText: string
+): { from: number; to: number; insert: string } | null {
+  if (oldText === newText) return null;
+  const oldLen = oldText.length;
+  const newLen = newText.length;
+  const minLen = Math.min(oldLen, newLen);
+
+  let prefix = 0;
+  while (prefix < minLen && oldText.charCodeAt(prefix) === newText.charCodeAt(prefix)) {
+    prefix++;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < oldLen - prefix &&
+    suffix < newLen - prefix &&
+    oldText.charCodeAt(oldLen - 1 - suffix) === newText.charCodeAt(newLen - 1 - suffix)
+  ) {
+    suffix++;
+  }
+
+  return {
+    from: prefix,
+    to: oldLen - suffix,
+    insert: newText.slice(prefix, newLen - suffix),
+  };
+}
+
+/**
  * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器
  * - 每个标签独立保存自己的 EditorState（含独立 Undo/Redo 历史栈与选区）和 scrollTop
  * - 支持 Pointer Events 标签拖拽排序、鼠标中键关闭、Ctrl+Tab 循环切换、Ctrl+W 关闭当前标签
- * - 支持一键开启左右分屏（Ctrl+\），右侧副编辑器可切换任意已打开标签或同文档双视口对照编辑，支持同步滚动与拖拽调节分屏比例
+ * - 支持一键开启左右分屏（Ctrl+\），右侧副编辑器具备完整的悬浮气泡栏、智能粘贴与焦点感知保存能力
  */
 export class TabsManager {
   private tabs: DocumentTab[] = [];
@@ -50,6 +85,7 @@ export class TabsManager {
   private secondaryTabId: string = "";
   private syncScrollEnabled: boolean = false;
   private secondaryView: EditorView | null = null;
+  private lastFocusedPane: "primary" | "secondary" = "primary";
   private isSyncingDualDoc: boolean = false;
   private isSyncingScroll: boolean = false;
   private callbacks: TabsManagerCallbacks;
@@ -79,6 +115,11 @@ export class TabsManager {
 
     const primaryView = this.callbacks.getPrimaryView();
     if (!primaryView) return;
+
+    primaryView.dom.addEventListener("focusin", () => {
+      this.lastFocusedPane = "primary";
+      this.splitContainerEl?.classList.remove("secondary-pane-focused");
+    });
 
     const firstTab: DocumentTab = {
       id: `tab-${Date.now()}-1`,
@@ -226,6 +267,50 @@ export class TabsManager {
     return this.tabs.find((t) => t.id === this.activeTabId);
   }
 
+  public getSecondaryTab(): DocumentTab | undefined {
+    return this.tabs.find((t) => t.id === this.secondaryTabId);
+  }
+
+  /**
+   * 获取当前实际拥有焦点的编辑器视图（支持分屏副视图焦点感知）
+   */
+  public getFocusedView(): EditorView | null {
+    if (
+      this.splitActive &&
+      this.secondaryView &&
+      (this.secondaryView.hasFocus || this.lastFocusedPane === "secondary")
+    ) {
+      return this.secondaryView;
+    }
+    return this.callbacks.getPrimaryView();
+  }
+
+  /**
+   * 获取当前实际拥有焦点的文档标签页（当用户在右侧分屏按 Ctrl+S 时可精准定位副面板所属标签）
+   */
+  public getFocusedTab(): DocumentTab | undefined {
+    if (
+      this.splitActive &&
+      this.secondaryView &&
+      (this.secondaryView.hasFocus || this.lastFocusedPane === "secondary")
+    ) {
+      return this.getSecondaryTab() || this.getActiveTab();
+    }
+    return this.getActiveTab();
+  }
+
+  public getSecondaryView(): EditorView | null {
+    return this.secondaryView;
+  }
+
+  public isSecondaryPaneFocused(): boolean {
+    return Boolean(
+      this.splitActive &&
+        this.secondaryView &&
+        (this.secondaryView.hasFocus || this.lastFocusedPane === "secondary")
+    );
+  }
+
   public getAllTabs(): DocumentTab[] {
     return this.tabs;
   }
@@ -246,7 +331,7 @@ export class TabsManager {
   }
 
   /**
-   * 当主编辑器内容发生变更时，更新当前标签脏状态，并在双栏同文档模式下实时同步至副编辑器
+   * 当主编辑器内容发生变更时，更新当前标签脏状态，并在双栏同文档模式下使用增量 Diff 同步至副编辑器
    */
   public notifyPrimaryDocChanged(content: string, isModified: boolean) {
     const activeTab = this.getActiveTab();
@@ -262,7 +347,7 @@ export class TabsManager {
       this.renderTabs();
     }
 
-    // 若处于分屏模式且右侧副视图正在展示同一标签，实时镜像同步文档内容
+    // 若处于分屏模式且右侧副视图正在展示同一标签，实时做最小增量同步（保护副编辑器 Undo 栈与光标偏移）
     if (
       this.splitActive &&
       this.secondaryView &&
@@ -270,17 +355,19 @@ export class TabsManager {
       !this.isSyncingDualDoc
     ) {
       const secDoc = this.secondaryView.state.doc.toString();
-      if (secDoc !== content) {
+      const diff = computeMinimalTextDiff(secDoc, content);
+      if (diff) {
         this.isSyncingDualDoc = true;
         try {
           const prevScroll = this.secondaryView.scrollDOM.scrollTop;
-          const prevAnchor = Math.min(
-            content.length,
-            this.secondaryView.state.selection.main.anchor
+          const changeDesc = ChangeSet.of(
+            [{ from: diff.from, to: diff.to, insert: diff.insert }],
+            secDoc.length
           );
+          const mappedSel = this.secondaryView.state.selection.map(changeDesc);
           this.secondaryView.dispatch({
-            changes: { from: 0, to: secDoc.length, insert: content },
-            selection: { anchor: prevAnchor },
+            changes: diff,
+            selection: mappedSel,
           });
           this.secondaryView.scrollDOM.scrollTop = prevScroll;
         } finally {
@@ -456,14 +543,25 @@ export class TabsManager {
     return true;
   }
 
+  public updateTabSavedMetaById(
+    tabId: string,
+    filePath: string | null,
+    title: string,
+    savedContent: string
+  ) {
+    const target = this.tabs.find((t) => t.id === tabId);
+    if (!target) return;
+    target.filePath = filePath;
+    target.title = title;
+    target.savedContent = savedContent;
+    target.isModified = false;
+    this.renderTabs();
+  }
+
   public updateActiveTabSavedMeta(filePath: string | null, title: string, savedContent: string) {
     const active = this.getActiveTab();
     if (!active) return;
-    active.filePath = filePath;
-    active.title = title;
-    active.savedContent = savedContent;
-    active.isModified = false;
-    this.renderTabs();
+    this.updateTabSavedMetaById(active.id, filePath, title, savedContent);
   }
 
   public handleFileRenamed(oldPath: string, newPath: string) {
@@ -508,6 +606,11 @@ export class TabsManager {
     document.getElementById("doc-tab-split-btn")?.classList.toggle("active", this.splitActive);
     document.getElementById("footer-toggle-split")?.classList.toggle("active-mode", this.splitActive);
 
+    if (!this.splitActive) {
+      this.lastFocusedPane = "primary";
+      this.splitContainerEl?.classList.remove("secondary-pane-focused");
+    }
+
     if (this.splitActive) {
       this.snapshotActiveTabState();
       if (targetSecondaryTabId) {
@@ -549,27 +652,30 @@ export class TabsManager {
           this.renderTabs();
         }
 
-        // 若左右分屏打开的是同一个文档标签，将副编辑器的改动实时同步回主编辑器
+        // 若左右分屏打开的是同一个文档标签，将副编辑器的改动通过最小增量 Diff 实时同步回主编辑器
         const primaryView = this.callbacks.getPrimaryView();
         if (primaryView && this.secondaryTabId === this.activeTabId) {
           const primDoc = primaryView.state.doc.toString();
-          if (primDoc !== content) {
+          const diff = computeMinimalTextDiff(primDoc, content);
+          if (diff) {
             this.isSyncingDualDoc = true;
             try {
               const prevScroll = primaryView.scrollDOM.scrollTop;
-              const prevAnchor = Math.min(
-                content.length,
-                primaryView.state.selection.main.anchor
+              const changeDesc = ChangeSet.of(
+                [{ from: diff.from, to: diff.to, insert: diff.insert }],
+                primDoc.length
               );
+              const mappedSel = primaryView.state.selection.map(changeDesc);
               primaryView.dispatch({
-                changes: { from: 0, to: primDoc.length, insert: content },
-                selection: { anchor: prevAnchor },
+                changes: diff,
+                selection: mappedSel,
               });
               primaryView.scrollDOM.scrollTop = prevScroll;
             } finally {
               this.isSyncingDualDoc = false;
             }
           }
+          this.callbacks.onSecondaryDocChanged?.(targetTab, content);
         } else {
           this.callbacks.onSecondaryDocChanged?.(targetTab, content);
         }
@@ -577,6 +683,17 @@ export class TabsManager {
       onStatsUpdate: () => {},
       onOutlineUpdate: () => {},
       onOpenFile: (filePath) => this.callbacks.onOpenFileRequest(filePath),
+    });
+
+    // 为右侧分屏副编辑器完整挂载悬浮气泡工具栏、图片/链接悬浮栏与智能 HTML 转 Markdown 粘贴引擎
+    initFloatingToolbars(this.secondaryView, (filePath) =>
+      this.callbacks.onOpenFileRequest(filePath)
+    );
+    initSmartPaste(this.secondaryView);
+
+    this.secondaryView.dom.addEventListener("focusin", () => {
+      this.lastFocusedPane = "secondary";
+      this.splitContainerEl?.classList.add("secondary-pane-focused");
     });
 
     // 副编辑器滚动时若开启同步滚动，反向联动主编辑器
@@ -647,6 +764,14 @@ export class TabsManager {
   public renderTabs() {
     const listEl = this.tabsListEl;
     if (!listEl) return;
+
+    // 同步单标签自动隐藏状态
+    if (this.tabsBarEl) {
+      this.tabsBarEl.classList.toggle(
+        "single-tab-only",
+        this.tabs.length <= 1 && !this.splitActive
+      );
+    }
 
     listEl.innerHTML = "";
 

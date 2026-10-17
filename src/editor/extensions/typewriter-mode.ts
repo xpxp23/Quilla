@@ -2,10 +2,10 @@ import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 
 /**
- * 打字机模式状态管理与优雅平滑居中锁频插件 (F9)
- * - 键盘打字换行或点击光标定位时：平滑（ease-out 缓动动画）将当前行居中在视口 50% 处
- * - 鼠标按住拖拽框选文本时：智能冻结居中滚动，杜绝选区拖拽过程中视口乱跳
- * - 用户鼠标滚轮滑动时：立即中止动画并释放居中锁，允许用户自由查阅全文
+ * 打字机模式状态管理与优雅平滑居中锁频插件 (F9 v0.5)
+ * - 彻底消除模块级全局变量，所有状态挂载于编辑器实例内部，完美隔离左右分屏双实例
+ * - 智能忽略代码块复制按钮、语言选择器、任务列表复选框、表格工具栏、标题折叠按钮等非光标交互控件的点击，
+ *   彻底根治打字机模式下点击代码块复制按钮会导致视口跳回光标处的 Bug
  */
 
 export const setTypewriterMode = StateEffect.define<boolean>();
@@ -24,16 +24,21 @@ export const typewriterState = StateField.define<boolean>({
   },
 });
 
-let isUserScrolling = false;
-let isPointerDragging = false;
-let scrollTimeout: any = null;
-let currentAnimId: number | null = null;
-let scheduled = false;
+const INTERACTIVE_WIDGET_SELECTOR =
+  "button, input, select, textarea, a, .code-block-header-bar, .cm-code-block-last-line, .task-list-item-checkbox, .table-floating-toolbar, .cm-toc-card, .cm-wiki-link, .cm-transclusion-card, .cm-frontmatter-card, .cm-heading-fold-btn, .cm-block-handle, .md-image-card";
 
-function smoothScrollTo(element: HTMLElement, target: number, duration: number = 240) {
-  if (currentAnimId !== null) {
-    cancelAnimationFrame(currentAnimId);
-    currentAnimId = null;
+const activeAnimMap = new WeakMap<HTMLElement, number>();
+
+function smoothScrollTo(
+  element: HTMLElement,
+  target: number,
+  duration: number = 220,
+  shouldAbort?: () => boolean
+) {
+  const prevAnim = activeAnimMap.get(element);
+  if (prevAnim !== undefined) {
+    cancelAnimationFrame(prevAnim);
+    activeAnimMap.delete(element);
   }
 
   const start = element.scrollTop;
@@ -47,8 +52,8 @@ function smoothScrollTo(element: HTMLElement, target: number, duration: number =
   }
 
   function animate(currentTime: number) {
-    if (isUserScrolling || isPointerDragging) {
-      currentAnimId = null;
+    if (shouldAbort && shouldAbort()) {
+      activeAnimMap.delete(element);
       return;
     }
     const elapsed = currentTime - startTime;
@@ -56,60 +61,84 @@ function smoothScrollTo(element: HTMLElement, target: number, duration: number =
     element.scrollTop = start + change * easeOutCubic(progress);
 
     if (progress < 1) {
-      currentAnimId = requestAnimationFrame(animate);
+      const id = requestAnimationFrame(animate);
+      activeAnimMap.set(element, id);
     } else {
-      currentAnimId = null;
+      activeAnimMap.delete(element);
     }
   }
 
-  currentAnimId = requestAnimationFrame(animate);
+  const id = requestAnimationFrame(animate);
+  activeAnimMap.set(element, id);
 }
 
 export const typewriterPlugin = ViewPlugin.fromClass(
   class {
     private dom: HTMLElement;
+    private isUserScrolling = false;
+    private isPointerDragging = false;
+    private pointerStartedOnControl = false;
+    private scrollTimeout: any = null;
+    private scheduled = false;
     private wheelHandler: () => void;
     private keyHandler: (e: KeyboardEvent) => void;
-    private pointerDownHandler: () => void;
-    private pointerUpHandler: () => void;
+    private pointerDownHandler: (e: PointerEvent) => void;
+    private pointerUpHandler: (e: PointerEvent) => void;
 
     constructor(readonly view: EditorView) {
       this.dom = view.scrollDOM;
 
       this.wheelHandler = () => {
-        isUserScrolling = true;
-        if (currentAnimId !== null) {
-          cancelAnimationFrame(currentAnimId);
-          currentAnimId = null;
+        this.isUserScrolling = true;
+        const prevAnim = activeAnimMap.get(this.dom);
+        if (prevAnim !== undefined) {
+          cancelAnimationFrame(prevAnim);
+          activeAnimMap.delete(this.dom);
         }
-        clearTimeout(scrollTimeout);
-        scrollTimeout = setTimeout(() => {
-          isUserScrolling = false;
+        clearTimeout(this.scrollTimeout);
+        this.scrollTimeout = setTimeout(() => {
+          this.isUserScrolling = false;
         }, 1200);
       };
 
       this.keyHandler = (e: KeyboardEvent) => {
-        // 若正在用 Shift+方向键做范围框选，不强制居中
         if (e.shiftKey && e.key.startsWith("Arrow")) return;
-        isUserScrolling = false;
-        clearTimeout(scrollTimeout);
+        this.isUserScrolling = false;
+        clearTimeout(this.scrollTimeout);
         this.scheduleCenter();
       };
 
-      this.pointerDownHandler = () => {
-        isPointerDragging = true;
-        if (currentAnimId !== null) {
-          cancelAnimationFrame(currentAnimId);
-          currentAnimId = null;
+      this.pointerDownHandler = (e: PointerEvent) => {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest(INTERACTIVE_WIDGET_SELECTOR)) {
+          this.pointerStartedOnControl = true;
+          this.isPointerDragging = false;
+          return;
+        }
+        this.pointerStartedOnControl = false;
+        this.isPointerDragging = true;
+        const prevAnim = activeAnimMap.get(this.dom);
+        if (prevAnim !== undefined) {
+          cancelAnimationFrame(prevAnim);
+          activeAnimMap.delete(this.dom);
         }
       };
 
-      this.pointerUpHandler = () => {
-        if (!isPointerDragging) return;
-        isPointerDragging = false;
-        // 仅在单击定位光标（无范围选区）时平滑居中，框选文本时不触发滚动跳动
-        if (this.view.state.selection.main.empty) {
-          isUserScrolling = false;
+      this.pointerUpHandler = (e: PointerEvent) => {
+        if (this.pointerStartedOnControl) {
+          this.pointerStartedOnControl = false;
+          return;
+        }
+        if (!this.isPointerDragging) return;
+        this.isPointerDragging = false;
+
+        const target = e.target as HTMLElement | null;
+        if (target?.closest(INTERACTIVE_WIDGET_SELECTOR)) {
+          return;
+        }
+
+        if (this.view.state.selection.main.empty && this.view.hasFocus) {
+          this.isUserScrolling = false;
           this.scheduleCenter();
         }
       };
@@ -132,48 +161,84 @@ export const typewriterPlugin = ViewPlugin.fromClass(
       if (isActive !== wasActive) {
         this.updateDomClass();
         if (isActive) {
-          isUserScrolling = false;
+          this.isUserScrolling = false;
           this.scheduleCenter();
         }
       }
 
       if (
         isActive &&
-        !isUserScrolling &&
-        !isPointerDragging &&
-        update.state.selection.main.empty &&
-        (update.docChanged || update.selectionSet)
+        !this.isUserScrolling &&
+        !this.isPointerDragging &&
+        !this.pointerStartedOnControl &&
+        update.state.selection.main.empty
       ) {
-        this.scheduleCenter();
+        const isTableSync = update.transactions.some((tr) => tr.isUserEvent("input.table"));
+        if (isTableSync) return;
+
+        if (update.selectionSet) {
+          this.scheduleCenter();
+        } else if (update.docChanged) {
+          // 仅当文档变更发生在当前光标所在行附近时才跟随居中（防止勾选远端复选框或切换远端代码语言时乱跳）
+          const head = update.state.selection.main.head;
+          let nearCursor = false;
+          update.changes.iterChanges((_fromA, _toA, fromB, toB) => {
+            if (Math.abs(fromB - head) <= 8 || (head >= fromB && head <= toB)) {
+              nearCursor = true;
+            }
+          });
+          if (nearCursor) {
+            this.scheduleCenter();
+          }
+        }
       }
     }
 
     private updateDomClass() {
       const isActive = this.view.state.field(typewriterState);
-      if (isActive) {
-        this.view.dom.classList.add("typewriter-mode");
-        document.body.classList.add("typewriter-mode-active");
-      } else {
-        this.view.dom.classList.remove("typewriter-mode");
-        document.body.classList.remove("typewriter-mode-active");
-      }
+      this.view.dom.classList.toggle("typewriter-mode", isActive);
     }
 
     private scheduleCenter() {
-      if (scheduled) return;
-      scheduled = true;
+      if (this.scheduled) return;
+      this.scheduled = true;
       requestAnimationFrame(() => {
-        scheduled = false;
-        if (!this.view.state.field(typewriterState) || isUserScrolling || isPointerDragging) {
+        this.scheduled = false;
+        if (
+          !this.view.state.field(typewriterState) ||
+          this.isUserScrolling ||
+          this.isPointerDragging
+        ) {
           return;
         }
 
         try {
           const head = this.view.state.selection.main.head;
-          const lineBlock = this.view.lineBlockAt(head);
+          const coords = this.view.coordsAtPos(head);
           const scroller = this.view.scrollDOM;
+          if (coords) {
+            const scrollerRect = scroller.getBoundingClientRect();
+            const headCenterY = (coords.top + coords.bottom) / 2;
+            const scrollerCenterY = scrollerRect.top + scrollerRect.height / 2;
+            const diff = headCenterY - scrollerCenterY;
+            if (Math.abs(diff) > 6) {
+              smoothScrollTo(
+                scroller,
+                Math.max(0, scroller.scrollTop + diff),
+                220,
+                () => this.isUserScrolling || this.isPointerDragging
+              );
+            }
+            return;
+          }
+          const lineBlock = this.view.lineBlockAt(head);
           const targetY = lineBlock.top - scroller.clientHeight / 2 + lineBlock.height / 2;
-          smoothScrollTo(scroller, Math.max(0, targetY), 240);
+          smoothScrollTo(
+            scroller,
+            Math.max(0, targetY),
+            220,
+            () => this.isUserScrolling || this.isPointerDragging
+          );
         } catch {
           // 容错兜底
         }
@@ -181,15 +246,16 @@ export const typewriterPlugin = ViewPlugin.fromClass(
     }
 
     destroy() {
-      if (currentAnimId !== null) {
-        cancelAnimationFrame(currentAnimId);
-        currentAnimId = null;
+      const prevAnim = activeAnimMap.get(this.dom);
+      if (prevAnim !== undefined) {
+        cancelAnimationFrame(prevAnim);
+        activeAnimMap.delete(this.dom);
       }
       this.dom.removeEventListener("wheel", this.wheelHandler);
       this.view.contentDOM.removeEventListener("keydown", this.keyHandler);
       this.view.contentDOM.removeEventListener("pointerdown", this.pointerDownHandler);
       window.removeEventListener("pointerup", this.pointerUpHandler);
-      clearTimeout(scrollTimeout);
+      clearTimeout(this.scrollTimeout);
     }
   }
 );
@@ -214,9 +280,9 @@ export function isTypewriterModeActive(view: EditorView): boolean {
 export function centerElementInTypewriter(
   view: EditorView,
   elem: HTMLElement,
-  duration: number = 240
+  duration: number = 220
 ) {
-  if (!isTypewriterModeActive(view) || isPointerDragging) return;
+  if (!isTypewriterModeActive(view)) return;
   requestAnimationFrame(() => {
     try {
       const scroller = view.scrollDOM;

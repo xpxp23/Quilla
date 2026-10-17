@@ -99,7 +99,12 @@ html, body {
   padding: 1px 0 !important;
 }
 
-/* 标题规范 (出版级纵向节奏感与微留白) */
+/* 章节折叠时隐藏被收起的正文行 */
+.cm-editor .cm-line.cm-folded-section-line {
+  display: none !important;
+}
+
+/* 标题规范 (出版级纵向节奏感、首行自适应留白与 H1/H2 差异化分割线) */
 #write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
 #write-secondary h1, #write-secondary h2, #write-secondary h3, #write-secondary h4, #write-secondary h5, #write-secondary h6,
 .cm-line.cm-heading {
@@ -107,47 +112,92 @@ html, body {
   color: var(--text-color);
   line-height: 1.4;
   letter-spacing: -0.01em;
+  position: relative;
+}
+
+.cm-line.cm-heading:first-child {
+  padding-top: 0.35rem !important;
+  margin-top: 0 !important;
 }
 
 .cm-line.cm-heading-1 {
-  font-size: 2.15rem;
-  border-bottom: 1px solid var(--border-color);
-  padding-top: 1.5rem !important;
-  padding-bottom: 0.4rem !important;
-  margin-top: 0.5rem;
-}
-
-.cm-line.cm-heading-2 {
-  font-size: 1.65rem;
-  border-bottom: 1px solid var(--border-color);
-  padding-top: 1.3rem !important;
-  padding-bottom: 0.35rem !important;
+  font-size: 2.12rem;
+  border-bottom: 1.5px solid var(--border-color);
+  padding-top: 1.45rem !important;
+  padding-bottom: 0.42rem !important;
   margin-top: 0.45rem;
 }
 
+.cm-line.cm-heading-2 {
+  font-size: 1.62rem;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.13);
+  padding-top: 1.25rem !important;
+  padding-bottom: 0.32rem !important;
+  margin-top: 0.4rem;
+}
+
 .cm-line.cm-heading-3 {
-  font-size: 1.35rem;
-  padding-top: 1.1rem !important;
+  font-size: 1.34rem;
+  padding-top: 1.05rem !important;
   padding-bottom: 0.2rem !important;
 }
 
 .cm-line.cm-heading-4 {
   font-size: 1.15rem;
-  padding-top: 0.9rem !important;
+  padding-top: 0.88rem !important;
   padding-bottom: 0.15rem !important;
 }
 
 .cm-line.cm-heading-5 {
   font-size: 1rem;
-  padding-top: 0.75rem !important;
+  padding-top: 0.72rem !important;
   padding-bottom: 0.1rem !important;
 }
 
 .cm-line.cm-heading-6 {
   font-size: 0.92rem;
   color: var(--control-text-color);
-  padding-top: 0.65rem !important;
+  padding-top: 0.62rem !important;
   padding-bottom: 0.1rem !important;
+}
+
+/* 标题右侧章节折叠按钮与折叠计数胶囊 */
+.cm-heading-fold-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--monospace);
+  color: var(--control-text-color);
+  background-color: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  vertical-align: middle;
+  opacity: 0;
+  user-select: none;
+  transition: opacity 0.14s ease, background-color 0.14s ease, color 0.14s ease;
+}
+
+.cm-line.cm-heading:hover .cm-heading-fold-btn {
+  opacity: 0.68;
+}
+
+.cm-heading-fold-btn:hover {
+  opacity: 1 !important;
+  background-color: var(--item-hover-bg-color);
+  color: var(--primary-color, #0969da);
+  border-color: var(--border-color);
+}
+
+.cm-heading-fold-btn.is-folded {
+  opacity: 0.95 !important;
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.12));
+  color: var(--primary-color, #0969da);
+  border-color: rgba(9, 105, 218, 0.25);
 }
 
 /* 多级嵌套列表缩进引导线与排版级圆点/有序编号符号 */
@@ -232,12 +282,12 @@ blockquote, .cm-line.cm-blockquote {
 
 .cm-line.cm-blockquote.cm-blockquote-first {
   padding-top: 6px !important;
-  border-top-right-radius: 5px !important;
+  border-top-right-radius: 6px !important;
 }
 
 .cm-line.cm-blockquote.cm-blockquote-last {
   padding-bottom: 6px !important;
-  border-bottom-right-radius: 5px !important;
+  border-bottom-right-radius: 6px !important;
 }
 
 /* 消除引用块内标题 margin-top 造成的左侧引用竖线断裂 */
@@ -246,47 +296,52 @@ blockquote, .cm-line.cm-blockquote {
   padding-top: 0.45rem !important;
 }
 
-/* ================= GitHub 风格 Callout / Admonition 原生卡片渲染 ================= */
+/* ================= GitHub 风格 Callout / Admonition 原生卡片渲染 (完整四周边框包裹) ================= */
 .cm-line.cm-callout,
 .cm-line.cm-callout-line {
   padding-left: 16px !important;
   padding-right: 16px !important;
   color: var(--text-color) !important;
+  border-right: 1px solid rgba(127, 127, 127, 0.14) !important;
 }
 
 .cm-line.cm-callout-first {
   padding-top: 9px !important;
-  border-top-right-radius: 7px !important;
+  border-top: 1px solid rgba(127, 127, 127, 0.14) !important;
+  border-top-right-radius: 8px !important;
+  border-top-left-radius: 3px !important;
 }
 
 .cm-line.cm-callout-last {
   padding-bottom: 9px !important;
-  border-bottom-right-radius: 7px !important;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.14) !important;
+  border-bottom-right-radius: 8px !important;
+  border-bottom-left-radius: 3px !important;
 }
 
 .cm-line.cm-callout-note {
   border-left: 4px solid #0969da !important;
-  background-color: rgba(9, 105, 218, 0.065) !important;
+  background-color: rgba(9, 105, 218, 0.06) !important;
 }
 
 .cm-line.cm-callout-tip {
   border-left: 4px solid #1a7f37 !important;
-  background-color: rgba(26, 127, 55, 0.065) !important;
+  background-color: rgba(26, 127, 55, 0.06) !important;
 }
 
 .cm-line.cm-callout-important {
   border-left: 4px solid #8250df !important;
-  background-color: rgba(130, 80, 223, 0.065) !important;
+  background-color: rgba(130, 80, 223, 0.06) !important;
 }
 
 .cm-line.cm-callout-warning {
   border-left: 4px solid #9a6700 !important;
-  background-color: rgba(154, 103, 0, 0.075) !important;
+  background-color: rgba(154, 103, 0, 0.07) !important;
 }
 
 .cm-line.cm-callout-caution {
   border-left: 4px solid #cf222e !important;
-  background-color: rgba(207, 34, 46, 0.07) !important;
+  background-color: rgba(207, 34, 46, 0.065) !important;
 }
 
 .cm-callout-header-widget {
@@ -435,7 +490,7 @@ code, .cm-inline-code {
   text-decoration: none !important;
 }
 
-/* ================= 双向链接 [[Wiki Links]] 胶囊与源码展开样式 ================= */
+/* ================= 双向链接 [[Wiki Links]] 与内联 #标签 胶囊样式 ================= */
 .cm-wikilink,
 .cm-wikilink-widget,
 .cm-wiki-link {
@@ -481,6 +536,201 @@ code, .cm-inline-code {
   background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.08));
   border-radius: 3px;
   padding: 0 2px;
+}
+
+/* 内联 #标签 胶囊 */
+.cm-hashtag {
+  display: inline-block;
+  padding: 0 7px;
+  margin: 0 1px;
+  border-radius: 10px;
+  background-color: rgba(9, 105, 218, 0.085);
+  color: var(--primary-color, #0969da);
+  border: 1px solid rgba(9, 105, 218, 0.18);
+  font-size: 0.88em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.cm-hashtag:hover {
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+  border-color: var(--primary-color, #0969da);
+}
+
+/* ================= YAML Front Matter 可视化属性面板卡片 ================= */
+.cm-frontmatter-card {
+  margin: 4px 0 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-color: rgba(127, 127, 127, 0.03);
+  overflow: hidden;
+  user-select: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cm-frontmatter-card:hover {
+  border-color: rgba(9, 105, 218, 0.35);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.05);
+}
+
+.fm-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background-color: rgba(127, 127, 127, 0.05);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11.5px;
+}
+
+.fm-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--control-text-color);
+}
+
+.fm-card-edit-hint {
+  font-size: 11px;
+  color: var(--primary-color, #0969da);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.cm-frontmatter-card:hover .fm-card-edit-hint {
+  opacity: 0.9;
+}
+
+.fm-card-grid {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 14px;
+  gap: 4px;
+}
+
+.fm-prop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+
+.fm-prop-key {
+  min-width: 82px;
+  font-family: var(--monospace);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  flex-shrink: 0;
+}
+
+.fm-prop-val {
+  flex: 1;
+  color: var(--text-color);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.fm-tag-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  color: var(--primary-color, #0969da);
+  border: 1px solid rgba(9, 105, 218, 0.18);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.fm-tag-pill:hover {
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+}
+
+/* ================= 块级/章节嵌入引用卡片 ![[文档#标题]] ================= */
+.cm-transclusion-card {
+  margin: 12px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(9, 105, 218, 0.25);
+  border-left: 3.5px solid var(--primary-color, #0969da);
+  background-color: rgba(9, 105, 218, 0.035);
+  overflow: hidden;
+  user-select: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cm-transclusion-card:hover {
+  border-color: var(--primary-color, #0969da);
+  box-shadow: 0 4px 14px rgba(9, 105, 218, 0.08);
+}
+
+.transclusion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background-color: rgba(9, 105, 218, 0.065);
+  border-bottom: 1px solid rgba(9, 105, 218, 0.14);
+}
+
+.transclusion-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary-color, #0969da);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.transclusion-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.transclusion-src-btn,
+.transclusion-jump-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid rgba(9, 105, 218, 0.22);
+  background-color: var(--bg-color);
+  color: var(--primary-color, #0969da);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.transclusion-src-btn:hover,
+.transclusion-jump-btn:hover {
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+}
+
+.transclusion-body {
+  padding: 10px 14px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.transclusion-md-preview {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  font-family: inherit !important;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-color);
+  white-space: pre-wrap;
 }
 
 /* 代码块 */
@@ -1121,12 +1371,12 @@ figure.table-figure:hover .tbl-edge-add-col {
   border-color: var(--primary-color, #0969da) !important;
 }
 
-/* 多语言代码块卡片与实时行样式 (含基线自适应行号与交互式头部操作栏) */
+/* ================= 一体式多语言代码块卡片 (含折叠、格式化、行号点击选行与闭合底边收口) ================= */
 .cm-line.cm-code-block-first-line {
-  background-color: rgba(127, 127, 127, 0.06);
-  border-top-left-radius: 7px;
-  border-top-right-radius: 7px;
-  border-bottom: 1px solid var(--border-color);
+  background-color: rgba(127, 127, 127, 0.065);
+  border: 1px solid var(--border-color);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
   padding: 4px 12px !important;
   font-family: var(--monospace);
   font-size: 13px;
@@ -1155,6 +1405,37 @@ figure.table-figure:hover .tbl-edge-add-col {
   position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+}
+
+.code-fold-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--control-text-color);
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.12s ease;
+}
+
+.code-fold-btn:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--primary-color, #0969da);
+}
+
+.code-collapsed-badge {
+  font-size: 11px;
+  font-family: var(--monospace);
+  padding: 1px 7px;
+  border-radius: 10px;
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  color: var(--primary-color, #0969da);
+  cursor: pointer;
 }
 
 .code-lang-dot {
@@ -1263,12 +1544,14 @@ figure.table-figure:hover .tbl-edge-add-col {
   transition: all 0.15s ease;
 }
 
-.code-copy-btn.code-fence-btn {
+.code-copy-btn.code-fence-btn,
+.code-copy-btn.code-format-btn {
   opacity: 0;
   border-color: transparent;
 }
 
-.code-block-header-bar:hover .code-copy-btn.code-fence-btn {
+.code-block-header-bar:hover .code-copy-btn.code-fence-btn,
+.code-block-header-bar:hover .code-copy-btn.code-format-btn {
   opacity: 0.85;
   border-color: var(--border-color);
 }
@@ -1285,17 +1568,22 @@ figure.table-figure:hover .tbl-edge-add-col {
 
 .cm-line.cm-code-block-line {
   position: relative;
-  background-color: rgba(127, 127, 127, 0.045);
+  background-color: rgba(127, 127, 127, 0.042);
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
   font-family: var(--monospace);
   font-size: 0.9em;
   padding: 2px 16px !important;
   color: var(--text-color);
+  box-sizing: border-box;
 }
 
+html.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line),
 body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line) {
   padding-left: 52px !important;
 }
 
+html.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line)::before,
 body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line)::before {
   content: attr(data-code-line);
   position: absolute;
@@ -1318,16 +1606,29 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 }
 
 .cm-line.cm-code-block-last-line {
-  background-color: rgba(127, 127, 127, 0.045);
-  border-bottom-left-radius: 7px;
-  border-bottom-right-radius: 7px;
+  background-color: rgba(127, 127, 127, 0.042);
+  border: 1px solid var(--border-color);
+  border-top: none;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
   padding: 3px 16px !important;
   font-family: var(--monospace);
   font-size: 12.5px;
   color: var(--control-text-color);
   margin-bottom: 0.9rem;
   min-height: 12px;
-  cursor: text;
+  box-sizing: border-box;
+}
+
+/* 当光标不在底栏 ``` 行时，将其收口为 6px 一体式圆角底边，彻底消除底部多出一行空白的割裂感 */
+.cm-line.cm-code-block-last-line.cm-code-block-cap {
+  padding: 0 !important;
+  min-height: 6px !important;
+  height: 6px !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+  overflow: hidden;
+  user-select: none;
 }
 
 .cm-line.cm-code-block-last-line.cm-live-preview-attached {

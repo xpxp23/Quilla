@@ -15,6 +15,7 @@ export interface WikiLinkMatch {
   heading: string;
   alias: string | null;
   displayText: string;
+  isEmbed: boolean;
 }
 
 export interface WikiWorkspaceProvider {
@@ -23,12 +24,19 @@ export interface WikiWorkspaceProvider {
   getWorkspaceMarkdownFiles: () => Promise<Array<{ path: string; name: string; stem: string }>>;
   onOpenWikiTarget: (filePath: string, headingAnchor?: string | null) => void;
   onCreateAndOpenWikiFile?: (targetName: string, headingAnchor?: string | null) => void;
+  onSearchTag?: (tagName: string) => void;
+  onFilterByTag?: (tagName: string) => void;
+  onOpenGraphModal?: () => void;
 }
 
 let workspaceProvider: WikiWorkspaceProvider | null = null;
 
 export function registerWikiWorkspaceProvider(provider: WikiWorkspaceProvider) {
   workspaceProvider = provider;
+}
+
+export function getWikiWorkspaceProvider(): WikiWorkspaceProvider | null {
+  return workspaceProvider;
 }
 
 function escapeHtml(str: string): string {
@@ -41,7 +49,7 @@ function escapeHtml(str: string): string {
 }
 
 /**
- * 解析单行中的 [[文件名#标题|显示别名]] 双向链接（自动忽略行内代码反引号包裹区间）
+ * 解析单行中的 [[文件名#标题|显示别名]] 双向链接与 ![[文件名#标题]] 块级嵌入（自动忽略行内代码反引号包裹区间）
  */
 export function parseWikiLinksInLine(
   lineText: string,
@@ -66,10 +74,19 @@ export function parseWikiLinksInLine(
       }
     }
 
-    if (lineText[i] === "[" && i + 1 < len && lineText[i + 1] === "[") {
-      const closeIdx = lineText.indexOf("]]", i + 2);
+    const isEmbed =
+      lineText[i] === "!" &&
+      i + 2 < len &&
+      lineText[i + 1] === "[" &&
+      lineText[i + 2] === "[";
+    const isStandardWiki =
+      lineText[i] === "[" && i + 1 < len && lineText[i + 1] === "[";
+
+    if (isEmbed || isStandardWiki) {
+      const bracketOpenIdx = isEmbed ? i + 1 : i;
+      const closeIdx = lineText.indexOf("]]", bracketOpenIdx + 2);
       if (closeIdx !== -1) {
-        const rawInner = lineText.slice(i + 2, closeIdx).trim();
+        const rawInner = lineText.slice(bracketOpenIdx + 2, closeIdx).trim();
         if (rawInner.length > 0 && !rawInner.includes("\n")) {
           const [targetAndHeading, aliasPart] = rawInner.split("|");
           const [targetPart, headingPart] = (targetAndHeading || "").split("#");
@@ -96,6 +113,7 @@ export function parseWikiLinksInLine(
               heading,
               alias,
               displayText,
+              isEmbed,
             });
           }
           i = closeIdx + 2;
@@ -107,6 +125,64 @@ export function parseWikiLinksInLine(
   }
 
   return results;
+}
+
+const transclusionCache = new Map<string, string>();
+export function clearTransclusionCache() {
+  transclusionCache.clear();
+}
+
+/**
+ * 异步读取 ![[文档#标题]] 嵌入块的目标章节文本（带内存缓存）
+ */
+export async function fetchTransclusionSectionContent(
+  targetDoc: string,
+  heading: string,
+  currentDocFallback?: string
+): Promise<{ found: boolean; filePath: string | null; content: string }> {
+  if (!workspaceProvider) {
+    if (currentDocFallback) {
+      return { found: true, filePath: null, content: currentDocFallback.slice(0, 500) };
+    }
+    return { found: false, filePath: null, content: "" };
+  }
+  const targetName = (targetDoc || "").trim();
+  const headingName = (heading || "").trim();
+  let targetPath: string | null = null;
+
+  if (!targetName) {
+    targetPath = workspaceProvider.getActiveFilePath();
+  } else {
+    const files = await workspaceProvider.getWorkspaceMarkdownFiles();
+    const matched = files.find(
+      (f) =>
+        f.stem.toLowerCase() === targetName.toLowerCase() ||
+        f.name.toLowerCase() === targetName.toLowerCase()
+    );
+    if (matched) targetPath = matched.path;
+  }
+
+  if (!targetPath) {
+    return { found: false, filePath: null, content: "" };
+  }
+
+  const cacheKey = `${targetPath}::${headingName}`;
+  const cached = transclusionCache.get(cacheKey);
+  if (cached !== undefined) {
+    return { found: true, filePath: targetPath, content: cached };
+  }
+
+  try {
+    const sectionMd = await invoke<string>("read_heading_section", {
+      path: targetPath,
+      heading: headingName || null,
+    });
+    const trimmed = (sectionMd || "").trim();
+    transclusionCache.set(cacheKey, trimmed);
+    return { found: true, filePath: targetPath, content: trimmed };
+  } catch {
+    return { found: false, filePath: targetPath, content: "" };
+  }
 }
 
 /**
@@ -144,7 +220,16 @@ export async function handleWikiLinkTrigger(
 }
 
 /**
- * CodeMirror 6 自动补全源：输入 `[[` 时检索工作区文件名，输入 `[[文件名#` 时检索该文件的全部 H1~H6 标题
+ * 触发 #标签 点击检索
+ */
+export function handleTagClickTrigger(tagName: string) {
+  if (workspaceProvider?.onSearchTag) {
+    workspaceProvider.onSearchTag(tagName);
+  }
+}
+
+/**
+ * CodeMirror 6 自动补全源：输入 `[[` 或 `![[` 时检索工作区文件名，输入 `[[文件名#` 时检索该文件的全部 H1~H6 标题
  */
 export async function wikiLinkCompletionSource(
   context: CompletionContext
@@ -301,11 +386,11 @@ export function setupWikiLinkInteractions(view: EditorView) {
       }
 
       try {
-        const rawContent = await invoke<string>("read_file_content", { path: matched.path });
-        const excerpt = rawContent
-          .replace(/^---[\s\S]*?---\n?/, "")
-          .trim()
-          .slice(0, 260);
+        const sectionText = await invoke<string>("read_heading_section", {
+          path: matched.path,
+          heading: headingName || null,
+        });
+        const excerpt = (sectionText || "").trim().slice(0, 280);
         previewCard.innerHTML = `
           <div class="wiki-preview-header">
             <span class="wiki-preview-title">${escapeHtml(matched.name)}${
@@ -314,7 +399,7 @@ export function setupWikiLinkInteractions(view: EditorView) {
             <span class="wiki-preview-badge">双链预览</span>
           </div>
           <div class="wiki-preview-body">${escapeHtml(excerpt || "(空白文档)")}${
-          rawContent.length > 260 ? "..." : ""
+          sectionText.length > 280 ? "..." : ""
         }</div>
           <div class="wiki-preview-footer">点击跳转 · Alt+点击编辑源码</div>
         `;
@@ -322,7 +407,7 @@ export function setupWikiLinkInteractions(view: EditorView) {
       } catch {
         previewCard.classList.add("hidden");
       }
-    }, 220);
+    }, 200);
   });
 
   view.dom.addEventListener("mouseout", (e: MouseEvent) => {
@@ -340,7 +425,7 @@ export function setupWikiLinkInteractions(view: EditorView) {
 }
 
 /**
- * 文档底部可折叠反向链接（Backlinks）控制器，基于 Rust rayon 多线程 search_backlinks 实时检索
+ * 文档底部可折叠反向链接（Backlinks）控制器 + 局部知识图谱入口
  */
 export class BacklinksController {
   private panelEl: HTMLElement;
@@ -367,9 +452,22 @@ export class BacklinksController {
           <span>反向链接 (Backlinks)</span>
           <span class="backlinks-badge" id="backlinks-count-badge">0</span>
         </div>
-        <svg class="backlinks-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="6 9 12 15 18 9"></polyline>
-        </svg>
+        <div class="backlinks-header-right">
+          <button type="button" class="backlinks-graph-btn" id="backlinks-open-graph-btn" title="打开双链知识关系图谱 (Knowledge Graph)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="6" cy="6" r="3"></circle>
+              <circle cx="18" cy="6" r="3"></circle>
+              <circle cx="12" cy="18" r="3"></circle>
+              <line x1="8.6" y1="7.5" x2="15.4" y2="6.5"></line>
+              <line x1="7.5" y1="8.6" x2="10.5" y2="15.4"></line>
+              <line x1="16.5" y1="8.6" x2="13.5" y2="15.4"></line>
+            </svg>
+            <span>知识图谱</span>
+          </button>
+          <svg class="backlinks-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
       </div>
       <div class="backlinks-list" id="backlinks-list"></div>
     `;
@@ -378,13 +476,20 @@ export class BacklinksController {
     this.listEl = this.panelEl.querySelector("#backlinks-list") as HTMLElement;
     this.countBadgeEl = this.panelEl.querySelector("#backlinks-count-badge") as HTMLElement;
 
-    this.panelEl.querySelector("#backlinks-toggle-header")?.addEventListener("click", () => {
+    this.panelEl.querySelector("#backlinks-toggle-header")?.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("#backlinks-open-graph-btn")) return;
       this.isCollapsed = !this.isCollapsed;
       this.panelEl.classList.toggle("collapsed", this.isCollapsed);
+    });
+
+    this.panelEl.querySelector("#backlinks-open-graph-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      workspaceProvider?.onOpenGraphModal?.();
     });
   }
 
   public async refresh() {
+    clearTransclusionCache();
     if (!workspaceProvider) {
       this.panelEl.classList.add("hidden");
       return;
@@ -412,13 +517,13 @@ export class BacklinksController {
       });
 
       this.countBadgeEl.textContent = String(results.length);
-      if (results.length === 0) {
-        this.panelEl.classList.add("hidden");
-        return;
-      }
-
       this.panelEl.classList.remove("hidden");
       this.listEl.innerHTML = "";
+
+      if (results.length === 0) {
+        this.listEl.innerHTML = `<div class="backlinks-empty-hint">暂无其他笔记引用此文档 · 点击右上角“知识图谱”可总览工作区连接网络</div>`;
+        return;
+      }
 
       results.forEach((item) => {
         const row = document.createElement("div");

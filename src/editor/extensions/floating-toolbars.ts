@@ -22,6 +22,10 @@ export function initFloatingToolbars(
   view: EditorView,
   onOpenFile?: (filePath: string) => void
 ) {
+  // 防止同一 EditorView 重复绑定
+  if ((view as any)._quillaFloatingToolbarsBound) return;
+  (view as any)._quillaFloatingToolbarsBound = true;
+
   // 1. 创建图片微型悬浮工具栏 (Floating Image Toolbar)
   const imgToolbar = document.createElement("div");
   imgToolbar.className = "ty-image-toolbar hidden";
@@ -88,23 +92,38 @@ export function initFloatingToolbars(
   `;
   document.body.appendChild(linkTooltip);
 
-  // 3. 创建选中文本悬浮气泡格式栏 (Selection Bubble Menu)
+  // 3. 创建选中文本悬浮气泡格式栏 (Selection Bubble Menu) — 统一精致 SVG 矢量图标
   const selToolbar = document.createElement("div");
   selToolbar.className = "ty-selection-toolbar hidden";
   selToolbar.innerHTML = `
-    <button type="button" class="ty-toolbar-btn" data-fmt="bold" title="加粗 (Ctrl+B)"><strong>B</strong></button>
-    <button type="button" class="ty-toolbar-btn" data-fmt="italic" title="斜体 (Ctrl+I)"><em>I</em></button>
-    <button type="button" class="ty-toolbar-btn" data-fmt="strike" title="删除线 (Ctrl+Shift+X)"><del>S</del></button>
-    <button type="button" class="ty-toolbar-btn" data-fmt="highlight" title="荧光高亮 (Ctrl+Shift+H)"><span class="fmt-mark-icon">H</span></button>
-    <button type="button" class="ty-toolbar-btn" data-fmt="code" title="行内代码 (Ctrl+E)"><code>&lt;/&gt;</code></button>
-    <button type="button" class="ty-toolbar-btn" data-fmt="math" title="行内公式 ($)"><span>∑</span></button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="bold" title="加粗 (Ctrl+B)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"></path></svg>
+    </button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="italic" title="斜体 (Ctrl+I)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="4" x2="10" y2="4"></line><line x1="14" y1="20" x2="5" y2="20"></line><line x1="15" y1="4" x2="9" y2="20"></line></svg>
+    </button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="strike" title="删除线 (Ctrl+Shift+X)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4H9a3 3 0 0 0-2.83 4"></path><path d="M14 12a4 4 0 0 1 0 8H6"></path><line x1="4" y1="12" x2="20" y2="12"></line></svg>
+    </button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="highlight" title="荧光高亮 (Ctrl+Shift+H)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11-6 6v3h9l3-3"></path><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"></path></svg>
+    </button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="code" title="行内代码 (Ctrl+E)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+    </button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="math" title="行内公式 (Ctrl+M)">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 4H6l6 8-6 8h12"></path></svg>
+    </button>
     <button type="button" class="ty-toolbar-btn" data-fmt="link" title="超链接 (Ctrl+K)">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+    </button>
+    <button type="button" class="ty-toolbar-btn" data-fmt="wikilink" title="转为双链笔记 [[...]]">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"></path><path d="M15 7h2a5 5 0 1 1 0 10h-2"></path><line x1="8" y1="12" x2="16" y2="12"></line></svg>
     </button>
     <div class="ty-toolbar-divider"></div>
-    <button type="button" class="ty-toolbar-btn" data-heading="1" title="一级标题">H1</button>
-    <button type="button" class="ty-toolbar-btn" data-heading="2" title="二级标题">H2</button>
-    <button type="button" class="ty-toolbar-btn" data-heading="3" title="三级标题">H3</button>
+    <button type="button" class="ty-toolbar-btn" data-heading="1" title="一级标题 (Ctrl+1)">H1</button>
+    <button type="button" class="ty-toolbar-btn" data-heading="2" title="二级标题 (Ctrl+2)">H2</button>
+    <button type="button" class="ty-toolbar-btn" data-heading="3" title="三级标题 (Ctrl+3)">H3</button>
   `;
   document.body.appendChild(selToolbar);
 
@@ -207,8 +226,8 @@ export function initFloatingToolbars(
         return;
       }
       selToolbar.classList.remove("hidden");
-      const tbWidth = selToolbar.offsetWidth || 280;
-      const tbHeight = selToolbar.offsetHeight || 32;
+      const tbWidth = selToolbar.offsetWidth || 310;
+      const tbHeight = selToolbar.offsetHeight || 34;
       let top = Math.min(startCoords.top, endCoords.top) - tbHeight - 8;
       if (top < 38) {
         top = Math.max(startCoords.bottom, endCoords.bottom) + 8;
@@ -257,7 +276,15 @@ export function initFloatingToolbars(
     else if (fmt === "highlight") smartToggleFormat(view, "==");
     else if (fmt === "code") smartToggleFormat(view, "`");
     else if (fmt === "math") smartToggleFormat(view, "$");
-    else if (fmt === "link") {
+    else if (fmt === "wikilink") {
+      const sel = view.state.selection.main;
+      const text = view.state.sliceDoc(sel.from, sel.to) || "笔记名称";
+      const insertStr = `[[${text}]]`;
+      view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: insertStr },
+        selection: { anchor: sel.from + 2, head: sel.from + 2 + text.length },
+      });
+    } else if (fmt === "link") {
       const sel = view.state.selection.main;
       const text = view.state.sliceDoc(sel.from, sel.to) || "链接文字";
       const insertStr = `[${text}](https://)`;

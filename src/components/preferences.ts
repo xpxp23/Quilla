@@ -5,6 +5,7 @@ export interface AppPreferences {
   showCodeLineNumbers: boolean;
   compactLinkExpansion: boolean;
   inlineMathTooltip: boolean;
+  autoHideSingleTab: boolean;
   autoSaveMode: "off" | "onBlur" | "interval";
   autoSaveIntervalSec: number;
   imageFolderMode: "assets" | "filename.assets";
@@ -19,6 +20,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   showCodeLineNumbers: true,
   compactLinkExpansion: true,
   inlineMathTooltip: true,
+  autoHideSingleTab: false,
   autoSaveMode: "off",
   autoSaveIntervalSec: 30,
   imageFolderMode: "assets",
@@ -66,7 +68,9 @@ export function applyPreferencesToDOM(prefs: AppPreferences = currentPrefs) {
   root.style.setProperty("--editor-font-size", `${prefs.fontSize}px`);
   root.style.setProperty("--editor-line-height", String(prefs.lineHeight));
   root.style.setProperty("--editor-max-width", prefs.maxWidth);
-  document.body.classList.toggle("show-code-line-numbers", prefs.showCodeLineNumbers);
+  root.classList.toggle("show-code-line-numbers", prefs.showCodeLineNumbers);
+  document.body?.classList.toggle("show-code-line-numbers", prefs.showCodeLineNumbers);
+  document.body?.classList.toggle("auto-hide-single-tab", prefs.autoHideSingleTab);
 }
 
 let prefModalEl: HTMLElement | null = null;
@@ -131,6 +135,16 @@ export function openPreferencesModal() {
               </select>
             </div>
           </div>
+
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">单标签时自动收起顶部标签栏</span>
+              <span class="pref-desc">仅打开 1 篇文档且未开启分屏时自动隐藏标签栏，呈现极致留白</span>
+            </div>
+            <div class="pref-control">
+              <input type="checkbox" id="pref-autohide-tab" class="pref-checkbox" />
+            </div>
+          </div>
         </div>
 
         <div class="pref-section">
@@ -138,7 +152,7 @@ export function openPreferencesModal() {
           <div class="pref-row">
             <div class="pref-label-group">
               <span class="pref-label">显示代码块行号</span>
-              <span class="pref-desc">在多语言围栏代码块左侧展示对齐行号</span>
+              <span class="pref-desc">在多语言围栏代码块左侧展示对齐行号（点击行号可选中整行）</span>
             </div>
             <div class="pref-control">
               <input type="checkbox" id="pref-code-linenum" class="pref-checkbox" />
@@ -171,7 +185,7 @@ export function openPreferencesModal() {
           <div class="pref-row">
             <div class="pref-label-group">
               <span class="pref-label">自动保存策略</span>
-              <span class="pref-desc">对已命名本地文档自动执行原子写入落盘</span>
+              <span class="pref-desc">对已命名本地文档自动执行原子写入落盘（配合时间机器历史快照）</span>
             </div>
             <div class="pref-control">
               <select id="pref-autosave-mode" class="pref-select">
@@ -235,6 +249,11 @@ export function openPreferencesModal() {
     updatePreferences({ maxWidth: maxWidthSelect.value as AppPreferences["maxWidth"] });
   });
 
+  const autoHideTabCheck = prefModalEl.querySelector("#pref-autohide-tab") as HTMLInputElement;
+  autoHideTabCheck.addEventListener("change", () => {
+    updatePreferences({ autoHideSingleTab: autoHideTabCheck.checked });
+  });
+
   const codeLineNumCheck = prefModalEl.querySelector("#pref-code-linenum") as HTMLInputElement;
   codeLineNumCheck.addEventListener("change", () => {
     updatePreferences({ showCodeLineNumbers: codeLineNumCheck.checked });
@@ -285,6 +304,9 @@ function syncFormWithPreferences(modal: HTMLElement, prefs: AppPreferences) {
 
   const maxWidthSelect = modal.querySelector("#pref-max-width") as HTMLSelectElement;
   if (maxWidthSelect) maxWidthSelect.value = prefs.maxWidth;
+
+  const autoHideTabCheck = modal.querySelector("#pref-autohide-tab") as HTMLInputElement;
+  if (autoHideTabCheck) autoHideTabCheck.checked = prefs.autoHideSingleTab;
 
   const codeLineNumCheck = modal.querySelector("#pref-code-linenum") as HTMLInputElement;
   if (codeLineNumCheck) codeLineNumCheck.checked = prefs.showCodeLineNumbers;
