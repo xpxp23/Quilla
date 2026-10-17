@@ -6,17 +6,24 @@ import {
   ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { Range, Text } from "@codemirror/state";
+import { Range } from "@codemirror/state";
 import { imeState } from "./ime-guard";
-import { isTableDelimiter } from "./table-editor";
-import { findMermaidBlocks, MermaidBlock } from "./mermaid-extension";
-import { findMathBlocks, MathBlock } from "./math-block-extension";
 import { tokenizeCodeLine } from "./code-highlighter";
 import { getPreferences } from "../../components/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import katex from "katex";
 import { centerElementInTypewriter } from "./typewriter-mode";
 import { forceRefreshEffect } from "./refresh-effect";
+import {
+  getDocStructureFromState,
+  isTableDelimiter,
+  stripInlineMarkdown,
+  parseBalancedLinksAndImages,
+  CalloutType,
+} from "./doc-structure";
+import { parseWikiLinksInLine, handleWikiLinkTrigger } from "./wiki-link";
+
+export { stripInlineMarkdown };
 
 export let activeDocumentPath: string | null = null;
 const imageBase64Cache = new Map<string, string>();
@@ -158,6 +165,156 @@ class BulletWidget extends WidgetType {
 
   eq(other: BulletWidget) {
     return other.level === this.level && other.clickPos === this.clickPos;
+  }
+}
+
+// 2.6 有序列表等宽排版序号 Widget (tabular-nums 右对齐徽标)
+class OrderedListMarkerWidget extends WidgetType {
+  constructor(
+    readonly numText: string,
+    readonly level: number,
+    readonly clickPos: number
+  ) {
+    super();
+  }
+
+  toDOM(view: EditorView) {
+    const span = document.createElement("span");
+    span.className = `md-ordered-marker md-ordered-l${Math.min(4, this.level)}`;
+    span.textContent = `${this.numText}. `;
+    span.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      view.dispatch({ selection: { anchor: this.clickPos } });
+      view.focus();
+    });
+    return span;
+  }
+
+  eq(other: OrderedListMarkerWidget) {
+    return (
+      other.numText === this.numText &&
+      other.level === this.level &&
+      other.clickPos === this.clickPos
+    );
+  }
+}
+
+// 2.7 GitHub 风格 Callout / Admonition 头部卡片 Widget (> [!NOTE] / TIP / IMPORTANT / WARNING / CAUTION)
+const CALLOUT_ICONS: Record<CalloutType, string> = {
+  note: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
+  tip: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>`,
+  important: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`,
+  warning: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  caution: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+};
+
+class CalloutHeaderWidget extends WidgetType {
+  constructor(
+    readonly calloutType: CalloutType,
+    readonly title: string,
+    readonly clickPos: number
+  ) {
+    super();
+  }
+
+  ignoreEvent(_event: Event): boolean {
+    return true;
+  }
+
+  toDOM(view: EditorView) {
+    const bar = document.createElement("div");
+    bar.className = `cm-callout-header-widget cm-callout-header-${this.calloutType}`;
+    bar.title = "点击编辑 Callout 标题与类型";
+
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "cm-callout-icon";
+    iconSpan.innerHTML = CALLOUT_ICONS[this.calloutType] || CALLOUT_ICONS.note;
+
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "cm-callout-title";
+    titleSpan.textContent = this.title;
+
+    const badgeSpan = document.createElement("span");
+    badgeSpan.className = "cm-callout-badge";
+    badgeSpan.textContent = this.calloutType.toUpperCase();
+
+    bar.appendChild(iconSpan);
+    bar.appendChild(titleSpan);
+    bar.appendChild(badgeSpan);
+
+    bar.addEventListener("click", (e) => {
+      e.stopPropagation();
+      view.dispatch({ selection: { anchor: this.clickPos } });
+      view.focus();
+    });
+
+    return bar;
+  }
+
+  eq(other: CalloutHeaderWidget) {
+    return (
+      other.calloutType === this.calloutType &&
+      other.title === this.title &&
+      other.clickPos === this.clickPos
+    );
+  }
+}
+
+// 2.8 双向链接 [[Wiki Link]] 胶囊 Widget
+class WikiLinkWidget extends WidgetType {
+  constructor(
+    readonly targetDoc: string,
+    readonly heading: string,
+    readonly displayText: string,
+    readonly clickPos: number
+  ) {
+    super();
+  }
+
+  ignoreEvent(_event: Event): boolean {
+    return true;
+  }
+
+  toDOM(view: EditorView) {
+    const span = document.createElement("span");
+    span.className = "cm-wiki-link";
+    span.dataset.wikiDoc = this.targetDoc;
+    span.dataset.wikiHeading = this.heading;
+    span.title = `双向链接: ${this.targetDoc || "当前文档"}${
+      this.heading ? "#" + this.heading : ""
+    } (点击跳转，Alt+点击编辑源码)`;
+
+    const icon = document.createElement("span");
+    icon.className = "cm-wiki-link-icon";
+    icon.textContent = "🔗";
+
+    const label = document.createElement("span");
+    label.className = "cm-wiki-link-label";
+    label.textContent = this.displayText;
+
+    span.appendChild(icon);
+    span.appendChild(label);
+
+    span.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (e.altKey) {
+        view.dispatch({ selection: { anchor: this.clickPos + 2 } });
+        view.focus();
+        return;
+      }
+      handleWikiLinkTrigger(view, this.targetDoc, this.heading);
+    });
+
+    return span;
+  }
+
+  eq(other: WikiLinkWidget) {
+    return (
+      other.targetDoc === this.targetDoc &&
+      other.heading === this.heading &&
+      other.displayText === this.displayText &&
+      other.clickPos === this.clickPos
+    );
   }
 }
 
@@ -499,20 +656,6 @@ class HorizontalRuleWidget extends WidgetType {
   }
 }
 
-/**
- * 清理标题中的行内 Markdown 语法定界符及行尾可选的 ATX # 号，用于 TOC 与侧边栏大纲干净展示
- */
-export function stripInlineMarkdown(raw: string): string {
-  return raw
-    .replace(/\s+#+\s*$/, "")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/(\*{1,3}|_{1,3}|~~|==)([^*_~=]+)\1/g, "$2")
-    .replace(/\$([^$]+)\$/g, "$1")
-    .trim();
-}
-
 // 5.5 动态 [TOC] 目录树 Widget
 class TocWidget extends WidgetType {
   constructor(readonly linePos: number, readonly headingsSignature: string) {
@@ -535,50 +678,24 @@ class TocWidget extends WidgetType {
     title.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>目录 (Table of Contents)</span>`;
     card.appendChild(title);
 
-    const doc = view.state.doc;
+    const structure = getDocStructureFromState(view.state);
     const list = document.createElement("ul");
     list.className = "cm-toc-list";
 
-    let hasHeadings = false;
-    let inFence = false;
-    let fenceChar = "";
-    let startLine = 1;
-    if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
-      for (let k = 2; k <= Math.min(doc.lines, 35); k++) {
-        const t = doc.line(k).text.trim();
-        if (t === "---" || t === "...") {
-          startLine = k + 1;
-          break;
-        }
-      }
-    }
-
-    for (let i = startLine; i <= doc.lines; i++) {
-      const line = doc.line(i);
-      const trimmed = line.text.trim();
-      if (/^(```+|~~~+)/.test(trimmed)) {
-        const marker = trimmed.startsWith("`") ? "`" : "~";
-        if (!inFence) {
-          inFence = true;
-          fenceChar = marker;
-        } else if (marker === fenceChar) {
-          inFence = false;
-        }
-        continue;
-      }
-      if (inFence) continue;
-
-      const m = line.text.match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
-      if (m) {
-        const headingText = stripInlineMarkdown(m[2]);
-        if (!headingText) continue;
-        hasHeadings = true;
-        const level = m[1].length;
+    if (structure.headings.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.color = "var(--control-text-color, #888)";
+      empty.style.fontSize = "12px";
+      empty.textContent = "文档暂无标题";
+      card.appendChild(empty);
+    } else {
+      const minLvl = Math.min(...structure.headings.map((h) => h.level));
+      for (const h of structure.headings) {
         const li = document.createElement("li");
-        li.className = `cm-toc-item cm-toc-level-${level}`;
-        li.style.paddingLeft = `${(level - 1) * 16}px`;
-        li.textContent = headingText;
-        const targetPos = line.from;
+        li.className = `cm-toc-item cm-toc-level-${h.level}`;
+        li.style.paddingLeft = `${Math.max(0, h.level - minLvl) * 16}px`;
+        li.textContent = h.text;
+        const targetPos = h.from;
         li.addEventListener("click", (e) => {
           e.stopPropagation();
           view.dispatch({
@@ -589,15 +706,6 @@ class TocWidget extends WidgetType {
         });
         list.appendChild(li);
       }
-    }
-
-    if (!hasHeadings) {
-      const empty = document.createElement("div");
-      empty.style.color = "var(--control-text-color, #888)";
-      empty.style.fontSize = "12px";
-      empty.textContent = "文档暂无标题";
-      card.appendChild(empty);
-    } else {
       card.appendChild(list);
     }
 
@@ -662,6 +770,7 @@ interface InlineToken {
     | "code"
     | "math"
     | "image"
+    | "wiki_link"
     | "bold"
     | "italic"
     | "bold_italic"
@@ -672,135 +781,13 @@ interface InlineToken {
     | "footnote_ref"
     | "link"
     | "task"
-    | "bullet";
+    | "bullet"
+    | "ordered_marker";
   start: number;
   end: number;
   content: string;
   isOpaque?: boolean;
   data?: any;
-}
-
-interface CodeRange {
-  startLine: number;
-  endLine: number;
-  lang: string;
-  fencePrefix: string;
-  codeText: string;
-  unclosed: boolean;
-}
-
-interface CachedDocStructure {
-  doc: Text;
-  frontMatterEndLine: number;
-  codeRanges: CodeRange[];
-  mermaidBlocks: MermaidBlock[];
-  mathBlocks: MathBlock[];
-  headingsSignature: string;
-}
-
-let cachedStructure: CachedDocStructure | null = null;
-
-function getDocStructure(view: EditorView): CachedDocStructure {
-  const doc = view.state.doc;
-  if (cachedStructure && cachedStructure.doc === doc) {
-    return cachedStructure;
-  }
-
-  const mermaidBlocks = findMermaidBlocks(view.state);
-  const mathBlocks = findMathBlocks(view.state);
-
-  let frontMatterEndLine = 0;
-  if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
-    const limit = Math.min(doc.lines, 35);
-    for (let i = 2; i <= limit; i++) {
-      const t = doc.line(i).text.trim();
-      if (t === "---" || t === "...") {
-        frontMatterEndLine = i;
-        break;
-      }
-    }
-  }
-
-  const codeRanges: CodeRange[] = [];
-  let inCode = false;
-  let inMermaid = false;
-  let codeStart = 0;
-  let codeLang = "";
-  let fenceChar = "";
-  let fencePrefix = "```";
-  let codeLines: string[] = [];
-
-  for (let i = Math.max(1, frontMatterEndLine + 1); i <= doc.lines; i++) {
-    const l = doc.line(i);
-    const trimmed = l.text.trim();
-    if (inMermaid) {
-      if (/^(```+|~~~+)$/.test(trimmed)) {
-        inMermaid = false;
-      }
-      continue;
-    }
-    if (!inCode) {
-      if (/^(```+|~~~+)\s*mermaid/i.test(trimmed)) {
-        inMermaid = true;
-        continue;
-      }
-      const match = trimmed.match(/^(```+|~~~+)(\s*)([^\s`~]*).*$/);
-      if (match) {
-        inCode = true;
-        codeStart = i;
-        fenceChar = match[1][0];
-        fencePrefix = match[1] + (match[2] || "");
-        codeLang = match[3] || "";
-        codeLines = [];
-      }
-    } else {
-      const isClose =
-        (fenceChar === "`" && /^```+$/.test(trimmed)) ||
-        (fenceChar === "~" && /^~~~+$/.test(trimmed));
-      if (isClose) {
-        inCode = false;
-        codeRanges.push({
-          startLine: codeStart,
-          endLine: i,
-          lang: codeLang,
-          fencePrefix,
-          codeText: codeLines.join("\n"),
-          unclosed: false,
-        });
-      } else {
-        codeLines.push(l.text);
-      }
-    }
-  }
-
-  if (inCode && codeStart > 0) {
-    codeRanges.push({
-      startLine: codeStart,
-      endLine: doc.lines,
-      lang: codeLang,
-      fencePrefix,
-      codeText: codeLines.join("\n"),
-      unclosed: true,
-    });
-  }
-
-  let headingsSignature = "";
-  for (let i = Math.max(1, frontMatterEndLine + 1); i <= doc.lines; i++) {
-    const t = doc.line(i).text;
-    if (/^\s*(?:>\s*)*#{1,6}\s+/.test(t)) {
-      headingsSignature += `${i}:${t}|`;
-    }
-  }
-
-  cachedStructure = {
-    doc,
-    frontMatterEndLine,
-    codeRanges,
-    mermaidBlocks,
-    mathBlocks,
-    headingsSignature,
-  };
-  return cachedStructure;
 }
 
 let inlineMathTooltipEl: HTMLElement | null = null;
@@ -867,23 +854,24 @@ function buildDecorations(view: EditorView): DecorationSet {
   const isMultiLineSelection =
     !selection.empty && doc.lineAt(selection.from).number !== doc.lineAt(selection.to).number;
 
+  // O(1) 读取缓存结构，彻底消除按键与移动光标时的重复全文扫描
   const {
     frontMatterEndLine,
     codeRanges,
     mermaidBlocks,
     mathBlocks,
+    callouts,
     headingsSignature,
-  } = getDocStructure(view);
+  } = getDocStructureFromState(view.state);
 
   const prefs = getPreferences();
   let activeInlineMath: { latex: string; from: number; to: number } | null = null;
 
-  // 计算视口可见行区间（外扩 45 行缓冲）
   const visibleLineIntervals: Array<{ startLine: number; endLine: number }> = [];
   if (view.visibleRanges && view.visibleRanges.length > 0) {
     for (const vr of view.visibleRanges) {
-      const sLine = Math.max(1, doc.lineAt(vr.from).number - 45);
-      const eLine = Math.min(doc.lines, doc.lineAt(vr.to).number + 45);
+      const sLine = Math.max(1, doc.lineAt(vr.from).number - 40);
+      const eLine = Math.min(doc.lines, doc.lineAt(vr.to).number + 40);
       if (
         visibleLineIntervals.length > 0 &&
         sLine <= visibleLineIntervals[visibleLineIntervals.length - 1].endLine + 1
@@ -900,16 +888,8 @@ function buildDecorations(view: EditorView): DecorationSet {
     visibleLineIntervals.push({ startLine: 1, endLine: doc.lines });
   }
 
-  const isLineVisible = (ln: number): boolean => {
-    for (const iv of visibleLineIntervals) {
-      if (ln >= iv.startLine && ln <= iv.endLine) return true;
-    }
-    return false;
-  };
-
   for (const interval of visibleLineIntervals) {
     for (let lineNum = interval.startLine; lineNum <= interval.endLine; lineNum++) {
-      if (!isLineVisible(lineNum)) continue;
       const line = doc.line(lineNum);
       const text = line.text;
       const trimmed = text.trim();
@@ -926,7 +906,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 2.1 检查是否位于普通代码块中（含多语言词法高亮与行号属性）
+      // 2.1 普通代码块
       const codeRange = codeRanges.find((r) => lineNum >= r.startLine && lineNum <= r.endLine);
       if (codeRange) {
         if (lineNum === codeRange.startLine) {
@@ -979,7 +959,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 2.15 Mermaid 流程图块
+      // 2.15 Mermaid 流程图块（编辑态下底部代码块与预览卡无缝直角衔接）
       const mermaidBlock = mermaidBlocks.find((b) => lineNum >= b.startLine && lineNum <= b.endLine);
       if (mermaidBlock) {
         const isEditingThisMermaid =
@@ -988,7 +968,11 @@ function buildDecorations(view: EditorView): DecorationSet {
           if (lineNum === mermaidBlock.startLine) {
             addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-first-line" }));
           } else if (lineNum === mermaidBlock.endLine) {
-            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-last-line" }));
+            addDeco(
+              line.from,
+              line.from,
+              Decoration.line({ class: "cm-code-block-last-line cm-live-preview-attached" })
+            );
           } else {
             addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-line" }));
           }
@@ -1005,7 +989,11 @@ function buildDecorations(view: EditorView): DecorationSet {
           if (lineNum === mathBlock.startLine) {
             addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-first-line" }));
           } else if (lineNum === mathBlock.endLine) {
-            addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-last-line" }));
+            addDeco(
+              line.from,
+              line.from,
+              Decoration.line({ class: "cm-code-block-last-line cm-live-preview-attached" })
+            );
           } else {
             addDeco(line.from, line.from, Decoration.line({ class: "cm-code-block-line" }));
           }
@@ -1014,7 +1002,7 @@ function buildDecorations(view: EditorView): DecorationSet {
       }
 
       // 2.2 表格行交由专职 StateField 处理
-      if (trimmed.startsWith("|") || isTableDelimiter(trimmed)) {
+      if ((trimmed.startsWith("|") || isTableDelimiter(trimmed)) && !/^\s*>/.test(text)) {
         continue;
       }
 
@@ -1075,36 +1063,75 @@ function buildDecorations(view: EditorView): DecorationSet {
         addDeco(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
       }
 
+      // 2.48 GitHub 风格 Callout / Admonition 块渲染 (> [!NOTE] / TIP / IMPORTANT / WARNING / CAUTION)
+      const activeCallout = callouts.find((c) => lineNum >= c.startLine && lineNum <= c.endLine);
+      if (activeCallout) {
+        const isFirstCalloutLine = lineNum === activeCallout.startLine;
+        const isLastCalloutLine = lineNum === activeCallout.endLine;
+        const calloutClasses = [
+          "cm-blockquote",
+          "cm-callout-line",
+          `cm-callout-${activeCallout.calloutType}`,
+          isFirstCalloutLine ? "cm-blockquote-first cm-callout-first" : "",
+          isLastCalloutLine ? "cm-blockquote-last cm-callout-last" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        addDeco(line.from, line.from, Decoration.line({ class: calloutClasses }));
+
+        if (isFirstCalloutLine) {
+          const isCursorOnCalloutHeader = cursorLine === lineNum && !isMultiLineSelection;
+          if (!isCursorOnCalloutHeader) {
+            addDeco(
+              line.from,
+              line.to,
+              Decoration.replace({
+                widget: new CalloutHeaderWidget(
+                  activeCallout.calloutType,
+                  activeCallout.title,
+                  line.to
+                ),
+              })
+            );
+            continue;
+          }
+        }
+      }
+
       // 2.5 引用块 (> Quote)
       const quoteMatch = text.match(/^(\s*(?:> ?)+)/);
       if (quoteMatch) {
         const quotePrefixLen = quoteMatch[0].length;
         const quoteLevel = (quoteMatch[0].match(/>/g) || []).length;
-        const isPrevQuote =
-          lineNum > 1 && /^\s*>/.test(doc.line(lineNum - 1).text);
-        const isNextQuote =
-          lineNum < doc.lines && /^\s*>/.test(doc.line(lineNum + 1).text);
-        const posClasses = [
-          `cm-blockquote`,
-          `cm-blockquote-level-${Math.min(3, quoteLevel)}`,
-          !isPrevQuote ? "cm-blockquote-first" : "",
-          !isNextQuote ? "cm-blockquote-last" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
+        if (!activeCallout) {
+          const isPrevQuote =
+            lineNum > 1 && /^\s*>/.test(doc.line(lineNum - 1).text);
+          const isNextQuote =
+            lineNum < doc.lines && /^\s*>/.test(doc.line(lineNum + 1).text);
+          const posClasses = [
+            `cm-blockquote`,
+            `cm-blockquote-level-${Math.min(3, quoteLevel)}`,
+            !isPrevQuote ? "cm-blockquote-first" : "",
+            !isNextQuote ? "cm-blockquote-last" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+
+          addDeco(
+            line.from,
+            line.from,
+            Decoration.line({
+              class: posClasses,
+            })
+          );
+        }
 
         const isCursorAtQuotePrefix =
           !isMultiLineSelection &&
           cursorHead >= line.from &&
           cursorHead <= line.from + quotePrefixLen;
 
-        addDeco(
-          line.from,
-          line.from,
-          Decoration.line({
-            class: posClasses,
-          })
-        );
         if (!isCursorAtQuotePrefix) {
           if (quotePrefixLen > 0) {
             addDeco(line.from, line.from + quotePrefixLen, Decoration.replace({}));
@@ -1121,7 +1148,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 
       const restText = text.slice(prefixEnd);
 
-      // 2.6 标题识别 (# Title，支持顶层标题及引用块内标题 > ### Title)
+      // 2.6 标题识别 (# Title)
       const headerMatch = restText.match(/^(#{1,6})\s+/);
       if (headerMatch) {
         const depth = headerMatch[1].length;
@@ -1149,7 +1176,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 
       const tokens: InlineToken[] = [];
 
-      // 2.68 列表项识别与多级缩进引导线
+      // 2.68 列表项识别（无序列表圆点 Widget + 有序列表等宽对齐序号 Widget + 任务列表复选框 Widget）
       const afterQuoteAndHeader = text.slice(prefixEnd);
       const taskMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]\s+\[)([ xX])(\]\s*)/);
       const listMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]|\d+\.)(\s+)/);
@@ -1211,6 +1238,18 @@ function buildDecorations(view: EditorView): DecorationSet {
             isOpaque: true,
             data: { level },
           });
+        } else if (/^\d+\.$/.test(marker)) {
+          const markerStart = prefixEnd + indentSpaces;
+          const markerEnd = prefixEnd + listMatch[0].length;
+          const numText = marker.slice(0, -1);
+          tokens.push({
+            type: "ordered_marker",
+            start: markerStart,
+            end: markerEnd,
+            content: listMatch[0].slice(indentSpaces),
+            isOpaque: true,
+            data: { numText, level },
+          });
         }
         prefixEnd += listMatch[0].length;
       }
@@ -1242,17 +1281,32 @@ function buildDecorations(view: EditorView): DecorationSet {
         });
       }
 
-      const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
-      while ((m = imgRegex.exec(text)) !== null) {
-        if (m.index < prefixEnd) continue;
+      // 双向知识库链接 [[Wiki Links]]
+      const wikiLinks = parseWikiLinksInLine(text, prefixEnd);
+      for (const wl of wikiLinks) {
         tokens.push({
-          type: "image",
-          start: m.index,
-          end: m.index + m[0].length,
-          content: m[0],
+          type: "wiki_link",
+          start: wl.start,
+          end: wl.end,
+          content: wl.raw,
           isOpaque: true,
-          data: { alt: m[1], src: m[2], width: "", align: "left" },
+          data: wl,
         });
+      }
+
+      // 平衡括号图片与超链接提取
+      const balancedMatches = parseBalancedLinksAndImages(text, prefixEnd);
+      for (const bm of balancedMatches) {
+        if (bm.isImage) {
+          tokens.push({
+            type: "image",
+            start: bm.start,
+            end: bm.end,
+            content: bm.raw,
+            isOpaque: true,
+            data: { alt: bm.label, src: bm.url, width: "", align: "left" },
+          });
+        }
       }
 
       const htmlImgRegex = /<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi;
@@ -1324,22 +1378,20 @@ function buildDecorations(view: EditorView): DecorationSet {
         return true;
       };
 
-      // 2.8 第二梯队：收集可组合与嵌套的行内富文本格式 Token
-      const linkRegex = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
-      while ((m = linkRegex.exec(text)) !== null) {
-        if (m.index < prefixEnd) continue;
-        if (m.index > 0 && text[m.index - 1] === "!") continue;
-        const s = m.index;
-        const e = m.index + m[0].length;
+      // 2.8 第二梯队：收集平衡括号超链接与可组合富文本格式 Token
+      for (const bm of balancedMatches) {
+        if (bm.isImage) continue;
+        const s = bm.start;
+        const e = bm.end;
         if (OverlapsOpaque(s, e)) continue;
-        const textLen = m[1].length;
+        const textLen = bm.label.length;
         if (canPlaceDelimiters(s, s + 1, s + 1 + textLen, e)) {
           acceptedTokens.push({
             type: "link",
             start: s,
             end: e,
-            content: m[0],
-            data: { text: m[1], url: m[2] },
+            content: bm.raw,
+            data: { text: bm.label, url: bm.url },
           });
         }
       }
@@ -1482,6 +1534,37 @@ function buildDecorations(view: EditorView): DecorationSet {
             );
           } else {
             addDeco(s, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "ordered_marker") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new OrderedListMarkerWidget(tok.data.numText, tok.data.level, s),
+              })
+            );
+          } else {
+            addDeco(s, e, Decoration.mark({ class: "cm-md-delimiter" }));
+          }
+        } else if (tok.type === "wiki_link") {
+          if (!isCursorInside) {
+            addDeco(
+              s,
+              e,
+              Decoration.replace({
+                widget: new WikiLinkWidget(
+                  tok.data.targetDoc,
+                  tok.data.heading,
+                  tok.data.displayText,
+                  s
+                ),
+              })
+            );
+          } else {
+            addDeco(s, s + 2, Decoration.mark({ class: "cm-md-delimiter" }));
+            addDeco(s + 2, e - 2, Decoration.mark({ class: "cm-wiki-link-src" }));
+            addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
           }
         } else if (tok.type === "image") {
           if (!isCursorInside) {

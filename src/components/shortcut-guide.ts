@@ -13,7 +13,7 @@ export function formatModKey(): string {
 }
 
 interface ShortcutItem {
-  category: "常用操作" | "文本排版" | "标题层级" | "表格与图表" | "视图切换";
+  category: "常用操作" | "文本排版" | "标题层级" | "表格与图表" | "视图与多标签";
   name: string;
   keys: string[];
   desc?: string;
@@ -23,7 +23,7 @@ function getShortcutList(): ShortcutItem[] {
   const mod = formatModKey();
   return [
     // 常用操作
-    { category: "常用操作", name: "新建文档", keys: [mod, "N"] },
+    { category: "常用操作", name: "新建文档标签", keys: [mod, "N"] },
     { category: "常用操作", name: "新建独立窗口", keys: [mod, "Shift", "N"] },
     { category: "常用操作", name: "打开文件", keys: [mod, "O"] },
     { category: "常用操作", name: "保存文档", keys: [mod, "S"] },
@@ -35,13 +35,16 @@ function getShortcutList(): ShortcutItem[] {
     { category: "常用操作", name: "打印 / 导出 PDF", keys: [mod, "Shift", "P"] },
 
     // 文本排版
+    { category: "文本排版", name: "唤起斜杠命令面板", keys: ["/"], desc: "一键插入表格/流程图/Callout/公式" },
+    { category: "文本排版", name: "双向链接补全", keys: ["[["], desc: "[[文档#标题]] 知识库双向引用" },
     { category: "文本排版", name: "加粗", keys: [mod, "B"], desc: "**文本** (支持智能反解)" },
     { category: "文本排版", name: "斜体", keys: [mod, "I"], desc: "*文本* (支持智能反解)" },
     { category: "文本排版", name: "行内代码", keys: [mod, "E"], desc: `或 ${mod}+\`` },
     { category: "文本排版", name: "删除线", keys: [mod, "Shift", "X"], desc: "~~删除文本~~" },
     { category: "文本排版", name: "荧光高亮", keys: [mod, "Shift", "H"], desc: "==高亮==" },
-    { category: "文本排版", name: "插入超链接", keys: [mod, "K"], desc: "[文字](链接)" },
+    { category: "文本排版", name: "插入超链接", keys: [mod, "K"], desc: "[文字](链接) / 表格内同样支持" },
     { category: "文本排版", name: "插入图片", keys: [mod, "Shift", "I"], desc: "保留选中文本为说明" },
+    { category: "文本排版", name: "多级列表缩进 / 降级", keys: ["Tab"], desc: "Shift+Tab 降级 (自动重排多级序号)" },
 
     // 标题层级
     { category: "标题层级", name: "一级标题 (H1)", keys: [mod, "1"], desc: `支持 ${mod}+Alt+1` },
@@ -53,19 +56,22 @@ function getShortcutList(): ShortcutItem[] {
     { category: "标题层级", name: "清除标题 (正文)", keys: [mod, "0"], desc: `支持 ${mod}+Alt+0` },
 
     // 表格与图表
-    { category: "表格与图表", name: "插入表格", keys: [mod, "Alt", "T"], desc: "插入可视化交互表格" },
+    { category: "表格与图表", name: "插入表格", keys: [mod, "Alt", "T"], desc: "支持拖拽行列换位与拖拽列宽" },
     { category: "表格与图表", name: "表格下方插入行", keys: [mod, "Enter"], desc: "末格 Tab/Enter 自动加行" },
-    { category: "表格与图表", name: "表格删除当前行", keys: [mod, "Shift", "Backspace"] },
+    { category: "表格与图表", name: "表格删除当前行", keys: [mod, "Shift", "Backspace"], desc: "完美支持 Ctrl+Z 撤销" },
     { category: "表格与图表", name: "单元格内换行", keys: ["Shift", "Enter"], desc: "自动插入安全 <br>" },
     { category: "表格与图表", name: "插入代码块", keys: [mod, "Shift", "K"], desc: "点击右上角切换语言" },
     { category: "表格与图表", name: "插入数学公式块", keys: [mod, "Shift", "M"], desc: "$$ 独立公式块 $$" },
 
-    // 视图切换
-    { category: "视图切换", name: "打字机模式", keys: ["F9"], desc: "当前行平滑锁频居中" },
-    { category: "视图切换", name: "专注模式", keys: ["F8"], desc: "当前块高清高亮，其余淡化" },
-    { category: "视图切换", name: "切换源码模式", keys: [mod, "/"], desc: "所见即所得 / 源码切换" },
-    { category: "视图切换", name: "展开/收拢侧边栏", keys: [mod, "Shift", "L"] },
-    { category: "视图切换", name: "快捷键速查指南", keys: ["F1"] },
+    // 视图与多标签
+    { category: "视图与多标签", name: "左右分屏对比编辑", keys: [mod, "\\"], desc: "双栏对照阅读与协同写作" },
+    { category: "视图与多标签", name: "切换下一个标签页", keys: [mod, "Tab"], desc: "保留独立 Undo 栈与滚动位置" },
+    { category: "视图与多标签", name: "关闭当前标签页", keys: [mod, "W"], desc: "或鼠标中键点击标签" },
+    { category: "视图与多标签", name: "打字机模式", keys: ["F9"], desc: "当前行平滑锁频居中" },
+    { category: "视图与多标签", name: "专注模式", keys: ["F8"], desc: "当前块高清高亮，其余淡化" },
+    { category: "视图与多标签", name: "切换源码模式", keys: [mod, "/"], desc: "所见即所得 / 源码切换" },
+    { category: "视图与多标签", name: "展开/收拢侧边栏", keys: [mod, "Shift", "L"] },
+    { category: "视图与多标签", name: "快捷键速查指南", keys: ["F1"] },
   ];
 }
 
@@ -93,7 +99,7 @@ export function openShortcutGuide() {
         <div class="modal-title">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6.01" y2="8"></line><line x1="10" y1="8" x2="10.01" y2="8"></line><line x1="14" y1="8" x2="14.01" y2="8"></line><line x1="18" y1="8" x2="18.01" y2="8"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>
           <span>快捷键速查指南</span>
-          <span class="modal-badge">Quilla v0.3</span>
+          <span class="modal-badge">Quilla v0.4</span>
         </div>
         <button type="button" class="modal-close-btn" title="关闭 (Esc)">✕</button>
       </div>
@@ -109,7 +115,7 @@ export function openShortcutGuide() {
       <div class="shortcut-categories-container" id="shortcut-items-grid"></div>
 
       <div class="ty-modal-footer">
-        <span class="footer-tip">提示：在表格中支持四向方向键与 <kbd>Tab</kbd> 跳格，按 <kbd>${mod}</kbd>+<kbd>Enter</kbd> 快速插入新行</span>
+        <span class="footer-tip">提示：输入 <kbd>/</kbd> 唤起斜杠命令菜单，输入 <kbd>[[</kbd> 插入双向链接，按 <kbd>${mod}</kbd>+<kbd>\\</kbd> 开启左右分屏</span>
         <button type="button" class="modal-confirm-btn">我知道了</button>
       </div>
     </div>

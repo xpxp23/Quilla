@@ -17,10 +17,12 @@ pub struct DraftSnapshotRecord {
 pub struct SafeIO;
 
 impl SafeIO {
-    /// 原子写入文件：
-    /// 1. 写入同目录下的 .filename.tmp 文件并调用 sync_all() 确保物理落盘
-    /// 2. 原子重命名覆盖原文件；若目标为符号链接或遇同步盘瞬时锁冲突，自动回退为安全覆写并清理临时文件
-    pub fn atomic_write<P: AsRef<Path>>(path: P, content: &str) -> io::Result<()> {
+    /// 原子写入文件（支持可选硬件级 sync_all 落盘：正式保存开启 sync_all，高频草稿快照关闭 sync_all 防止主线程 I/O 卡顿）
+    pub fn atomic_write_with_options<P: AsRef<Path>>(
+        path: P,
+        content: &str,
+        force_fsync: bool,
+    ) -> io::Result<()> {
         let path = path.as_ref();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         if !parent.exists() {
@@ -32,7 +34,9 @@ impl SafeIO {
             if meta.file_type().is_symlink() {
                 let mut f = File::create(path)?;
                 f.write_all(content.as_bytes())?;
-                f.sync_all()?;
+                if force_fsync {
+                    f.sync_all()?;
+                }
                 return Ok(());
             }
         }
@@ -43,7 +47,9 @@ impl SafeIO {
         {
             let mut tmp_file = File::create(&tmp_path)?;
             tmp_file.write_all(content.as_bytes())?;
-            tmp_file.sync_all()?;
+            if force_fsync {
+                tmp_file.sync_all()?;
+            }
         }
 
         if path.exists() {
@@ -62,6 +68,10 @@ impl SafeIO {
         }
 
         Ok(())
+    }
+
+    pub fn atomic_write<P: AsRef<Path>>(path: P, content: &str) -> io::Result<()> {
+        Self::atomic_write_with_options(path, content, true)
     }
 
     /// 计算确定性 64-bit FNV-1a 哈希，彻底解决中文或特殊符号文件路径转化为下划线后的文件名碰撞覆盖问题
@@ -98,7 +108,7 @@ impl SafeIO {
             .collect()
     }
 
-    /// 安全保存后台崩溃快照 (Draft Snapshot)，突破浏览器 localStorage 5MB 容量限制
+    /// 非阻塞快速保存后台崩溃快照 (Draft Snapshot)，采用 OS 页缓存写入 + 原子重命名，消除打字期间 sync_all 磁盘锁卡顿
     pub fn save_draft_snapshot(
         file_id: &str,
         file_path: Option<String>,
@@ -133,7 +143,7 @@ impl SafeIO {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let draft_path = draft_dir.join(Self::build_draft_filename(file_id));
-        Self::atomic_write(&draft_path, &serialized)?;
+        Self::atomic_write_with_options(&draft_path, &serialized, false)?;
         Ok(draft_path)
     }
 

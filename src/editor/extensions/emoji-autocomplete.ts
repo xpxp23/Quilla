@@ -1,4 +1,6 @@
 import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import { isInsideCodeContextAST } from "./doc-structure";
+import { wikiLinkCompletionSource } from "./wiki-link";
 
 export interface EmojiEntry {
   name: string;
@@ -159,18 +161,19 @@ export const EMOJI_LIST: EmojiEntry[] = [
  * 监听以冒号开头的简码，例如 `:sm`, `:fire`, `:+1`, 并在输入时提示候选
  */
 export function emojiCompletionSource(context: CompletionContext): CompletionResult | null {
+  if (isInsideCodeContextAST(context.state, context.pos)) return null;
+
   // 匹配行内光标前紧挨着的 :shortcode (以非空白字符为界，或者行首/空格后的冒号)
   const token = context.matchBefore(/(?:^|\s):[a-zA-Z0-9_+-]*/);
   if (!token) return null;
 
-  // 计算冒号的准确位置
   const colonIndex = token.text.indexOf(":");
   if (colonIndex === -1) return null;
   const startPos = token.from + colonIndex;
   const query = token.text.slice(colonIndex + 1).toLowerCase();
 
   const filtered = EMOJI_LIST.filter((entry) => {
-    if (!query) return true; // 输入单个 ":" 时提供完整热门推荐
+    if (!query) return true;
     if (entry.name.toLowerCase().includes(query)) return true;
     if (entry.keywords && entry.keywords.some((k) => k.toLowerCase().includes(query))) return true;
     return false;
@@ -186,7 +189,6 @@ export function emojiCompletionSource(context: CompletionContext): CompletionRes
       displayLabel: `${item.emoji}  :${item.name}:`,
       detail: item.emoji,
       apply: (view, _completion, from, to) => {
-        // 直接原地替换为 Unicode 表情字符并移动光标
         view.dispatch({
           changes: { from, to, insert: item.emoji },
           selection: { anchor: from + item.emoji.length },
@@ -194,16 +196,16 @@ export function emojiCompletionSource(context: CompletionContext): CompletionRes
       },
       boost: item.name.startsWith(query) ? 99 : 50,
     })),
-    filter: false, // 已经自己做过严密的多关键词过滤
+    filter: false,
   };
 }
 
 /**
- * 导出即用的 Emoji 补全扩展插件
+ * 导出统一补全扩展插件（同时承载 :emoji 简码补全与 [[Wiki Links]] 双向链接补全）
  */
 export const emojiAutocompletion = autocompletion({
-  override: [emojiCompletionSource],
+  override: [wikiLinkCompletionSource, emojiCompletionSource],
   activateOnTyping: true,
-  maxRenderedOptions: 15,
+  maxRenderedOptions: 18,
   defaultKeymap: true,
 });

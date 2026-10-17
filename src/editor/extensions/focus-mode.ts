@@ -1,10 +1,10 @@
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
-import { resolveSemanticBlockSpan } from "./block-handle";
+import { resolveSemanticBlockSpanFromState } from "./doc-structure";
 
 /**
  * 专注模式状态管理与段落级视差聚焦插件 (F8)
- * - 当前光标所在段落/列表项/标题/代码块/公式块/表格：保持 100% 不透明度高清高亮
+ * - 当前光标所在段落/列表项/标题/代码块/公式块/表格/Callout：保持 100% 不透明度高清高亮
  * - 其余所有非当前段落与行：平滑淡化至 28% 不透明度
  */
 
@@ -29,8 +29,8 @@ const focusActiveLineDeco = Decoration.line({ class: "cm-focus-active-block" });
 function getBlockRange(state: any, cursorLineNum: number): { start: number; end: number } {
   const doc = state.doc;
 
-  // 0. 优先检查多行语义块（围栏代码块、Mermaid 块、多行数学公式块、表格块）
-  const semanticSpan = resolveSemanticBlockSpan(state, cursorLineNum);
+  // 0. 优先 O(1) 检查多行语义块（围栏代码块、Mermaid 块、多行数学公式块、表格块、Callout 块）
+  const semanticSpan = resolveSemanticBlockSpanFromState(state, cursorLineNum);
   if (semanticSpan.startLine !== semanticSpan.endLine) {
     return { start: semanticSpan.startLine, end: semanticSpan.endLine };
   }
@@ -43,12 +43,10 @@ function getBlockRange(state: any, cursorLineNum: number): { start: number; end:
     return { start: cursorLineNum, end: cursorLineNum };
   }
 
-  // 1. 标题: 仅高亮当前单行标题
   if (/^#{1,6}\s+/.test(trimmed)) {
     return { start: cursorLineNum, end: cursorLineNum };
   }
 
-  // 2. 引用块: 整段连续引用块高亮
   if (trimmed.startsWith(">")) {
     let start = cursorLineNum;
     while (start > 1 && doc.line(start - 1).text.trim().startsWith(">")) {
@@ -61,7 +59,6 @@ function getBlockRange(state: any, cursorLineNum: number): { start: number; end:
     return { start, end };
   }
 
-  // 3. 列表项: 独立高亮当前列表项
   const isListItemStart = (t: string) => /^(\s*[-*+]|\s*\d+\.)(\s+\[[ xX]\])?\s+/.test(t);
   if (isListItemStart(text)) {
     let end = cursorLineNum;
@@ -79,7 +76,6 @@ function getBlockRange(state: any, cursorLineNum: number): { start: number; end:
     return { start: cursorLineNum, end };
   }
 
-  // 4. 处于多行列表项的延续行内部时，向上寻找该列表项起始
   let start = cursorLineNum;
   while (start > 1) {
     const prev = doc.line(start - 1);
@@ -103,7 +99,6 @@ function getBlockRange(state: any, cursorLineNum: number): { start: number; end:
     start--;
   }
 
-  // 5. 普通段落
   start = cursorLineNum;
   while (start > 1) {
     const prev = doc.line(start - 1);
@@ -152,7 +147,9 @@ export const focusModePlugin = ViewPlugin.fromClass(
       }
 
       if (isActive || wasActive) {
-        this.decorations = this.buildDecorations(update.state);
+        if (isActive !== wasActive || update.docChanged || update.selectionSet) {
+          this.decorations = this.buildDecorations(update.state);
+        }
       }
     }
 

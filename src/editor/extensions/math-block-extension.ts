@@ -3,69 +3,15 @@ import { EditorView, WidgetType, Decoration, DecorationSet } from "@codemirror/v
 import katex from "katex";
 import { forceRefreshEffect } from "./refresh-effect";
 import { centerElementInTypewriter } from "./typewriter-mode";
+import { getDocStructureFromState, MathBlock } from "./doc-structure";
 
-export interface MathBlock {
-  startLine: number;
-  endLine: number;
-  from: number;
-  to: number;
-  latex: string;
-}
+export type { MathBlock };
 
 /**
- * 扫描文档中的多行独立公式块 $$ ... $$ (自动跳过围栏代码块内部)
+ * O(1) 从缓存文档结构中读取多行独立公式块 $$ ... $$
  */
 export function findMathBlocks(state: EditorState): MathBlock[] {
-  const doc = state.doc;
-  const blocks: MathBlock[] = [];
-  let inBlock = false;
-  let inFence = false;
-  let fenceChar = "";
-  let startLine = 0;
-  let latexLines: string[] = [];
-
-  for (let i = 1; i <= doc.lines; i++) {
-    const line = doc.line(i);
-    const trimmed = line.text.trim();
-
-    if (/^(```+|~~~+)/.test(trimmed)) {
-      const marker = trimmed.startsWith("`") ? "`" : "~";
-      if (!inFence) {
-        inFence = true;
-        fenceChar = marker;
-      } else if (marker === fenceChar) {
-        inFence = false;
-      }
-      continue;
-    }
-
-    if (inFence) continue;
-
-    if (!inBlock) {
-      if (trimmed === "$$") {
-        inBlock = true;
-        startLine = i;
-        latexLines = [];
-      }
-    } else {
-      if (trimmed === "$$") {
-        inBlock = false;
-        const from = doc.line(startLine).from;
-        const to = line.to;
-        blocks.push({
-          startLine,
-          endLine: i,
-          from,
-          to,
-          latex: latexLines.join("\n"),
-        });
-      } else {
-        latexLines.push(line.text);
-      }
-    }
-  }
-
-  return blocks;
+  return getDocStructureFromState(state).mathBlocks;
 }
 
 class MathBlockWidget extends WidgetType {
@@ -230,12 +176,23 @@ export const mathBlockLiveViewField = StateField.define<DecorationSet>({
     return computeMathBlockDecorations(state);
   },
   update(decorations, tr) {
-    if (
-      tr.docChanged ||
-      tr.selection ||
-      tr.effects.some((e) => e.is(forceRefreshEffect))
-    ) {
+    if (tr.docChanged || tr.effects.some((e) => e.is(forceRefreshEffect))) {
       return computeMathBlockDecorations(tr.state);
+    }
+    if (tr.selection) {
+      const blocks = findMathBlocks(tr.state);
+      if (blocks.length === 0) return decorations;
+      const oldLine = tr.startState.doc.lineAt(tr.startState.selection.main.head).number;
+      const newLine = tr.state.doc.lineAt(tr.state.selection.main.head).number;
+      if (oldLine === newLine) return decorations;
+      const touched = blocks.some(
+        (b) =>
+          (oldLine >= b.startLine && oldLine <= b.endLine) !==
+          (newLine >= b.startLine && newLine <= b.endLine)
+      );
+      if (touched) {
+        return computeMathBlockDecorations(tr.state);
+      }
     }
     return decorations;
   },

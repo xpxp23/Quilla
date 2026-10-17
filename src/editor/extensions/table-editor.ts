@@ -4,102 +4,52 @@ import { undo, redo } from "@codemirror/commands";
 import katex from "katex";
 import { centerElementInTypewriter } from "./typewriter-mode";
 import { forceRefreshEffect } from "./refresh-effect";
+import {
+  getDocStructureFromState,
+  isTableDelimiter,
+  TableBlock,
+  parseBalancedLinksAndImages,
+} from "./doc-structure";
+
+export { isTableDelimiter };
+export type { TableBlock };
 
 /**
- * 判断一行是否为 Markdown 表格分隔线行 (如 | :--- | :---: | ---: |)
- */
-export function isTableDelimiter(lineText: string): boolean {
-  const trimmed = lineText.trim();
-  if (!trimmed.includes("-") || !trimmed.includes("|")) return false;
-  const parts = trimmed
-    .split("|")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (parts.length === 0) return false;
-  return parts.every((p) => /^:?-+:?$/.test(p));
-}
-
-export interface TableBlock {
-  startLine: number;
-  endLine: number;
-  from: number;
-  to: number;
-  lines: string[];
-}
-
-/**
- * 扫描文档中所有的 Markdown 表格块 (自动跳过围栏代码块内部)
+ * O(1) 从缓存结构中读取文档内所有的 Markdown 表格块
  */
 export function findTablesInDoc(state: EditorState): TableBlock[] {
-  const doc = state.doc;
-  const tables: TableBlock[] = [];
-  let inTable = false;
-  let inFence = false;
-  let fenceChar = "";
-  let startLine = 0;
-  let from = 0;
-  let lines: string[] = [];
-
-  for (let i = 1; i <= doc.lines; i++) {
-    const line = doc.line(i);
-    const trimmed = line.text.trim();
-
-    if (/^(```+|~~~+)/.test(trimmed)) {
-      const marker = trimmed.startsWith("`") ? "`" : "~";
-      if (!inFence) {
-        if (inTable && lines.length >= 2) {
-          const endLine = i - 1;
-          const to = doc.line(endLine).to;
-          tables.push({ startLine, endLine, from, to, lines });
-          inTable = false;
-          lines = [];
-        }
-        inFence = true;
-        fenceChar = marker;
-      } else if (marker === fenceChar) {
-        inFence = false;
-      }
-      continue;
-    }
-
-    if (inFence) continue;
-
-    if (!inTable) {
-      if (trimmed.includes("|") && i < doc.lines) {
-        const nextLine = doc.line(i + 1);
-        if (isTableDelimiter(nextLine.text)) {
-          inTable = true;
-          startLine = i;
-          from = line.from;
-          lines = [line.text];
-        }
-      }
-    } else {
-      if (trimmed.includes("|") && trimmed.length > 0) {
-        lines.push(line.text);
-      } else {
-        if (lines.length >= 2) {
-          const endLine = i - 1;
-          const to = doc.line(endLine).to;
-          tables.push({ startLine, endLine, from, to, lines });
-        }
-        inTable = false;
-        lines = [];
-      }
-    }
-  }
-
-  if (inTable && lines.length >= 2) {
-    const endLine = doc.lines;
-    const to = doc.line(endLine).to;
-    tables.push({ startLine, endLine, from, to, lines });
-  }
-
-  return tables;
+  return getDocStructureFromState(state).tables;
 }
 
 /**
- * 将二维数据与对齐方式重新序列化为格式化规范的 Markdown 表格
+ * 计算字符串在等宽字体下的视觉显示列宽（CJK 中文字符计 2 列，ASCII 计 1 列）
+ */
+function getVisualDisplayWidth(str: string): number {
+  let width = 0;
+  for (const ch of str) {
+    const code = ch.codePointAt(0) || 0;
+    if (
+      (code >= 0x2e80 && code <= 0x9fff) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe4f) ||
+      (code >= 0xff00 && code <= 0xffef)
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
+function padVisualEnd(str: string, targetVisualWidth: number): string {
+  const curWidth = getVisualDisplayWidth(str);
+  const padSpaces = Math.max(0, targetVisualWidth - curWidth);
+  return str + " ".repeat(padSpaces);
+}
+
+/**
+ * 将二维数据与对齐方式重新序列化为 CJK 视觉等宽对齐的规范 Markdown 表格
  */
 export function serializeMarkdownTable(
   headers: string[],
@@ -122,11 +72,11 @@ export function serializeMarkdownTable(
 
   const colWidths = new Array(colCount).fill(3);
   normalizedHeaders.forEach((h, i) => {
-    colWidths[i] = Math.max(colWidths[i], h.length);
+    colWidths[i] = Math.max(colWidths[i], getVisualDisplayWidth(h));
   });
   normalizedRows.forEach((row) => {
     row.forEach((cell, i) => {
-      colWidths[i] = Math.max(colWidths[i], cell.length);
+      colWidths[i] = Math.max(colWidths[i], getVisualDisplayWidth(cell));
     });
   });
 
@@ -139,10 +89,10 @@ export function serializeMarkdownTable(
   });
 
   const lines: string[] = [];
-  lines.push(`| ${normalizedHeaders.map((h, i) => h.padEnd(colWidths[i], " ")).join(" | ")} |`);
+  lines.push(`| ${normalizedHeaders.map((h, i) => padVisualEnd(h, colWidths[i])).join(" | ")} |`);
   lines.push(`| ${delimiterRow.join(" | ")} |`);
   normalizedRows.forEach((row) => {
-    lines.push(`| ${row.map((c, i) => c.padEnd(colWidths[i], " ")).join(" | ")} |`);
+    lines.push(`| ${row.map((c, i) => padVisualEnd(c, colWidths[i])).join(" | ")} |`);
   });
 
   return lines.join("\n");
@@ -157,7 +107,7 @@ function sanitizeSafeHref(url: string): string {
 }
 
 /**
- * 将单元格文本中的行内 Markdown 转换为富文本 HTML
+ * 将单元格文本中的行内 Markdown 转换为富文本 HTML（支持平衡括号链接、双向链接、公式、代码等）
  */
 export function formatMarkdownToHTML(text: string): string {
   if (!text) return "";
@@ -171,6 +121,28 @@ export function formatMarkdownToHTML(text: string): string {
 
   // 0. 预处理 <br> 标签为占位符
   let working = text.replace(/<br\s*\/?>/gi, () => pushPlaceholder("<br>"));
+
+  // 0.5 优先提取平衡括号超链接 [text](url)
+  const balancedLinks = parseBalancedLinksAndImages(working, 0);
+  if (balancedLinks.length > 0) {
+    let rebuilt = "";
+    let lastIdx = 0;
+    for (const lnk of balancedLinks) {
+      if (lnk.isImage) continue;
+      rebuilt += working.slice(lastIdx, lnk.start);
+      const safeUrl = sanitizeSafeHref(lnk.url);
+      const safeLabel = lnk.label
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      rebuilt += pushPlaceholder(
+        `<a href="${safeUrl}" class="cm-link tbl-inline-link" data-href="${safeUrl}">${safeLabel}</a>`
+      );
+      lastIdx = lnk.end;
+    }
+    rebuilt += working.slice(lastIdx);
+    working = rebuilt;
+  }
 
   // 1. 转义 HTML 特殊字符
   working = working
@@ -213,35 +185,27 @@ export function formatMarkdownToHTML(text: string): string {
     }
   );
 
-  // 4. 提取超链接 [text](url)
-  working = working.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, label, url) => {
-    const safeUrl = sanitizeSafeHref(url);
-    return pushPlaceholder(
-      `<a href="${safeUrl}" class="cm-link tbl-inline-link" data-href="${safeUrl}">${label}</a>`
-    );
-  });
-
-  // 5. 加粗斜体 ***text*** 或 ___text___
+  // 4. 加粗斜体 ***text*** 或 ___text___
   working = working.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>");
   working = working.replace(/___([^_]+)___/g, "<strong><em>$1</em></strong>");
 
-  // 6. 加粗 **text** 或 __text__
+  // 5. 加粗 **text** 或 __text__
   working = working.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   working = working.replace(/__([^_]+)__/g, "<strong>$1</strong>");
 
-  // 7. 单星号斜体 *text* 或 单下划线斜体 _text_
+  // 6. 单星号斜体 *text* 或 单下划线斜体 _text_
   working = working.replace(/(?<!\*)\*([^*\s][^*]*?)\*(?!\*)/g, "<em>$1</em>");
   working = working.replace(/(?<!_)_([^_\s][^_]*?)_(?!_)/g, "<em>$1</em>");
 
-  // 8. 删除线 ~~text~~ 与 高亮 ==text==
+  // 7. 删除线 ~~text~~ 与 高亮 ==text==
   working = working.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   working = working.replace(/==([^=]+)==/g, "<mark>$1</mark>");
 
-  // 9. 上下标
+  // 8. 上下标
   working = working.replace(/(?<!~)~([^~\s][^~]*?)~(?!~)/g, "<sub>$1</sub>");
   working = working.replace(/\^([^\^\s][^\^]*?)\^/g, "<sup>$1</sup>");
 
-  // 10. 还原所有保护占位符
+  // 9. 还原所有保护占位符
   working = working.replace(/\u0000PH_(\d+)_\u0000/g, (_m, idx) => placeholders[Number(idx)] || "");
 
   return working;
@@ -249,7 +213,6 @@ export function formatMarkdownToHTML(text: string): string {
 
 /**
  * 将单元格 DOM 结构逆向转换为规范的 Markdown 格式文本
- * 兼容语义标签与跨平台 WebView 产生的内联 style (font-weight/font-style/text-decoration)
  */
 export function formatHTMLToMarkdown(cell: HTMLElement): string {
   function serializeNode(node: Node): string {
@@ -260,6 +223,14 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
     }
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node as HTMLElement;
+      if (
+        el.classList.contains("tbl-col-drag-grip") ||
+        el.classList.contains("tbl-row-drag-grip") ||
+        el.classList.contains("tbl-col-resizer")
+      ) {
+        return "";
+      }
+
       const tagName = el.tagName.toUpperCase();
 
       if (el.classList.contains("tbl-inline-math") && el.dataset.tex) {
@@ -320,8 +291,9 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
     return "";
   }
 
+  const contentRoot = (cell.querySelector(".tbl-cell-editor") as HTMLElement) || cell;
   let result = "";
-  cell.childNodes.forEach((child) => {
+  contentRoot.childNodes.forEach((child) => {
     result += serializeNode(child);
   });
   return result
@@ -331,18 +303,15 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
     .trim();
 }
 
-/**
- * 现代 Selection/Range 原生 DOM 富文本包裹与插入辅助
- */
-function insertNodeAtCellSelection(cell: HTMLElement, node: Node) {
+function insertNodeAtCellSelection(cellEditor: HTMLElement, node: Node) {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) {
-    cell.appendChild(node);
+    cellEditor.appendChild(node);
     return;
   }
   const range = sel.getRangeAt(0);
-  if (!cell.contains(range.commonAncestorContainer)) {
-    cell.appendChild(node);
+  if (!cellEditor.contains(range.commonAncestorContainer)) {
+    cellEditor.appendChild(node);
     return;
   }
   range.deleteContents();
@@ -353,11 +322,14 @@ function insertNodeAtCellSelection(cell: HTMLElement, node: Node) {
   sel.addRange(range);
 }
 
-function toggleCellInlineTag(cell: HTMLElement, tagName: "strong" | "em" | "del" | "code" | "mark") {
+function toggleCellInlineTag(
+  cellEditor: HTMLElement,
+  tagName: "strong" | "em" | "del" | "code" | "mark"
+) {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return;
   const range = sel.getRangeAt(0);
-  if (!cell.contains(range.commonAncestorContainer)) return;
+  if (!cellEditor.contains(range.commonAncestorContainer)) return;
 
   const upper = tagName.toUpperCase();
   const parentEl =
@@ -366,13 +338,13 @@ function toggleCellInlineTag(cell: HTMLElement, tagName: "strong" | "em" | "del"
       : range.commonAncestorContainer.parentElement;
   const existingTag = parentEl?.closest(tagName);
 
-  if (existingTag && cell.contains(existingTag)) {
+  if (existingTag && cellEditor.contains(existingTag)) {
     const frag = document.createDocumentFragment();
     while (existingTag.firstChild) {
       frag.appendChild(existingTag.firstChild);
     }
     existingTag.replaceWith(frag);
-    cell.dispatchEvent(new Event("input", { bubbles: true }));
+    cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
     return;
   }
 
@@ -388,29 +360,132 @@ function toggleCellInlineTag(cell: HTMLElement, tagName: "strong" | "em" | "del"
     newRange.selectNodeContents(wrapper);
     sel.removeAllRanges();
     sel.addRange(newRange);
-    cell.dispatchEvent(new Event("input", { bubbles: true }));
+    cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
   } else {
-    if (cell.children.length === 1 && cell.firstElementChild?.tagName === upper) {
-      const inner = cell.firstElementChild;
+    if (cellEditor.children.length === 1 && cellEditor.firstElementChild?.tagName === upper) {
+      const inner = cellEditor.firstElementChild;
       const frag = document.createDocumentFragment();
       while (inner.firstChild) frag.appendChild(inner.firstChild);
       inner.replaceWith(frag);
-    } else if (cell.textContent?.trim()) {
+    } else if (cellEditor.textContent?.trim()) {
       const wrapper = document.createElement(tagName);
-      while (cell.firstChild) wrapper.appendChild(cell.firstChild);
-      cell.appendChild(wrapper);
+      while (cellEditor.firstChild) wrapper.appendChild(cellEditor.firstChild);
+      cellEditor.appendChild(wrapper);
     }
-    cell.dispatchEvent(new Event("input", { bubbles: true }));
+    cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
   }
 }
 
 /**
- * 可视化表格内联可编辑组件 (In-Place Interactive TableWidget)
+ * 在单元格内弹出轻量超链接输入浮层或直接包裹超链接 (支持表格内 Ctrl+K)
+ */
+function promptCellInlineLink(cellEditor: HTMLElement, onCommit: () => void) {
+  const sel = window.getSelection();
+  let selectedText = "";
+  let savedRange: Range | null = null;
+  if (sel && sel.rangeCount > 0) {
+    const r = sel.getRangeAt(0);
+    if (cellEditor.contains(r.commonAncestorContainer)) {
+      savedRange = r.cloneRange();
+      selectedText = r.toString().trim();
+    }
+  }
+
+  const existingPop = document.getElementById("quilla-tbl-link-popover");
+  if (existingPop) existingPop.remove();
+
+  const pop = document.createElement("div");
+  pop.id = "quilla-tbl-link-popover";
+  pop.className = "ty-link-tooltip";
+  pop.innerHTML = `
+    <div class="link-tooltip-edit-form">
+      <input type="text" id="tbl-lnk-text" class="ty-inline-input" placeholder="链接显示文字..." value="${selectedText.replace(/"/g, "&quot;")}" />
+      <input type="text" id="tbl-lnk-url" class="ty-inline-input" placeholder="https://..." value="https://" />
+      <div class="link-edit-actions">
+        <button type="button" class="ty-toolbar-btn primary" id="tbl-lnk-save">插入</button>
+        <button type="button" class="ty-toolbar-btn" id="tbl-lnk-cancel">取消</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(pop);
+
+  const rect = cellEditor.getBoundingClientRect();
+  pop.style.top = `${Math.max(40, rect.top - 96)}px`;
+  pop.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - 260))}px`;
+
+  const textInp = pop.querySelector("#tbl-lnk-text") as HTMLInputElement;
+  const urlInp = pop.querySelector("#tbl-lnk-url") as HTMLInputElement;
+
+  const closePop = () => {
+    pop.remove();
+    cellEditor.focus({ preventScroll: true });
+  };
+
+  const applyLink = () => {
+    const label = textInp.value.trim() || "链接文字";
+    const url = sanitizeSafeHref(urlInp.value.trim() || "https://");
+    pop.remove();
+    cellEditor.focus({ preventScroll: true });
+    if (savedRange && sel) {
+      sel.removeAllRanges();
+      sel.addRange(savedRange);
+    }
+    const a = document.createElement("a");
+    a.href = url;
+    a.dataset.href = url;
+    a.className = "cm-link tbl-inline-link";
+    a.textContent = label;
+    insertNodeAtCellSelection(cellEditor, a);
+    cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    onCommit();
+  };
+
+  pop.querySelector("#tbl-lnk-save")?.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyLink();
+  });
+  pop.querySelector("#tbl-lnk-cancel")?.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closePop();
+  });
+
+  [textInp, urlInp].forEach((inp) => {
+    inp.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyLink();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closePop();
+      }
+    });
+  });
+
+  setTimeout(() => {
+    if (selectedText) {
+      urlInp.focus();
+      urlInp.select();
+    } else {
+      textInp.focus();
+      textInp.select();
+    }
+  }, 15);
+}
+
+/**
+ * 可视化表格内联可编辑组件 (In-Place Interactive TableWidget v0.4)
+ * - 根治删行后 Ctrl+Z 无法撤销与视口乱跳 Bug（仅在 keepAlive="1" 时跳过重建，外部 undo/redo/查找替换 100% 重建表格并锁定 scrollTop）
+ * - 支持 Pointer Events 行列拖拽换位、列宽拖拽调节、表格右/下边缘一键加行列、单元格 Ctrl+K 插入链接
+ * - 悬浮工具栏纯图标化设计，且在表格靠近视口顶部时自动向下翻转 (.flip-bottom) 防遮挡
  */
 class InteractiveTableWidget extends WidgetType {
   private currentHeaders: string[] = [];
   private currentRows: string[][] = [];
   private currentAlignments: Array<"left" | "center" | "right"> = [];
+  private colWidthsPx: Array<number | null> = [];
   private trackedFromPos: number;
   private trackedToPos: number;
 
@@ -427,7 +502,7 @@ class InteractiveTableWidget extends WidgetType {
 
   get estimatedHeight(): number {
     const rowCount = this.lines.length;
-    return Math.max(110, rowCount * 36 + 52);
+    return Math.max(110, rowCount * 38 + 52);
   }
 
   ignoreEvent(_event: Event): boolean {
@@ -439,7 +514,9 @@ class InteractiveTableWidget extends WidgetType {
       delete dom.dataset.forceRebuild;
       return false;
     }
-    if (dom.dataset.keepAlive === "1" || dom.contains(document.activeElement)) {
+    // 仅当由当前 Widget 内部 syncToDoc 主动触发 (keepAlive === "1") 时复用 DOM，
+    // 任何外部 Undo/Redo、菜单撤销或查找替换事务均返回 false 强制无损重建表格 DOM！
+    if (dom.dataset.keepAlive === "1") {
       dom.dataset.fromPos = String(this.fromPos);
       dom.dataset.toPos = String(this.toPos);
       dom.dataset.tableIdx = String(this.tableIdx);
@@ -483,6 +560,7 @@ class InteractiveTableWidget extends WidgetType {
     while (this.currentHeaders.length < colCount) {
       this.currentHeaders.push("");
     }
+    this.colWidthsPx = new Array(colCount).fill(null);
     this.currentAlignments = new Array(colCount)
       .fill("left")
       .map((_, i) => {
@@ -507,6 +585,8 @@ class InteractiveTableWidget extends WidgetType {
     let activeRow = 0;
     let activeCol = 0;
     let isRebuildingDOM = false;
+    let isUndoingOrRedoing = false;
+    let hasUserEdited = false;
     let debouncedInputTimer: any = null;
 
     const resolveCurrentTableSpan = (): { from: number; to: number } => {
@@ -571,6 +651,9 @@ class InteractiveTableWidget extends WidgetType {
     };
 
     const syncToDoc = (forceDispatch: boolean = false) => {
+      if (isUndoingOrRedoing) return;
+      if (!forceDispatch && !hasUserEdited) return;
+
       if (debouncedInputTimer) {
         clearTimeout(debouncedInputTimer);
         debouncedInputTimer = null;
@@ -585,9 +668,11 @@ class InteractiveTableWidget extends WidgetType {
         const { from, to } = resolveCurrentTableSpan();
         const existingMarkdown = view.state.sliceDoc(from, to);
         if (!forceDispatch && existingMarkdown === newMarkdown) {
+          hasUserEdited = false;
           return;
         }
 
+        const prevScrollTop = view.scrollDOM.scrollTop;
         this.trackedFromPos = from;
         this.trackedToPos = from + newMarkdown.length;
         container.dataset.fromPos = String(this.trackedFromPos);
@@ -596,8 +681,13 @@ class InteractiveTableWidget extends WidgetType {
         container.dataset.keepAlive = "1";
         view.dispatch({
           changes: { from, to, insert: newMarkdown },
+          // 将 CodeMirror 主选区锚定至当前表格起点，彻底根除 Ctrl+Z 撤销时视口跳回远端旧光标的 Bug
+          selection: { anchor: from },
+          userEvent: "input.table",
         });
         delete container.dataset.keepAlive;
+        hasUserEdited = false;
+        view.scrollDOM.scrollTop = prevScrollTop;
       } catch (err) {
         delete container.dataset.keepAlive;
         console.error("同步表格到文档失败:", err);
@@ -607,64 +697,73 @@ class InteractiveTableWidget extends WidgetType {
     const toolbar = document.createElement("div");
     toolbar.className = "table-floating-toolbar";
     toolbar.innerHTML = `
-      <div class="toolbar-group table-dim-group" title="表格规模 (行数 × 列数)">
+      <div class="toolbar-group table-dim-group" title="表格规模 (总行数 × 列数)">
         <span class="table-dim-badge" id="tbl-dim-badge">0 × 0</span>
       </div>
       <div class="toolbar-sep"></div>
       <div class="toolbar-group">
-        <button type="button" class="tbl-btn" data-act="align-left" title="当前列居左">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="17" y1="18" x2="3" y2="18"></line></svg>
-          <span>居左</span>
+        <button type="button" class="tbl-btn icon-only" data-act="align-left" title="当前列左对齐">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="17" y1="18" x2="3" y2="18"></line></svg>
         </button>
-        <button type="button" class="tbl-btn" data-act="align-center" title="当前列居中">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="10" x2="6" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="18" y1="18" x2="6" y2="18"></line></svg>
-          <span>居中</span>
+        <button type="button" class="tbl-btn icon-only" data-act="align-center" title="当前列居中对齐">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="10" x2="6" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="18" y1="18" x2="6" y2="18"></line></svg>
         </button>
-        <button type="button" class="tbl-btn" data-act="align-right" title="当前列居右">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg>
-          <span>居右</span>
+        <button type="button" class="tbl-btn icon-only" data-act="align-right" title="当前列右对齐">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg>
         </button>
       </div>
       <div class="toolbar-sep"></div>
       <div class="toolbar-group">
         <button type="button" class="tbl-btn" data-act="add-row-above" title="上方插入行">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-          <span>+行↑</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          <span>+行</span>
         </button>
         <button type="button" class="tbl-btn" data-act="add-row-below" title="下方插入行 (Ctrl+Enter)">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-          <span>+行↓</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+          <span>+行</span>
         </button>
         <button type="button" class="tbl-btn" data-act="add-col-left" title="左侧插入列">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-          <span>+列←</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          <span>+列</span>
         </button>
         <button type="button" class="tbl-btn" data-act="add-col-right" title="右侧插入列">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-          <span>+列→</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          <span>+列</span>
         </button>
       </div>
       <div class="toolbar-sep"></div>
       <div class="toolbar-group">
         <button type="button" class="tbl-btn danger" data-act="del-row" title="删除当前行 (Ctrl+Shift+Backspace)">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           <span>删行</span>
         </button>
         <button type="button" class="tbl-btn danger" data-act="del-col" title="删除当前列">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           <span>删列</span>
         </button>
-        <button type="button" class="tbl-btn danger" data-act="del-table" title="删除整个表格">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-          <span>删表</span>
+        <button type="button" class="tbl-btn danger icon-only" data-act="del-table" title="删除整个表格">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
       </div>
     `;
 
+    const tableWrap = document.createElement("div");
+    tableWrap.className = "tbl-scroll-and-edge-wrap";
+
     const table = document.createElement("table");
     table.className = "md-table in-place-edit";
 
-    const updateToolbarState = () => {
+    const addColEdgeBtn = document.createElement("button");
+    addColEdgeBtn.type = "button";
+    addColEdgeBtn.className = "tbl-edge-add-col";
+    addColEdgeBtn.title = "在末尾新增一列";
+    addColEdgeBtn.textContent = "+";
+
+    const addRowEdgeBtn = document.createElement("button");
+    addRowEdgeBtn.type = "button";
+    addRowEdgeBtn.className = "tbl-edge-add-row";
+    addRowEdgeBtn.title = "在底部新增一行";
+    addRowEdgeBtn.innerHTML = `<span>+ 新增一行</span>`;
+
+    const updateToolbarPositionAndState = () => {
       const dimBadge = toolbar.querySelector("#tbl-dim-badge");
       if (dimBadge) {
         dimBadge.textContent = `${this.currentRows.length + 1} × ${this.currentHeaders.length}`;
@@ -674,14 +773,29 @@ class InteractiveTableWidget extends WidgetType {
         const el = btn as HTMLElement;
         el.classList.toggle("active", el.dataset.act === `align-${curAlign}`);
       });
+
+      // 当表格位于文档顶部或靠近视口上边缘时，工具栏自动向下翻转，避免超出视口顶部被裁切
+      requestAnimationFrame(() => {
+        if (!container.isConnected) return;
+        const figRect = container.getBoundingClientRect();
+        const scrollerRect = view.scrollDOM.getBoundingClientRect();
+        const nearTop = figRect.top - scrollerRect.top < 44;
+        toolbar.classList.toggle("flip-bottom", nearTop);
+      });
     };
 
-    const handleCellPaste = (e: ClipboardEvent, rIdx: number, cIdx: number, cell: HTMLElement) => {
+    const handleCellPaste = (
+      e: ClipboardEvent,
+      rIdx: number,
+      cIdx: number,
+      cellEditor: HTMLElement
+    ) => {
       e.preventDefault();
       e.stopPropagation();
       const text = e.clipboardData?.getData("text/plain") || "";
       if (!text) return;
 
+      hasUserEdited = true;
       const rawLines = text.replace(/\r\n/g, "\n").split("\n");
       const hasTabs = text.includes("\t");
       if (hasTabs || (rawLines.length > 1 && selectedRange)) {
@@ -694,6 +808,7 @@ class InteractiveTableWidget extends WidgetType {
           while (this.currentHeaders.length < neededCols) {
             this.currentHeaders.push("");
             this.currentAlignments.push("left");
+            this.colWidthsPx.push(null);
             this.currentRows.forEach((row) => row.push(""));
           }
 
@@ -719,51 +834,273 @@ class InteractiveTableWidget extends WidgetType {
       }
 
       const sanitized = text.replace(/\r?\n/g, " ");
-      insertNodeAtCellSelection(cell, document.createTextNode(sanitized));
-      cell.dispatchEvent(new Event("input", { bubbles: true }));
+      insertNodeAtCellSelection(cellEditor, document.createTextNode(sanitized));
+      cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
-    const bindCellEvents = (cell: HTMLElement, rIdx: number, cIdx: number) => {
-      cell.addEventListener("focus", () => {
+    // Pointer Events 行列拖拽排序与列宽调整
+    const attachColumnDragAndResize = (th: HTMLElement, cIdx: number) => {
+      const colGrip = document.createElement("span");
+      colGrip.className = "tbl-col-drag-grip";
+      colGrip.contentEditable = "false";
+      colGrip.title = "按住左右拖动交换列顺序";
+      colGrip.textContent = "⋯";
+
+      let isDraggingCol = false;
+      let startX = 0;
+      let targetColIdx: number | null = null;
+
+      colGrip.addEventListener("pointerdown", (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        flushActiveCellContent();
+        isDraggingCol = true;
+        startX = e.clientX;
+        targetColIdx = null;
+        colGrip.setPointerCapture(e.pointerId);
+        th.classList.add("tbl-dragging-source");
+      });
+
+      colGrip.addEventListener("pointermove", (e: PointerEvent) => {
+        if (!isDraggingCol) return;
+        if (Math.abs(e.clientX - startX) < 5) return;
+
+        table.querySelectorAll("th, td").forEach((el) => {
+          el.classList.remove("tbl-drop-col-left", "tbl-drop-col-right");
+        });
+
+        const ths = Array.from(table.querySelectorAll<HTMLElement>("thead th"));
+        targetColIdx = null;
+        for (let i = 0; i < ths.length; i++) {
+          if (i === cIdx) continue;
+          const r = ths[i].getBoundingClientRect();
+          if (e.clientX >= r.left && e.clientX <= r.right) {
+            targetColIdx = i;
+            const cls = i < cIdx ? "tbl-drop-col-left" : "tbl-drop-col-right";
+            table.querySelectorAll(`[data-col="${i}"]`).forEach((cell) => cell.classList.add(cls));
+            break;
+          }
+        }
+      });
+
+      const endColDrag = (e: PointerEvent, commit: boolean) => {
+        if (!isDraggingCol) return;
+        isDraggingCol = false;
+        try {
+          if (colGrip.hasPointerCapture(e.pointerId)) colGrip.releasePointerCapture(e.pointerId);
+        } catch {}
+        th.classList.remove("tbl-dragging-source");
+        table.querySelectorAll("th, td").forEach((el) => {
+          el.classList.remove("tbl-drop-col-left", "tbl-drop-col-right");
+        });
+
+        if (commit && targetColIdx !== null && targetColIdx !== cIdx) {
+          hasUserEdited = true;
+          const [movedHeader] = this.currentHeaders.splice(cIdx, 1);
+          this.currentHeaders.splice(targetColIdx, 0, movedHeader);
+
+          const [movedAlign] = this.currentAlignments.splice(cIdx, 1);
+          this.currentAlignments.splice(targetColIdx, 0, movedAlign);
+
+          const [movedWidth] = this.colWidthsPx.splice(cIdx, 1);
+          this.colWidthsPx.splice(targetColIdx, 0, movedWidth);
+
+          this.currentRows.forEach((row) => {
+            const [movedCell] = row.splice(cIdx, 1);
+            row.splice(targetColIdx!, 0, movedCell);
+          });
+
+          rebuildAndSync(-1, targetColIdx, "end");
+        }
+      };
+
+      colGrip.addEventListener("pointerup", (e) => endColDrag(e, true));
+      colGrip.addEventListener("pointercancel", (e) => endColDrag(e, false));
+
+      // 列宽拖拽调节把手
+      const resizer = document.createElement("span");
+      resizer.className = "tbl-col-resizer";
+      resizer.contentEditable = "false";
+      resizer.title = "拖动调整列宽，双击恢复自适应宽度";
+
+      let isResizing = false;
+      let resizeStartX = 0;
+      let startWidth = 0;
+
+      resizer.addEventListener("pointerdown", (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        isResizing = true;
+        resizeStartX = e.clientX;
+        startWidth = th.getBoundingClientRect().width;
+        resizer.setPointerCapture(e.pointerId);
+        resizer.classList.add("active");
+      });
+
+      resizer.addEventListener("pointermove", (e: PointerEvent) => {
+        if (!isResizing) return;
+        const newW = Math.max(56, Math.round(startWidth + (e.clientX - resizeStartX)));
+        this.colWidthsPx[cIdx] = newW;
+        table.querySelectorAll<HTMLElement>(`[data-col="${cIdx}"]`).forEach((cell) => {
+          cell.style.width = `${newW}px`;
+          cell.style.minWidth = `${newW}px`;
+        });
+      });
+
+      const stopResize = (e: PointerEvent) => {
+        if (!isResizing) return;
+        isResizing = false;
+        resizer.classList.remove("active");
+        try {
+          if (resizer.hasPointerCapture(e.pointerId)) resizer.releasePointerCapture(e.pointerId);
+        } catch {}
+      };
+
+      resizer.addEventListener("pointerup", stopResize);
+      resizer.addEventListener("pointercancel", stopResize);
+      resizer.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        this.colWidthsPx[cIdx] = null;
+        table.querySelectorAll<HTMLElement>(`[data-col="${cIdx}"]`).forEach((cell) => {
+          cell.style.width = "";
+          cell.style.minWidth = "";
+        });
+      });
+
+      th.appendChild(colGrip);
+      th.appendChild(resizer);
+    };
+
+    const attachRowDragGrip = (firstTd: HTMLElement, rIdx: number) => {
+      const rowGrip = document.createElement("span");
+      rowGrip.className = "tbl-row-drag-grip";
+      rowGrip.contentEditable = "false";
+      rowGrip.title = "按住上下拖动调整行顺序";
+      rowGrip.textContent = "⋮";
+
+      let isDraggingRow = false;
+      let startY = 0;
+      let targetRowIdx: number | null = null;
+
+      rowGrip.addEventListener("pointerdown", (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        flushActiveCellContent();
+        isDraggingRow = true;
+        startY = e.clientY;
+        targetRowIdx = null;
+        rowGrip.setPointerCapture(e.pointerId);
+        firstTd.parentElement?.classList.add("tbl-dragging-source");
+      });
+
+      rowGrip.addEventListener("pointermove", (e: PointerEvent) => {
+        if (!isDraggingRow) return;
+        if (Math.abs(e.clientY - startY) < 5) return;
+
+        table.querySelectorAll("tbody tr").forEach((tr) => {
+          tr.classList.remove("tbl-drop-row-top", "tbl-drop-row-bottom");
+        });
+
+        const trs = Array.from(table.querySelectorAll<HTMLElement>("tbody tr"));
+        targetRowIdx = null;
+        for (let i = 0; i < trs.length; i++) {
+          if (i === rIdx) continue;
+          const r = trs[i].getBoundingClientRect();
+          if (e.clientY >= r.top && e.clientY <= r.bottom) {
+            targetRowIdx = i;
+            trs[i].classList.add(i < rIdx ? "tbl-drop-row-top" : "tbl-drop-row-bottom");
+            break;
+          }
+        }
+      });
+
+      const endRowDrag = (e: PointerEvent, commit: boolean) => {
+        if (!isDraggingRow) return;
+        isDraggingRow = false;
+        try {
+          if (rowGrip.hasPointerCapture(e.pointerId)) rowGrip.releasePointerCapture(e.pointerId);
+        } catch {}
+        firstTd.parentElement?.classList.remove("tbl-dragging-source");
+        table.querySelectorAll("tbody tr").forEach((tr) => {
+          tr.classList.remove("tbl-drop-row-top", "tbl-drop-row-bottom");
+        });
+
+        if (commit && targetRowIdx !== null && targetRowIdx !== rIdx) {
+          hasUserEdited = true;
+          const [movedRow] = this.currentRows.splice(rIdx, 1);
+          this.currentRows.splice(targetRowIdx, 0, movedRow);
+          rebuildAndSync(targetRowIdx, activeCol, "end");
+        }
+      };
+
+      rowGrip.addEventListener("pointerup", (e) => endRowDrag(e, true));
+      rowGrip.addEventListener("pointercancel", (e) => endRowDrag(e, false));
+
+      firstTd.appendChild(rowGrip);
+    };
+
+    const bindCellEvents = (cell: HTMLElement, cellEditor: HTMLElement, rIdx: number, cIdx: number) => {
+      cellEditor.addEventListener("focus", () => {
         activeRow = rIdx;
         activeCol = cIdx;
         container.classList.add("focused");
-        updateToolbarState();
+        updateToolbarPositionAndState();
         centerElementInTypewriter(view, cell);
       });
 
-      cell.addEventListener("pointerdown", () => {
+      cell.addEventListener("pointerdown", (e) => {
+        const t = e.target as HTMLElement;
+        if (
+          t.closest(".tbl-col-drag-grip, .tbl-row-drag-grip, .tbl-col-resizer")
+        ) {
+          return;
+        }
         activeRow = rIdx;
         activeCol = cIdx;
-        updateToolbarState();
+        updateToolbarPositionAndState();
+        if (t === cell && document.activeElement !== cellEditor) {
+          cellEditor.focus({ preventScroll: true });
+        }
       });
 
       cell.addEventListener("contextmenu", () => {
         activeRow = rIdx;
         activeCol = cIdx;
-        updateToolbarState();
+        updateToolbarPositionAndState();
       });
 
-      cell.addEventListener("input", () => {
-        if (isRebuildingDOM) return;
+      cellEditor.addEventListener("input", () => {
+        if (isRebuildingDOM || isUndoingOrRedoing) return;
+        hasUserEdited = true;
         const val = formatHTMLToMarkdown(cell);
         if (rIdx === -1) {
           this.currentHeaders[cIdx] = val;
         } else if (this.currentRows[rIdx]) {
           this.currentRows[rIdx][cIdx] = val;
         }
-        // 防抖 240ms 自动将表格变更同步到底层 CodeMirror 文档，确保不失焦直接按 Ctrl+S 或 Ctrl+Z 时数据绝不丢失
         if (debouncedInputTimer) clearTimeout(debouncedInputTimer);
         debouncedInputTimer = setTimeout(() => {
           debouncedInputTimer = null;
-          if (cell.isConnected) {
+          if (cell.isConnected && !isUndoingOrRedoing) {
             syncToDoc();
           }
-        }, 240);
+        }, 260);
       });
 
-      cell.addEventListener("blur", () => {
-        if (isRebuildingDOM || !cell.isConnected) return;
+      cellEditor.addEventListener("blur", () => {
+        // 关键防护：在 DOM 重建、Ctrl+Z 撤销重做、节点已卸载或用户根本未编辑时，严禁触发 syncToDoc 覆写底层文档！
+        if (
+          isRebuildingDOM ||
+          isUndoingOrRedoing ||
+          !cell.isConnected ||
+          !hasUserEdited ||
+          container.dataset.forceRebuild === "1"
+        ) {
+          return;
+        }
         const val = formatHTMLToMarkdown(cell);
         if (rIdx === -1) {
           if (cIdx < this.currentHeaders.length) {
@@ -777,7 +1114,7 @@ class InteractiveTableWidget extends WidgetType {
         syncToDoc();
       });
 
-      cell.addEventListener("paste", (e) => handleCellPaste(e, rIdx, cIdx, cell));
+      cellEditor.addEventListener("paste", (e) => handleCellPaste(e, rIdx, cIdx, cellEditor));
     };
 
     const renderTableDOM = () => {
@@ -795,13 +1132,23 @@ class InteractiveTableWidget extends WidgetType {
         for (let cIdx = 0; cIdx < cols; cIdx++) {
           const text = this.currentHeaders[cIdx] || "";
           const th = document.createElement("th");
-          th.contentEditable = "true";
-          th.spellcheck = false;
           th.style.textAlign = this.currentAlignments[cIdx] || "left";
-          th.innerHTML = formatMarkdownToHTML(text);
+          if (this.colWidthsPx[cIdx]) {
+            th.style.width = `${this.colWidthsPx[cIdx]}px`;
+            th.style.minWidth = `${this.colWidthsPx[cIdx]}px`;
+          }
           th.dataset.row = "-1";
           th.dataset.col = String(cIdx);
-          bindCellEvents(th, -1, cIdx);
+
+          const editorSpan = document.createElement("div");
+          editorSpan.className = "tbl-cell-editor";
+          editorSpan.contentEditable = "true";
+          editorSpan.spellcheck = false;
+          editorSpan.innerHTML = formatMarkdownToHTML(text);
+
+          th.appendChild(editorSpan);
+          attachColumnDragAndResize(th, cIdx);
+          bindCellEvents(th, editorSpan, -1, cIdx);
           trHead.appendChild(th);
         }
         thead.appendChild(trHead);
@@ -812,19 +1159,31 @@ class InteractiveTableWidget extends WidgetType {
           const tr = document.createElement("tr");
           for (let cIdx = 0; cIdx < cols; cIdx++) {
             const td = document.createElement("td");
-            td.contentEditable = "true";
-            td.spellcheck = false;
             td.style.textAlign = this.currentAlignments[cIdx] || "left";
-            td.innerHTML = formatMarkdownToHTML(row[cIdx] || "");
+            if (this.colWidthsPx[cIdx]) {
+              td.style.width = `${this.colWidthsPx[cIdx]}px`;
+              td.style.minWidth = `${this.colWidthsPx[cIdx]}px`;
+            }
             td.dataset.row = String(rIdx);
             td.dataset.col = String(cIdx);
-            bindCellEvents(td, rIdx, cIdx);
+
+            const editorSpan = document.createElement("div");
+            editorSpan.className = "tbl-cell-editor";
+            editorSpan.contentEditable = "true";
+            editorSpan.spellcheck = false;
+            editorSpan.innerHTML = formatMarkdownToHTML(row[cIdx] || "");
+
+            td.appendChild(editorSpan);
+            if (cIdx === 0) {
+              attachRowDragGrip(td, rIdx);
+            }
+            bindCellEvents(td, editorSpan, rIdx, cIdx);
             tr.appendChild(td);
           }
           tbody.appendChild(tr);
         });
         table.appendChild(tbody);
-        updateToolbarState();
+        updateToolbarPositionAndState();
       } finally {
         isRebuildingDOM = false;
       }
@@ -842,40 +1201,55 @@ class InteractiveTableWidget extends WidgetType {
       const cell = table.querySelector(
         `[data-row="${targetR}"][data-col="${targetC}"]`
       ) as HTMLElement | null;
-      if (cell) {
-        cell.focus();
+      const cellEditor = (cell?.querySelector(".tbl-cell-editor") as HTMLElement) || cell;
+      if (cellEditor) {
+        cellEditor.focus({ preventScroll: true });
         const sel = window.getSelection();
         if (sel) {
           const range = document.createRange();
-          range.selectNodeContents(cell);
+          range.selectNodeContents(cellEditor);
           range.collapse(caretPlacement === "start");
           sel.removeAllRanges();
           sel.addRange(range);
         }
-        updateToolbarState();
+        updateToolbarPositionAndState();
       }
     };
 
+    /**
+     * 先同步底层 CodeMirror 文档 (syncToDoc)，再重建 DOM 并原位聚焦单元格，
+     * 彻底杜绝先聚焦后 dispatch 导致焦点被 CodeMirror 抢走及 blur 二次污染的问题
+     */
     const rebuildAndSync = (
       nextRow: number,
       nextCol: number,
       caretPlacement: "start" | "end" = "end"
     ) => {
+      hasUserEdited = true;
+      syncToDoc(true);
       renderTableDOM();
       focusCell(nextRow, nextCol, caretPlacement);
-      syncToDoc(true);
     };
 
     const flushActiveCellContent = () => {
-      const activeEl = table.querySelector("th:focus, td:focus") as HTMLElement | null;
-      if (activeEl && activeEl.isConnected) {
-        const r = parseInt(activeEl.dataset.row || "0", 10);
-        const c = parseInt(activeEl.dataset.col || "0", 10);
-        const val = formatHTMLToMarkdown(activeEl);
+      const activeEditor = table.querySelector(".tbl-cell-editor:focus") as HTMLElement | null;
+      const activeCell = activeEditor?.closest("th, td") as HTMLElement | null;
+      if (activeCell && activeCell.isConnected) {
+        const r = parseInt(activeCell.dataset.row || "0", 10);
+        const c = parseInt(activeCell.dataset.col || "0", 10);
+        const val = formatHTMLToMarkdown(activeCell);
         if (r === -1) {
-          if (this.currentHeaders[c] !== undefined) this.currentHeaders[c] = val;
-        } else if (this.currentRows[r] && this.currentRows[r][c] !== undefined) {
+          if (this.currentHeaders[c] !== undefined && this.currentHeaders[c] !== val) {
+            this.currentHeaders[c] = val;
+            hasUserEdited = true;
+          }
+        } else if (
+          this.currentRows[r] &&
+          this.currentRows[r][c] !== undefined &&
+          this.currentRows[r][c] !== val
+        ) {
           this.currentRows[r][c] = val;
+          hasUserEdited = true;
         }
       }
     };
@@ -914,7 +1288,6 @@ class InteractiveTableWidget extends WidgetType {
       });
     };
 
-    // 仅在按下鼠标开始框选时挂载一次 window mouseup，松开后立即卸载，彻底根除全局监听器泄漏
     const onWindowMouseUp = () => {
       isSelecting = false;
       selectStart = null;
@@ -923,6 +1296,13 @@ class InteractiveTableWidget extends WidgetType {
 
     table.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      if (
+        (e.target as HTMLElement).closest(
+          ".tbl-col-drag-grip, .tbl-row-drag-grip, .tbl-col-resizer"
+        )
+      ) {
+        return;
+      }
       const cell = (e.target as HTMLElement).closest("th, td") as HTMLElement;
       if (!cell) {
         clearSelection();
@@ -955,19 +1335,19 @@ class InteractiveTableWidget extends WidgetType {
       }
     });
 
-    const getCaretBoundary = (cellEl: HTMLElement): { atStart: boolean; atEnd: boolean } => {
+    const getCaretBoundary = (cellEditor: HTMLElement): { atStart: boolean; atEnd: boolean } => {
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return { atStart: false, atEnd: false };
       const range = sel.getRangeAt(0);
-      if (!range.collapsed || !cellEl.contains(range.startContainer)) {
+      if (!range.collapsed || !cellEditor.contains(range.startContainer)) {
         return { atStart: false, atEnd: false };
       }
       const preRange = range.cloneRange();
-      preRange.selectNodeContents(cellEl);
+      preRange.selectNodeContents(cellEditor);
       preRange.setEnd(range.startContainer, range.startOffset);
 
       const postRange = range.cloneRange();
-      postRange.selectNodeContents(cellEl);
+      postRange.selectNodeContents(cellEditor);
       postRange.setStart(range.endContainer, range.endOffset);
 
       return {
@@ -976,26 +1356,36 @@ class InteractiveTableWidget extends WidgetType {
       };
     };
 
-    const refocusTableAfterUndoRedo = (savedR: number, savedC: number) => {
+    const refocusTableAfterUndoRedo = (
+      savedR: number,
+      savedC: number,
+      savedScrollTop: number
+    ) => {
+      view.scrollDOM.scrollTop = savedScrollTop;
       requestAnimationFrame(() => {
+        view.scrollDOM.scrollTop = savedScrollTop;
         const figures = Array.from(
           view.dom.querySelectorAll<HTMLElement>("figure.table-figure")
         );
+        const targetIdx = Number(container.dataset.tableIdx);
         const matchFig =
           figures.find((f) => Number(f.dataset.fromPos) === this.trackedFromPos) ||
-          figures[Number(container.dataset.tableIdx) || 0] ||
-          figures[0];
+          (!Number.isNaN(targetIdx) ? figures[targetIdx] : undefined);
         if (matchFig) {
           const cell =
             matchFig.querySelector<HTMLElement>(`[data-row="${savedR}"][data-col="${savedC}"]`) ||
+            matchFig.querySelector<HTMLElement>(`[data-row="0"][data-col="0"]`) ||
             matchFig.querySelector<HTMLElement>("td, th");
-          cell?.focus();
+          const editorEl =
+            (cell?.querySelector(".tbl-cell-editor") as HTMLElement) || cell;
+          editorEl?.focus({ preventScroll: true });
+          view.scrollDOM.scrollTop = savedScrollTop;
         }
       });
     };
 
-    table.addEventListener("keydown", (e: KeyboardEvent) => {
-      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做（撤销前先冲刷未落盘的单元格输入）
+    container.addEventListener("keydown", (e: KeyboardEvent) => {
+      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做（严格加锁阻止 blur 回写，并锁定视口 scrollTop）
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1005,9 +1395,15 @@ class InteractiveTableWidget extends WidgetType {
         }
         const savedR = activeRow;
         const savedC = activeCol;
+        const savedScrollTop = view.scrollDOM.scrollTop;
+        isUndoingOrRedoing = true;
         container.dataset.forceRebuild = "1";
-        undo(view);
-        refocusTableAfterUndoRedo(savedR, savedC);
+        try {
+          undo(view);
+        } finally {
+          view.scrollDOM.scrollTop = savedScrollTop;
+        }
+        refocusTableAfterUndoRedo(savedR, savedC, savedScrollTop);
         return;
       }
       if (
@@ -1022,32 +1418,41 @@ class InteractiveTableWidget extends WidgetType {
         }
         const savedR = activeRow;
         const savedC = activeCol;
+        const savedScrollTop = view.scrollDOM.scrollTop;
+        isUndoingOrRedoing = true;
         container.dataset.forceRebuild = "1";
-        redo(view);
-        refocusTableAfterUndoRedo(savedR, savedC);
+        try {
+          redo(view);
+        } finally {
+          view.scrollDOM.scrollTop = savedScrollTop;
+        }
+        refocusTableAfterUndoRedo(savedR, savedC, savedScrollTop);
         return;
       }
 
-      const target = (e.target as HTMLElement).closest("th, td") as HTMLElement | null;
+      const cellEditor = (e.target as HTMLElement).closest(
+        ".tbl-cell-editor"
+      ) as HTMLElement | null;
+      const targetCell = (e.target as HTMLElement).closest("th, td") as HTMLElement | null;
 
-      // 1.5 原生 DOM Selection 富文本快捷键支持
-      if (target && target.isContentEditable) {
+      // 1.5 表格单元格内富文本快捷键支持（含 Ctrl+K 插入超链接）
+      if (cellEditor && cellEditor.isContentEditable) {
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "b") {
           e.preventDefault();
           e.stopPropagation();
-          toggleCellInlineTag(target, "strong");
+          toggleCellInlineTag(cellEditor, "strong");
           return;
         }
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "i") {
           e.preventDefault();
           e.stopPropagation();
-          toggleCellInlineTag(target, "em");
+          toggleCellInlineTag(cellEditor, "em");
           return;
         }
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "x") {
           e.preventDefault();
           e.stopPropagation();
-          toggleCellInlineTag(target, "del");
+          toggleCellInlineTag(cellEditor, "del");
           return;
         }
         if (
@@ -1057,13 +1462,23 @@ class InteractiveTableWidget extends WidgetType {
         ) {
           e.preventDefault();
           e.stopPropagation();
-          toggleCellInlineTag(target, "code");
+          toggleCellInlineTag(cellEditor, "code");
           return;
         }
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "h") {
           e.preventDefault();
           e.stopPropagation();
-          toggleCellInlineTag(target, "mark");
+          toggleCellInlineTag(cellEditor, "mark");
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "k") {
+          e.preventDefault();
+          e.stopPropagation();
+          promptCellInlineLink(cellEditor, () => {
+            hasUserEdited = true;
+            flushActiveCellContent();
+            syncToDoc(true);
+          });
           return;
         }
       }
@@ -1112,10 +1527,10 @@ class InteractiveTableWidget extends WidgetType {
         return;
       }
 
-      if (!target || !target.isContentEditable) return;
+      if (!targetCell || !cellEditor) return;
 
-      const r = parseInt(target.dataset.row || "0", 10);
-      const c = parseInt(target.dataset.col || "0", 10);
+      const r = parseInt(targetCell.dataset.row || "0", 10);
+      const c = parseInt(targetCell.dataset.col || "0", 10);
       const cols = this.currentHeaders.length;
 
       // 2.5 Typora 快捷键：Ctrl+Enter 下方插入行，Ctrl+Shift+Backspace 删除当前行
@@ -1140,8 +1555,8 @@ class InteractiveTableWidget extends WidgetType {
       if (e.key === "Enter" && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        insertNodeAtCellSelection(target, document.createElement("br"));
-        target.dispatchEvent(new Event("input", { bubbles: true }));
+        insertNodeAtCellSelection(cellEditor, document.createElement("br"));
+        cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
         return;
       }
 
@@ -1150,6 +1565,7 @@ class InteractiveTableWidget extends WidgetType {
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
+        if (hasUserEdited) syncToDoc();
         clearSelection();
         if (r === -1) {
           const { from } = resolveCurrentTableSpan();
@@ -1166,6 +1582,7 @@ class InteractiveTableWidget extends WidgetType {
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
+        if (hasUserEdited) syncToDoc();
         clearSelection();
         if (r === this.currentRows.length - 1) {
           const { to } = resolveCurrentTableSpan();
@@ -1180,11 +1597,12 @@ class InteractiveTableWidget extends WidgetType {
 
       // 3.1 左右方向键：单元格首尾边界跨格流转 + 首末格离开表格
       if (e.key === "ArrowLeft" && !e.shiftKey) {
-        const { atStart } = getCaretBoundary(target);
+        const { atStart } = getCaretBoundary(cellEditor);
         if (atStart) {
           e.preventDefault();
           e.stopPropagation();
           flushActiveCellContent();
+          if (hasUserEdited) syncToDoc();
           clearSelection();
           if (c > 0) {
             focusCell(r, c - 1, "end");
@@ -1201,11 +1619,12 @@ class InteractiveTableWidget extends WidgetType {
       }
 
       if (e.key === "ArrowRight" && !e.shiftKey) {
-        const { atEnd } = getCaretBoundary(target);
+        const { atEnd } = getCaretBoundary(cellEditor);
         if (atEnd) {
           e.preventDefault();
           e.stopPropagation();
           flushActiveCellContent();
+          if (hasUserEdited) syncToDoc();
           clearSelection();
           if (c + 1 < cols) {
             focusCell(r, c + 1, "start");
@@ -1226,6 +1645,7 @@ class InteractiveTableWidget extends WidgetType {
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
+        if (hasUserEdited) syncToDoc();
         clearSelection();
         if (!e.shiftKey) {
           if (c + 1 < cols) {
@@ -1251,6 +1671,7 @@ class InteractiveTableWidget extends WidgetType {
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
+        if (hasUserEdited) syncToDoc();
         clearSelection();
         if (r === -1) {
           focusCell(0, c, "end");
@@ -1288,11 +1709,13 @@ class InteractiveTableWidget extends WidgetType {
       } else if (act === "add-col-left") {
         this.currentHeaders.splice(activeCol, 0, "");
         this.currentAlignments.splice(activeCol, 0, "left");
+        this.colWidthsPx.splice(activeCol, 0, null);
         this.currentRows.forEach((row) => row.splice(activeCol, 0, ""));
         rebuildAndSync(activeRow, activeCol, "start");
       } else if (act === "add-col-right") {
         this.currentHeaders.splice(activeCol + 1, 0, "");
         this.currentAlignments.splice(activeCol + 1, 0, "left");
+        this.colWidthsPx.splice(activeCol + 1, 0, null);
         this.currentRows.forEach((row) => row.splice(activeCol + 1, 0, ""));
         rebuildAndSync(activeRow, activeCol + 1, "start");
       } else if (act === "del-row") {
@@ -1315,13 +1738,15 @@ class InteractiveTableWidget extends WidgetType {
             this.currentRows[0] = new Array(cols).fill("");
             rebuildAndSync(0, activeCol, "start");
           } else {
-            focusCell(-1, activeCol, "end");
+            // 若唯一数据行已为空且用户再次点击删行，则删除整个表格（支持 Ctrl+Z 一键恢复）
+            executeToolbarAction("del-table");
           }
         }
       } else if (act === "del-col") {
         if (this.currentHeaders.length > 1) {
           this.currentHeaders.splice(activeCol, 1);
           this.currentAlignments.splice(activeCol, 1);
+          this.colWidthsPx.splice(activeCol, 1);
           this.currentRows.forEach((row) => row.splice(activeCol, 1));
           const nextC = Math.min(activeCol, this.currentHeaders.length - 1);
           rebuildAndSync(activeRow, nextC, "end");
@@ -1333,11 +1758,13 @@ class InteractiveTableWidget extends WidgetType {
           rebuildAndSync(activeRow, 0, "start");
         }
       } else if (act === "del-table") {
+        isUndoingOrRedoing = true;
         const { from, to } = resolveCurrentTableSpan();
         const delFrom = from > 0 && view.state.sliceDoc(from - 1, from) === "\n" ? from - 1 : from;
         view.dispatch({
           changes: { from: delFrom, to, insert: "" },
           selection: { anchor: delFrom },
+          userEvent: "delete.table",
         });
         view.focus();
       }
@@ -1351,19 +1778,44 @@ class InteractiveTableWidget extends WidgetType {
       executeToolbarAction(btn.dataset.act);
     });
 
+    addColEdgeBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      flushActiveCellContent();
+      const newColIdx = this.currentHeaders.length;
+      this.currentHeaders.push(`表头 ${newColIdx + 1}`);
+      this.currentAlignments.push("left");
+      this.colWidthsPx.push(null);
+      this.currentRows.forEach((row) => row.push(""));
+      rebuildAndSync(-1, newColIdx, "end");
+    });
+
+    addRowEdgeBtn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      flushActiveCellContent();
+      const cols = this.currentHeaders.length;
+      this.currentRows.push(new Array(cols).fill(""));
+      rebuildAndSync(this.currentRows.length - 1, 0, "start");
+    });
+
     container.addEventListener("focusin", () => {
       container.classList.add("focused");
+      updateToolbarPositionAndState();
     });
     container.addEventListener("focusout", (e) => {
-      if (isRebuildingDOM) return;
+      if (isRebuildingDOM || isUndoingOrRedoing) return;
       const rel = (e as FocusEvent).relatedTarget as Node | null;
       if (!rel || !container.contains(rel)) {
         container.classList.remove("focused");
       }
     });
 
+    tableWrap.appendChild(table);
+    tableWrap.appendChild(addColEdgeBtn);
     container.appendChild(toolbar);
-    container.appendChild(table);
+    container.appendChild(tableWrap);
+    container.appendChild(addRowEdgeBtn);
     return container;
   }
 

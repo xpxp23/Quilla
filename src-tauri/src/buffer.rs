@@ -8,6 +8,13 @@ pub struct HeadingItem {
     pub line: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextDelta {
+    pub from: usize,
+    pub to: usize,
+    pub insert: String,
+}
+
 pub struct DocumentBuffer {
     rope: Rope,
     is_dirty: bool,
@@ -25,7 +32,13 @@ fn strip_inline_markdown(raw: &str) -> String {
     if let Some(stripped) = out.trim_end_matches('#').strip_suffix(' ') {
         out = stripped.trim().to_string();
     }
-    out
+    // 剥离常见行内语法标记 (** / * / ~~ / == / `)
+    for marker in ["***", "___", "**", "__", "~~", "==", "*", "_", "`"] {
+        if out.contains(marker) {
+            out = out.replace(marker, "");
+        }
+    }
+    out.trim().to_string()
 }
 
 impl DocumentBuffer {
@@ -39,6 +52,24 @@ impl DocumentBuffer {
     pub fn set_text(&mut self, text: &str) {
         self.rope = Rope::from_str(text);
         self.is_dirty = true;
+    }
+
+    /// O(log N) 增量更新 Rope 缓冲区，避免每次打字重建整棵 Rope 树
+    pub fn apply_deltas(&mut self, deltas: &[TextDelta]) -> bool {
+        for d in deltas {
+            let len = self.rope.len_chars();
+            if d.from > d.to || d.to > len {
+                return false;
+            }
+            if d.from < d.to {
+                self.rope.remove(d.from..d.to);
+            }
+            if !d.insert.is_empty() {
+                self.rope.insert(d.from, &d.insert);
+            }
+        }
+        self.is_dirty = true;
+        true
     }
 
     pub fn get_text(&self) -> String {
@@ -61,11 +92,12 @@ impl DocumentBuffer {
         self.is_dirty
     }
 
-    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与代码块内部注释，并兼容引用块内标题
+    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与围栏代码块内部注释，并兼容引用块内标题
     pub fn extract_headings(&self) -> Vec<HeadingItem> {
         let mut headings = Vec::new();
         let mut in_fence = false;
-        let mut fence_marker = "";
+        let mut fence_char: char = '\0';
+        let mut fence_len: usize = 0;
 
         let total_lines = self.rope.len_lines();
         let mut start_line_idx = 0;
@@ -90,11 +122,16 @@ impl DocumentBuffer {
             let trimmed = line_str.trim();
 
             if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                let marker = if trimmed.starts_with("```") { "```" } else { "~~~" };
+                let m_char = trimmed.chars().next().unwrap_or('`');
+                let m_len = trimmed.chars().take_while(|&c| c == m_char).count();
                 if !in_fence {
                     in_fence = true;
-                    fence_marker = marker;
-                } else if trimmed.starts_with(fence_marker) {
+                    fence_char = m_char;
+                    fence_len = m_len;
+                } else if m_char == fence_char
+                    && m_len >= fence_len
+                    && trimmed[m_len..].trim().is_empty()
+                {
                     in_fence = false;
                 }
                 continue;
@@ -104,7 +141,7 @@ impl DocumentBuffer {
                 continue;
             }
 
-            // 兼容顶层标题与引用块内标题 (> # Heading)
+            // 兼容顶层标题与引用块内标题 (> # Heading)，排除 Callout 头部 (> [!NOTE])
             let after_quote = trimmed.trim_start_matches(|c: char| c == '>' || c == ' ');
             if after_quote.starts_with('#') {
                 let mut level = 0;
@@ -151,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_heading_extraction() {
-        let content = "---\ntitle: demo\n---\n# Header 1\nSome paragraph\n```python\n# Code comment\n```\n## Subheader 2 ##\n> ### Quoted Header 3\nNot # A Header";
+        let content = "---\ntitle: demo\n---\n# Header 1\nSome paragraph\n````markdown\n```python\n# Code comment\n```\n````\n## **Subheader *2*** ##\n> ### Quoted Header 3\nNot # A Header";
         let buf = DocumentBuffer::new(content);
         let headings = buf.extract_headings();
 

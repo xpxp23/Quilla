@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { setSearchMatchesEffect } from "../editor/extensions/search-highlighter";
 import { findTablesInDoc } from "../editor/extensions/table-editor";
+import { forceRefreshEffect } from "../editor/extensions/refresh-effect";
 
 export interface FindReplaceController {
   open: (replaceMode?: boolean) => void;
@@ -31,7 +32,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         </button>
         <button type="button" id="find-case-btn" class="find-btn" title="区分大小写">Aa</button>
         <button type="button" id="find-word-btn" class="find-btn" title="全词匹配">W</button>
-        <button type="button" id="find-regex-btn" class="find-btn" title="使用正则表达式">.*</button>
+        <button type="button" id="find-regex-btn" class="find-btn" title="使用正则表达式 (支持 $1 捕获组替换)">.*</button>
         <button type="button" id="find-toggle-replace" class="find-btn" title="展开/收起替换 (Ctrl+H)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
         </button>
@@ -41,7 +42,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
       </div>
     </div>
     <div id="replace-row" class="replace-row hidden">
-      <input type="text" id="replace-input" class="replace-input" placeholder="替换为..." spellcheck="false" autocomplete="off" />
+      <input type="text" id="replace-input" class="replace-input" placeholder="替换为 (正则模式支持 $1, $2)..." spellcheck="false" autocomplete="off" />
       <div class="replace-actions">
         <button type="button" id="replace-btn" class="find-btn text-btn">替换</button>
         <button type="button" id="replace-all-btn" class="find-btn text-btn">全部替换</button>
@@ -197,22 +198,43 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     highlightMatch(prevIdx, true);
   }
 
+  function computeReplacementText(from: number, to: number, rawReplacement: string): string {
+    if (!isRegex || !activeRegex) {
+      return rawReplacement;
+    }
+    try {
+      const matchedStr = view.state.sliceDoc(from, to);
+      const singleRe = new RegExp(activeRegex.source, activeRegex.flags.replace("g", ""));
+      return matchedStr.replace(singleRe, rawReplacement);
+    } catch {
+      return rawReplacement;
+    }
+  }
+
   function replaceCurrent() {
     if (matches.length === 0 || currentIndex < 0) return;
     const m = matches[currentIndex];
-    const rep = replaceInput.value;
+    const rep = computeReplacementText(m.from, m.to, replaceInput.value);
     view.dispatch({
       changes: { from: m.from, to: m.to, insert: rep },
       selection: { anchor: m.from + rep.length },
+      effects: [forceRefreshEffect.of(true)],
     });
     performSearch(true);
   }
 
   function replaceAll() {
     if (matches.length === 0) return;
-    const rep = replaceInput.value;
-    const changes = matches.map((m) => ({ from: m.from, to: m.to, insert: rep }));
-    view.dispatch({ changes });
+    const rawRep = replaceInput.value;
+    const changes = matches.map((m) => ({
+      from: m.from,
+      to: m.to,
+      insert: computeReplacementText(m.from, m.to, rawRep),
+    }));
+    view.dispatch({
+      changes,
+      effects: [forceRefreshEffect.of(true)],
+    });
     performSearch(true);
   }
 

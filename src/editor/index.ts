@@ -8,6 +8,7 @@ import {
   activeDocumentPath,
   stripInlineMarkdown,
 } from "./extensions/live-preview";
+import { docStructureField } from "./extensions/doc-structure";
 import { imeGuardPlugin } from "./extensions/ime-guard";
 import { tableKeymap, tableLiveViewField } from "./extensions/table-editor";
 import { formattingKeymap } from "./extensions/formatting-keymap";
@@ -31,15 +32,27 @@ import { boundaryTraversalExtension } from "./extensions/boundary-traversal";
 import { emojiAutocompletion } from "./extensions/emoji-autocomplete";
 import { smartAutopairExtension } from "./extensions/smart-autopair";
 import { blockHandlePlugin } from "./extensions/block-handle";
+import { slashCommandExtension } from "./extensions/slash-command";
+import { setupWikiLinkInteractions } from "./extensions/wiki-link";
+import { TextDeltaPayload } from "../components/auto-recovery";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface EditorCallbacks {
-  onChange: (content: string) => void;
+  onChange: (content: string, deltas?: TextDeltaPayload[]) => void;
   onStatsUpdate: (words: number, chars: number) => void;
   onOutlineUpdate: (headings: Array<{ level: number; text: string; line: number }>) => void;
   onCursorLineChange?: (line: number) => void;
   onOpenFile?: (filePath: string) => void;
   onOpenWorkspace?: (dirPath: string) => void;
+}
+
+/**
+ * 精准统计中英文混合词数：单个汉字/日文假名计 1 词，连续英文单词/数字计 1 词，
+ * 与 stats-popover.ts 详情弹窗口径完全一致
+ */
+export function countMixedWords(text: string): number {
+  const matches = text.match(/[\u4e00-\u9fa5\u3040-\u30ff]|[a-zA-Z0-9_\-]+/g);
+  return matches ? matches.length : 0;
 }
 
 const cleanFocusTheme = EditorView.theme({
@@ -107,13 +120,29 @@ export function handleOpenLink(href: string, onOpenFile?: (filePath: string) => 
   }
 }
 
-export function extractOutlineHeadings(doc: {
-  lines: number;
-  line: (n: number) => { text: string };
-}): Array<{ level: number; text: string; line: number }> {
+export function extractOutlineHeadings(
+  doc: {
+    lines: number;
+    line: (n: number) => { text: string };
+  },
+  state?: EditorState
+): Array<{ level: number; text: string; line: number }> {
+  // 若传入 EditorState 且存在单趟 AST 结构缓存，直接 O(1) 读取
+  if (state) {
+    const cached = state.field(docStructureField, false);
+    if (cached) {
+      return cached.headings.map((h) => ({
+        level: h.level,
+        text: h.text,
+        line: h.line,
+      }));
+    }
+  }
+
   const headings: Array<{ level: number; text: string; line: number }> = [];
   let inFence = false;
   let fenceChar = "";
+  let fenceLen = 0;
 
   // 跳过顶部 YAML Front Matter
   let startScanLine = 1;
@@ -131,12 +160,15 @@ export function extractOutlineHeadings(doc: {
   for (let i = startScanLine; i <= doc.lines; i++) {
     const lineText = doc.line(i).text;
     const trimmed = lineText.trim();
-    if (/^(```+|~~~+)/.test(trimmed)) {
-      const marker = trimmed.startsWith("`") ? "`" : "~";
+    const fenceM = trimmed.match(/^(`{3,}|~{3,})/);
+    if (fenceM) {
+      const marker = fenceM[1][0];
+      const len = fenceM[1].length;
       if (!inFence) {
         inFence = true;
         fenceChar = marker;
-      } else if (marker === fenceChar) {
+        fenceLen = len;
+      } else if (marker === fenceChar && len >= fenceLen && /^(`{3,}|~{3,})\s*$/.test(trimmed)) {
         inFence = false;
       }
       continue;
@@ -160,6 +192,17 @@ export function extractOutlineHeadings(doc: {
 }
 
 export { toggleTypewriterMode, isTypewriterModeActive, toggleFocusMode, isFocusModeActive };
+
+/**
+ * 为指定编辑器实例创建全新的 EditorState（含独立 Undo/Redo 历史栈，供多标签页切换或文件重置使用）
+ */
+export function createEditorStateForView(view: EditorView, newContent: string): EditorState {
+  const extensions: Extension[] = (view as any)._quillaExtensions || [];
+  return EditorState.create({
+    doc: newContent,
+    extensions,
+  });
+}
 
 /**
  * 彻底重置编辑器文档与 Undo/Redo 历史栈（用于切换文件或新建文件时隔离历史栈，严防 Ctrl+Z 跨文件串线）
@@ -190,22 +233,34 @@ export function createEditor(
   callbacks: EditorCallbacks
 ): EditorView {
   let debounceTimer: any = null;
+  let pendingDeltas: TextDeltaPayload[] = [];
 
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
+      update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+        pendingDeltas.push({
+          fromChar: fromA,
+          toChar: toA,
+          insert: inserted.toString(),
+        });
+      });
+
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        const doc = update.view.state.doc;
+        const state = update.view.state;
+        const doc = state.doc;
         const text = doc.toString();
 
         const chars = text.length;
-        const words = (text.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
+        const words = countMixedWords(text);
         callbacks.onStatsUpdate(words, chars);
 
-        const headings = extractOutlineHeadings(doc);
+        const headings = extractOutlineHeadings(doc, state);
         callbacks.onOutlineUpdate(headings);
 
-        callbacks.onChange(text);
+        const flushedDeltas = pendingDeltas;
+        pendingDeltas = [];
+        callbacks.onChange(text, flushedDeltas);
       }, 65);
     }
 
@@ -219,10 +274,12 @@ export function createEditor(
     cleanFocusTheme,
     history(),
     markdown(),
+    docStructureField,
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     imeGuardPlugin,
     ...smartAutopairExtension(),
     emojiAutocompletion,
+    slashCommandExtension(),
     blockHandlePlugin,
     tableLiveViewField,
     mermaidLiveViewField,
@@ -322,10 +379,13 @@ export function createEditor(
     onOpenWorkspace: callbacks.onOpenWorkspace,
   });
 
+  // 绑定 [[Wiki Links]] 悬停预览卡片与点击跳转交互
+  setupWikiLinkInteractions(view);
+
   // 初次触发一次统计与大纲构建
-  const words = (initialDoc.match(/[\w\d\u4e00-\u9fa5]+/g) || []).length;
+  const words = countMixedWords(initialDoc);
   callbacks.onStatsUpdate(words, initialDoc.length);
-  callbacks.onOutlineUpdate(extractOutlineHeadings(view.state.doc));
+  callbacks.onOutlineUpdate(extractOutlineHeadings(view.state.doc, view.state));
 
   return view;
 }

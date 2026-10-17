@@ -3,6 +3,9 @@ import { EditorView, WidgetType, Decoration, DecorationSet } from "@codemirror/v
 import mermaid from "mermaid";
 import { forceRefreshEffect } from "./refresh-effect";
 import { centerElementInTypewriter } from "./typewriter-mode";
+import { getDocStructureFromState, MermaidBlock } from "./doc-structure";
+
+export type { MermaidBlock };
 
 // 初始化 Mermaid 图表配置
 mermaid.initialize({
@@ -16,56 +19,8 @@ mermaid.initialize({
   },
 });
 
-export interface MermaidBlock {
-  startLine: number;
-  endLine: number;
-  from: number;
-  to: number;
-  code: string;
-}
-
 export function findMermaidBlocks(state: EditorState): MermaidBlock[] {
-  const doc = state.doc;
-  const blocks: MermaidBlock[] = [];
-  let inBlock = false;
-  let fenceChar = "";
-  let startLine = 0;
-  let codeLines: string[] = [];
-
-  for (let i = 1; i <= doc.lines; i++) {
-    const line = doc.line(i);
-    const trimmed = line.text.trim();
-
-    if (!inBlock) {
-      const m = trimmed.match(/^(```+|~~~+)\s*mermaid\s*$/i);
-      if (m) {
-        inBlock = true;
-        fenceChar = m[1][0];
-        startLine = i;
-        codeLines = [];
-      }
-    } else {
-      const isClose =
-        (fenceChar === "`" && /^```+$/.test(trimmed)) ||
-        (fenceChar === "~" && /^~~~+$/.test(trimmed));
-      if (isClose) {
-        inBlock = false;
-        const from = doc.line(startLine).from;
-        const to = line.to;
-        blocks.push({
-          startLine,
-          endLine: i,
-          from,
-          to,
-          code: codeLines.join("\n"),
-        });
-      } else {
-        codeLines.push(line.text);
-      }
-    }
-  }
-
-  return blocks;
+  return getDocStructureFromState(state).mermaidBlocks;
 }
 
 const svgRenderCache = new Map<string, string>();
@@ -175,7 +130,7 @@ class MermaidWidget extends WidgetType {
       const header = document.createElement("div");
       header.className = "mermaid-header live-preview-header";
       header.innerHTML = `
-        <span class="mermaid-badge">MERMAID 实时预览</span>
+        <span class="mermaid-badge">❖ MERMAID 实时预览</span>
         <button type="button" class="live-preview-fold-btn" title="完成编辑并收起源码">✓ 完成收起</button>
       `;
       header.querySelector(".live-preview-fold-btn")?.addEventListener("mousedown", (e) => {
@@ -279,12 +234,23 @@ export const mermaidLiveViewField = StateField.define<DecorationSet>({
     return computeMermaidDecorations(state);
   },
   update(decorations, tr) {
-    if (
-      tr.docChanged ||
-      tr.selection ||
-      tr.effects.some((e) => e.is(forceRefreshEffect))
-    ) {
+    if (tr.docChanged || tr.effects.some((e) => e.is(forceRefreshEffect))) {
       return computeMermaidDecorations(tr.state);
+    }
+    if (tr.selection) {
+      const blocks = findMermaidBlocks(tr.state);
+      if (blocks.length === 0) return decorations;
+      const oldLine = tr.startState.doc.lineAt(tr.startState.selection.main.head).number;
+      const newLine = tr.state.doc.lineAt(tr.state.selection.main.head).number;
+      if (oldLine === newLine) return decorations;
+      const touched = blocks.some(
+        (b) =>
+          (oldLine >= b.startLine && oldLine <= b.endLine) !==
+          (newLine >= b.startLine && newLine <= b.endLine)
+      );
+      if (touched) {
+        return computeMermaidDecorations(tr.state);
+      }
     }
     return decorations;
   },

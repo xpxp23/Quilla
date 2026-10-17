@@ -10,6 +10,8 @@ import {
   isTypewriterModeActive,
   toggleFocusMode,
   isFocusModeActive,
+  countMixedWords,
+  extractOutlineHeadings,
 } from "./editor";
 import { themeLoader, BUILTIN_THEMES } from "./themes/theme-loader";
 import { initTitlebar, updateWindowTitle } from "./components/titlebar";
@@ -55,81 +57,83 @@ import {
   saveRecoverySnapshot,
   clearRecoverySnapshot,
   checkAndPromptRecovery,
+  TextDeltaPayload,
 } from "./components/auto-recovery";
+import { TabsManager, DocumentTab } from "./components/tabs-manager";
+import {
+  registerWikiWorkspaceProvider,
+  BacklinksController,
+  parseWikiLinksInLine,
+} from "./editor/extensions/wiki-link";
+import { navigateToAnchor } from "./editor/extensions/anchor-navigator";
 
-const INITIAL_DEMO_DOC = `# 欢迎使用 Quilla (羽墨)
+const INITIAL_DEMO_DOC = `# 欢迎使用 Quilla (羽墨) v0.4
 
-这是一个基于 **Rust + Tauri v2 + CodeMirror 6** 打造的极速、现代化的 Markdown 所见即所得编辑器。
+这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与轻量级本地知识库。
 
-## 核心特色与沉浸式体验
-
-- **Token 级微观局部展开 (Micro-expansion)**：光标仅在进入特定单词标记（如 **加粗**、*优雅斜体*、***加粗斜体***、\`行内代码\`、公式 $E = mc^2$）内部时才展开源码，同行其他元素各自保持优雅渲染！
-- **可视化表格内联编辑 (In-Place Table Editor)**：表格自始至终是标准排版表格，点击任意单元格直接打字，支持四向方向键导航、\`Tab\` 跳格、\`Ctrl+Enter\` 续行，聚焦时浮出工具条一键增删行列、切换对齐与删除整表！
-- **Mermaid 流程图矢量渲染**：支持 \`\`\`mermaid 语法自动生成矢量流程图，编辑时上方显示源码，下方实时保留渲染预览，移出后平滑收起为无边框画布！
-- **多行 LaTeX 数学公式块**：内置矢量 KaTeX 引擎，编辑时实时双向渲染。
-- **多语言代码块语法高亮**：内置 20+ 语言词法高亮与行号展示，支持右上角搜索切换语言标签与一键复制代码。
-- **全链路图片资产与拖放管道**：支持截图 \`Ctrl+V\` 自动在本地 \`assets/\` 落盘并插入，外部图片/文件直接拖入编辑器即可导入！
+> [!TIP] Quilla v0.4 全新核心特性速览
+> - **斜杠命令面板 (\`/\` Slash Command)**：在任意位置输入 \`/\` 即可快速插入表格、Mermaid 模板、数学公式、Callout 提示卡与日期时间。
+> - **多标签页与左右分屏 (\`Ctrl+\\\` Split View)**：顶部支持多文档标签自由切换（保留独立 Undo 栈与滚动位置）与双栏对照写作。
+> - **双向链接与知识库 (\`[[Wiki Links]]\`)**：输入 \`[[\` 自动补全工作区文档与 \`#标题\`，支持悬停预览卡片与底部反向链接面板。
+> - **Pointer Events 统一拖拽引擎**：大纲章节、正文左侧 6 点抓手（支持多段框选批量拖拽）及表格行列均支持丝滑拖拽排序！
 
 ---
 
-## 体验 1：可视化交互表格 (点击即可直接输入)
+## 体验 1：多级有序列表自动重排与交互表格
 
-点击任意单元格直接打字；按 \`Tab\` 或方向键自由跳格，在最后一格按 \`Tab\` 自动新增一行：
+1. 一级核心架构：Rust Ropey 增量缓冲 + CodeMirror 6 Lezer 语法树
+2. 多级列表智能编号（在任意层级按 \`Tab\` / \`Shift+Tab\` 自动归零并重排后续序号）：
+   1. 子级列表项自动从 \`1.\` 独立起算
+   2. 支持多行框选批量缩进与降级
+3. 可视化交互表格（支持拖拽行列换位、拖拽列边缘调宽与 \`Ctrl+K\` 插入超链接）：
 
-| 模块名称 | 核心语言 | 职责说明 | 性能指标 |
+| 模块名称 | 核心技术 | 关键特性 | 性能指标 |
 | :--- | :---: | :--- | ---: |
-| Rope Core | Rust | 文档缓冲原子持久化 | < 1ms |
-| Micro Live View | TypeScript | 视口虚拟化与微观展开 | 60 FPS |
-| Visual Table | CSS/DOM | 可视化表格内联双向同步 | 即时响应 |
-| Mermaid Engine | Mermaid.js | 响应式矢量流程图渲染 | 即时响应 |
+| Lezer AST Engine | CodeMirror 6 | 增量语法树与单趟结构缓存 | < 0.5ms |
+| Pointer Drag | Pointer Events | 大纲/块手柄/表格全场景统一拖拽 | 60 FPS |
+| Visual Table | DOM Keep-Alive | 完美支持 Ctrl+Z 撤销与列宽拖拽 | 即时响应 |
+| Wiki Knowledge | Rust Rayon | \`[[双链补全]]\` 与多线程反向链接检索 | 毫秒级 |
 
 ---
 
-## 体验 2：Mermaid 流程图渲染 (实时边写边预览)
+## 体验 2：GitHub 风格 Callout 高亮卡片
+
+> [!NOTE] 笔记与提示 (Note / Tip / Important / Warning / Caution)
+> 光标移出时自动渲染为带矢量图标与主题色的精致卡片，点击头部或移入首行即可原位修改类型与标题。
+
+> [!WARNING] 注意事项
+> 在表格中删除行或调整结构后，随时按 \`Ctrl+Z\` 即可无损撤销且视口平滑锁定不跳动。
+
+---
+
+## 体验 3：Mermaid 流程图渲染 (实时边写边预览)
 
 \`\`\`mermaid
 flowchart TD
-    Start["启动 Quilla (羽墨)"] --> Parse["CodeMirror 6 极速排版"]
-    Parse --> Mode{"视图模式?"}
-    Mode -->|"实时预览"| Live["所见即所得渲染 (表格/公式/流程图)"]
-    Mode -->|"源码模式"| Source["极简纯文本编辑"]
-    Live --> Edit["单击或点击右上角图标进入源码编辑"]
-    Edit --> Live
+    Start["启动 Quilla v0.4"] --> AST["Lezer AST 增量语法树解析"]
+    AST --> Slash["输入 / 唤起斜杠命令面板"]
+    AST --> Wiki["输入 [[ 触发双链自动补全"]
+    Slash --> Split["按 Ctrl+\\ 开启左右分屏对照写作"]
+    Wiki --> Split
 \`\`\`
 
 ---
 
-## 体验 3：多语言代码块卡片 (语法高亮、行号、语言切换与复制)
+## 体验 4：多语言代码块与 KaTeX 数学公式
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨)!");
-    let rope = ropey::Rope::from_str("极速 Markdown 所见即所得引擎");
-    println!("文档字数: {}", rope.len_chars());
+    println!("Hello, Quilla (羽墨) v0.4!");
+    let rope = ropey::Rope::from_str("极速 Markdown 所见即所得与双链知识库");
+    println!("文档字符数: {}", rope.len_chars());
 }
 \`\`\`
 
----
-
-## 体验 4：数学公式与行内排版
-
-- 质能方程：$E = mc^2$
-- 行内斜体测试：*星号斜体 (Italic)* 与 _下划线斜体 (Underline Italic)_ 与 ***加粗斜体 (Bold Italic)***
+- 质能方程：$E = mc^2$，欧拉恒等式：$e^{i\\pi} + 1 = 0$
 - 高斯正态分布积分公式：
 $$
 \\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}
 $$
-
----
-
-## 体验 5：优雅引用块与快捷操作
-
-> **快捷操作指南：**
-> - 打字机模式：按 \`F9\` 或点击底部状态栏【打字机】，光标垂直软居中锁频，滚轮可自由翻阅
-> - 专注模式：按 \`F8\` 或点击底部状态栏【专注】，当前段落聚焦高亮，其余文本平滑淡化
-> - 5 套内置主题：点击底部状态栏【主题】，一键在 GitHub、Night、Newsprint、Clear、Whitey 之间自由切换
-> - 列表智能状态机：按 \`Enter\` 智能续行编号与任务框，按 \`Tab\` / \`Shift+Tab\` 缩进与降级，空项按 \`Enter\` 或 \`Backspace\` 智能退出
-> - 偏好设置中心：按 \`Ctrl+,\` 随时定制字号、行高、版心宽度、代码块行号与自动保存策略
 `;
 
 function sanitizeHref(rawUrl: string): string {
@@ -143,11 +147,14 @@ function sanitizeHref(rawUrl: string): string {
 class App {
   private currentFilePath: string | null = null;
   private currentWorkspaceRoot: string | null = null;
+  private workspaceFileCache: Array<{ path: string; name: string; stem: string }> = [];
   private isModified: boolean = false;
   private savedContent: string = INITIAL_DEMO_DOC;
   private loadSequence: number = 0;
   private editorView: EditorView | null = null;
   private findReplaceCtrl: FindReplaceController | null = null;
+  private tabsManager: TabsManager | null = null;
+  private backlinksCtrl: BacklinksController | null = null;
   private currentHeadings: OutlineHeading[] = [];
   private autoSaveTimer: any = null;
   private isClosingConfirmationOpen: boolean = false;
@@ -170,9 +177,56 @@ class App {
     this.initSidebarTabs();
     this.initSidebarActions();
 
+    // 注册 [[Wiki Links]] 工作区上下文提供器
+    registerWikiWorkspaceProvider({
+      getWorkspaceRoot: () => this.currentWorkspaceRoot,
+      getActiveFilePath: () => this.currentFilePath,
+      getWorkspaceMarkdownFiles: async () => {
+        if (this.workspaceFileCache.length > 0) {
+          return this.workspaceFileCache;
+        }
+        return this.refreshWorkspaceMarkdownIndex();
+      },
+      onOpenWikiTarget: async (filePath, headingAnchor) => {
+        const loaded = await this.loadFile(filePath);
+        if (loaded && headingAnchor && this.editorView) {
+          setTimeout(() => {
+            if (this.editorView) {
+              navigateToAnchor(this.editorView, headingAnchor);
+            }
+          }, 50);
+        }
+      },
+      onCreateAndOpenWikiFile: async (targetName, headingAnchor) => {
+        if (!this.currentWorkspaceRoot) {
+          showToast("请先打开工作区文件夹以创建双链笔记", "info");
+          return;
+        }
+        const cleanName = targetName.replace(/[\\/:*?"<>|]/g, "_").trim();
+        const fileName = cleanName.toLowerCase().endsWith(".md")
+          ? cleanName
+          : `${cleanName}.md`;
+        const sep = this.currentWorkspaceRoot.includes("\\") ? "\\" : "/";
+        const fullPath = `${this.currentWorkspaceRoot.replace(/[\\/]+$/, "")}${sep}${fileName}`;
+        const initialHeading = headingAnchor ? `\n\n## ${headingAnchor}\n\n` : "\n\n";
+        const initialMd = `# ${cleanName.replace(/\.md$/i, "")}${initialHeading}`;
+        try {
+          await invoke("save_file_content", {
+            path: fullPath,
+            content: initialMd,
+          });
+          await this.loadWorkspace(this.currentWorkspaceRoot, true);
+          await this.loadFile(fullPath);
+          showToast(`已自动创建并打开笔记：${fileName}`, "success");
+        } catch (err) {
+          showToast(`创建双链笔记失败: ${err}`, "error");
+        }
+      },
+    });
+
     const writeContainer = document.getElementById("write")!;
     this.editorView = createEditor(writeContainer, INITIAL_DEMO_DOC, {
-      onChange: (content) => this.handleContentChange(content),
+      onChange: (content, deltas) => this.handleContentChange(content, deltas),
       onStatsUpdate: (words, chars) => this.updateStats(words, chars),
       onOutlineUpdate: (headings) => this.updateOutline(headings),
       onCursorLineChange: (line) => {
@@ -183,28 +237,46 @@ class App {
       onOpenWorkspace: (dirPath) => this.loadWorkspace(dirPath),
     });
 
+    // 初始化多文档标签栏与左右分屏控制器
+    this.tabsManager = new TabsManager({
+      getPrimaryView: () => this.editorView,
+      onActiveTabChanged: (tab) => this.syncFromActiveTab(tab),
+      onTabCloseConfirm: async (tab) => {
+        if (!tab.isModified) return "discard";
+        this.tabsManager?.activateTab(tab.id);
+        return this.confirmDiscardOrSave();
+      },
+      onNewBlankTabRequest: () => {
+        this.newFile();
+      },
+      onOpenFileRequest: (filePath) => {
+        this.loadFile(filePath);
+      },
+      onSecondaryDocChanged: (tab, content) => {
+        saveRecoverySnapshot(tab.filePath, content, tab.title);
+      },
+    });
+    this.tabsManager.init(null, "未命名.md", INITIAL_DEMO_DOC);
+
+    // 初始化底部 [[Wiki Links]] 反向链接面板
+    const writeWrapper = document.getElementById("write-wrapper");
+    if (writeWrapper) {
+      this.backlinksCtrl = new BacklinksController(writeWrapper, (filePath, line, targetName) => {
+        this.loadFile(filePath).then((ok) => {
+          if (ok && this.editorView) {
+            pulseSearchMatch(this.editorView, line, targetName);
+          }
+        });
+      });
+    }
+
     this.findReplaceCtrl = initFindReplace(this.editorView);
 
     const quickOpen = initQuickOpen({
       onOpenFile: (filePath) => this.loadFile(filePath),
       getWorkspaceFiles: async () => {
-        if (!this.currentWorkspaceRoot) return [];
-        try {
-          const res = await invoke<any[]>("list_workspace_files", {
-            root: this.currentWorkspaceRoot,
-          });
-          const paths: string[] = [];
-          const traverse = (items: any[]) => {
-            for (const item of items) {
-              if (!item.is_dir) paths.push(item.path);
-              if (item.children) traverse(item.children);
-            }
-          };
-          traverse(res);
-          return paths;
-        } catch {
-          return [];
-        }
+        const list = await this.refreshWorkspaceMarkdownIndex();
+        return list.map((f) => f.path);
       },
     });
 
@@ -258,6 +330,11 @@ class App {
               if (!this.isModified && this.editorView) {
                 this.savedContent = diskContent;
                 resetEditorDocument(this.editorView, diskContent);
+                this.tabsManager?.updateActiveTabSavedMeta(
+                  this.currentFilePath,
+                  this.currentFilePath.split(/[\\/]/).pop() || "未命名.md",
+                  diskContent
+                );
                 showToast("外部文件已更新，内容已自动同步", "info");
               } else {
                 showToast("注意：当前文档在外部被修改，保存时将覆盖外部改动", "info");
@@ -431,7 +508,9 @@ class App {
     });
 
     window.addEventListener("beforeunload", (e) => {
-      if (this.isModified) {
+      const anyDirty =
+        this.isModified || (this.tabsManager?.getAllTabs().some((t) => t.isModified) ?? false);
+      if (anyDirty) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -526,11 +605,91 @@ class App {
         resetEditorDocument(this.editorView, snapshot.content);
         this.editorView.focus();
       }
+      if (this.tabsManager) {
+        const active = this.tabsManager.getActiveTab();
+        if (active && this.editorView) {
+          active.filePath = snapshot.filePath;
+          active.title =
+            snapshot.title ||
+            (snapshot.filePath ? snapshot.filePath.split(/[\\/]/).pop()! : "未命名.md");
+          active.savedContent = this.savedContent;
+          active.editorState = this.editorView.state;
+          active.isModified = true;
+          this.tabsManager.renderTabs();
+        }
+      }
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, snapshot.filePath);
       this.handleContentChange(snapshot.content);
       showToast("已恢复未保存的文档草稿", "success");
     });
+  }
+
+  /**
+   * 当通过多标签栏切换当前激活标签时，完整同步 App 状态、标题栏、文件树高亮、大纲、字数与反向链接
+   */
+  private syncFromActiveTab(tab: DocumentTab) {
+    this.currentFilePath = tab.filePath;
+    this.savedContent = tab.savedContent;
+    this.isModified = tab.isModified;
+    clearImageCache();
+    setActiveDocumentPath(tab.filePath);
+    if (tab.filePath) {
+      localStorage.setItem("typora_last_file", tab.filePath);
+    }
+
+    updateWindowTitle(tab.title, tab.isModified);
+    const saveStatus = document.getElementById("footer-save-status");
+    if (saveStatus) {
+      saveStatus.textContent = tab.isModified ? "● 未保存" : "已保存";
+      saveStatus.classList.toggle("is-dirty", tab.isModified);
+    }
+
+    const treeContainer = document.getElementById("file-library-tree");
+    syncActiveTreeItem(treeContainer, tab.filePath);
+
+    if (this.editorView) {
+      const doc = this.editorView.state.doc;
+      const text = doc.toString();
+      this.updateStats(countMixedWords(text), text.length);
+      this.updateOutline(extractOutlineHeadings(doc, this.editorView.state));
+      this.editorView.focus();
+    }
+
+    this.findReplaceCtrl?.notifyDocChanged();
+    this.backlinksCtrl?.refresh();
+  }
+
+  private async refreshWorkspaceMarkdownIndex(): Promise<
+    Array<{ path: string; name: string; stem: string }>
+  > {
+    if (!this.currentWorkspaceRoot) {
+      this.workspaceFileCache = [];
+      return [];
+    }
+    try {
+      const res = await invoke<any[]>("list_workspace_files", {
+        root: this.currentWorkspaceRoot,
+      });
+      const list: Array<{ path: string; name: string; stem: string }> = [];
+      const traverse = (items: any[]) => {
+        for (const item of items) {
+          if (!item.is_dir && /\.(md|markdown|txt)$/i.test(item.name)) {
+            list.push({
+              path: item.path,
+              name: item.name,
+              stem: item.name.replace(/\.(md|markdown|txt)$/i, ""),
+            });
+          }
+          if (item.children) traverse(item.children);
+        }
+      };
+      traverse(res);
+      this.workspaceFileCache = list;
+      return list;
+    } catch {
+      return [];
+    }
   }
 
   private setupAutoSaveTimer() {
@@ -660,8 +819,15 @@ class App {
     if (this.isClosingConfirmationOpen) return;
     this.isClosingConfirmationOpen = true;
     try {
-      const choice = await this.confirmDiscardOrSave();
-      if (choice === "cancel") return;
+      this.tabsManager?.snapshotActiveTabState();
+      const allTabs = this.tabsManager?.getAllTabs() || [];
+      for (const tab of allTabs) {
+        if (tab.isModified) {
+          this.tabsManager?.activateTab(tab.id);
+          const choice = await this.confirmDiscardOrSave();
+          if (choice === "cancel") return;
+        }
+      }
       await invoke("window_close");
     } catch (e) {
       console.error("关闭窗口失败:", e);
@@ -675,9 +841,10 @@ class App {
       return "discard";
     }
 
+    const activeTab = this.tabsManager?.getActiveTab();
     const fileName = this.currentFilePath
       ? this.currentFilePath.split(/[\\/]/).pop()!
-      : "未命名.md";
+      : activeTab?.title || "未命名.md";
 
     const choice = await showSaveConfirmDialog({ fileName });
     if (choice === "save") {
@@ -710,11 +877,13 @@ class App {
       localStorage.setItem("typora_last_file", this.currentFilePath);
       clearRecoverySnapshot(this.currentFilePath);
       const fileName = this.currentFilePath.split(/[\\/]/).pop() || "未命名.md";
+      this.tabsManager?.updateActiveTabSavedMeta(this.currentFilePath, fileName, content);
       updateWindowTitle(fileName, false);
       if (saveStatus) {
         saveStatus.textContent = silent ? "已自动保存" : "已保存";
         saveStatus.classList.remove("is-dirty");
       }
+      this.backlinksCtrl?.refresh();
       return true;
     } catch (err) {
       if (!silent) {
@@ -726,9 +895,10 @@ class App {
   }
 
   public async saveFileAs(): Promise<boolean> {
+    const activeTab = this.tabsManager?.getActiveTab();
     const defaultName = this.currentFilePath
       ? this.currentFilePath.split(/[\\/]/).pop()!
-      : "未命名.md";
+      : activeTab?.title || "未命名.md";
 
     try {
       const selectedPath: string | null = await invoke("select_save_file_path", {
@@ -782,6 +952,7 @@ class App {
       clearRecoverySnapshot(targetPath);
 
       const fileName = targetPath.split(/[\\/]/).pop() || "未命名.md";
+      this.tabsManager?.updateActiveTabSavedMeta(targetPath, fileName, content);
       updateWindowTitle(fileName, false);
 
       const saveStatus = document.getElementById("footer-save-status");
@@ -807,6 +978,7 @@ class App {
       }
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, targetPath);
+      this.backlinksCtrl?.refresh();
 
       showToast(`已保存至 ${fileName}`, "success");
       return true;
@@ -817,6 +989,12 @@ class App {
   }
 
   private async newFile() {
+    if (this.tabsManager) {
+      const tab = this.tabsManager.createNewBlankTab("");
+      this.syncFromActiveTab(tab);
+      return;
+    }
+
     const choice = await this.confirmDiscardOrSave();
     if (choice === "cancel") return;
 
@@ -873,6 +1051,7 @@ class App {
 
   private closeWorkspace() {
     this.currentWorkspaceRoot = null;
+    this.workspaceFileCache = [];
     localStorage.removeItem("typora_last_workspace");
     document.body.classList.remove("has-workspace");
     invoke("close_workspace_watcher").catch(() => {});
@@ -884,12 +1063,10 @@ class App {
 
     const treeContainer = document.getElementById("file-library-tree");
     if (treeContainer) treeContainer.innerHTML = "";
+    this.backlinksCtrl?.refresh();
   }
 
   private async promptOpenFile() {
-    const choice = await this.confirmDiscardOrSave();
-    if (choice === "cancel") return;
-
     try {
       const selectedPath: string | null = await invoke("select_open_file_path");
       if (selectedPath && selectedPath.trim()) {
@@ -902,8 +1079,8 @@ class App {
 
   /**
    * 完整出版级 Markdown -> HTML 递归异步渲染管线：
-   * 支持：连续段落合并、引用块内递归块级语法、多语言代码块词法高亮与行号、
-   * Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注定义与双向锚点及内联 Base64 图片。
+   * 支持：连续段落合并、引用块内递归块级语法、GitHub 风格 Callout 高亮卡片、[[Wiki Links]] 双链胶囊、
+   * 多语言代码块词法高亮与行号、Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注定义及内联 Base64 图片。
    */
   private async renderMarkdownToHtmlBody(md: string): Promise<string> {
     const rawLines = md.replace(/\r\n/g, "\n").split("\n");
@@ -984,6 +1161,24 @@ class App {
         working = working.replace(fullMatch, () => pushPh(imgHtml));
       }
 
+      // 1.5 提取 [[Wiki Links]] 双向链接
+      const wikiLinks = parseWikiLinksInLine(working);
+      if (wikiLinks.length > 0) {
+        for (let wIdx = wikiLinks.length - 1; wIdx >= 0; wIdx--) {
+          const wl = wikiLinks[wIdx];
+          const displayLabel = wl.alias
+            ? wl.alias
+            : wl.heading
+            ? `${wl.target} › ${wl.heading}`
+            : wl.target;
+          const pillHtml = `<span class="cm-wikilink">${this.escapeHtml(displayLabel)}</span>`;
+          working =
+            working.slice(0, wl.fromOffset) +
+            pushPh(pillHtml) +
+            working.slice(wl.toOffset);
+        }
+      }
+
       // 2. 转义普通文本中的 HTML 特殊字符
       working = this.escapeHtml(working);
 
@@ -1051,14 +1246,18 @@ class App {
     {
       let inF = false;
       let fChar = "";
+      let fLen = 0;
       for (let k = startIdx; k < rawLines.length; k++) {
         const t = rawLines[k].trim();
-        if (/^(```+|~~~+)/.test(t)) {
-          const mChar = t[0];
+        const fm = t.match(/^(`{3,}|~{3,})/);
+        if (fm) {
+          const mChar = fm[1][0];
+          const mLen = fm[1].length;
           if (!inF) {
             inF = true;
             fChar = mChar;
-          } else if (mChar === fChar) {
+            fLen = mLen;
+          } else if (mChar === fChar && mLen >= fLen && /^(`{3,}|~{3,})\s*$/.test(t)) {
             inF = false;
           }
           continue;
@@ -1087,7 +1286,7 @@ class App {
       const line = lines[idx];
       const trimmed = line.trim();
       if (!trimmed) return true;
-      if (/^(```+|~~~+)/.test(trimmed)) return true;
+      if (/^(`{3,}|~{3,})/.test(trimmed)) return true;
       if (trimmed === "$$" || /^\$\$\s*(.+?)\s*\$\$$/.test(trimmed)) return true;
       if (/^\[TOC\]$/i.test(trimmed)) return true;
       if (trimmed.includes("|") && idx + 1 < lines.length && isTableDelimiter(lines[idx + 1])) {
@@ -1101,8 +1300,16 @@ class App {
       return false;
     };
 
+    const CALLOUT_LABELS: Record<string, string> = {
+      note: "笔记 (Note)",
+      tip: "提示 (Tip)",
+      important: "重要 (Important)",
+      warning: "警告 (Warning)",
+      caution: "危险 (Caution)",
+    };
+
     // 递归块级解析器
-    const renderBlocks = async (lines: string[], isTopLevel: boolean): Promise<string> => {
+    const renderBlocks = async (lines: string[], _isTopLevel: boolean): Promise<string> => {
       const out: string[] = [];
       let i = 0;
 
@@ -1115,19 +1322,18 @@ class App {
           continue;
         }
 
-        // 1. 围栏代码块与 Mermaid 矢量图渲染
-        const fenceMatch = trimmed.match(/^(```+|~~~+)\s*([^\s`~]*).*$/);
+        // 1. 围栏代码块与 Mermaid 矢量图渲染 (支持 4 反引号嵌套)
+        const fenceMatch = trimmed.match(/^(`{3,}|~{3,})\s*([^\s`~]*).*$/);
         if (fenceMatch) {
           const fenceChar = fenceMatch[1][0];
+          const fenceLen = fenceMatch[1].length;
           const lang = (fenceMatch[2] || "").toLowerCase();
           const codeLines: string[] = [];
           i++;
           while (i < lines.length) {
             const t = lines[i].trim();
-            if (
-              (fenceChar === "`" && /^```+$/.test(t)) ||
-              (fenceChar === "~" && /^~~~+$/.test(t))
-            ) {
+            const closeM = t.match(/^(`{3,}|~{3,})\s*$/);
+            if (closeM && closeM[1][0] === fenceChar && closeM[1].length >= fenceLen) {
               i++;
               break;
             }
@@ -1139,7 +1345,9 @@ class App {
             try {
               const id = "mmd-exp-" + Math.random().toString(36).substring(2, 9);
               const { svg } = await mermaid.render(id, rawCode.trim());
-              out.push(`<figure class="md-mermaid-card"><div class="mermaid-chart-box">${svg}</div></figure>`);
+              out.push(
+                `<figure class="md-mermaid-card"><div class="mermaid-chart-box">${svg}</div></figure>`
+              );
             } catch {
               out.push(`<pre><code class="language-mermaid">${this.escapeHtml(rawCode)}</code></pre>`);
             }
@@ -1282,15 +1490,27 @@ class App {
           continue;
         }
 
-        // 7. 引用块（剥离最外层 `> ` 并递归调用 renderBlocks）
+        // 7. 引用块 & GitHub 风格 Callout / Admonition 卡片
         if (trimmed.startsWith(">")) {
           const innerQuoteLines: string[] = [];
           while (i < lines.length && lines[i].trim().startsWith(">")) {
             innerQuoteLines.push(lines[i].replace(/^\s*> ?/, ""));
             i++;
           }
-          const innerHtml = await renderBlocks(innerQuoteLines, false);
-          out.push(`<blockquote>${innerHtml}</blockquote>`);
+          const calloutMatch = innerQuoteLines[0]?.match(
+            /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i
+          );
+          if (calloutMatch) {
+            const cType = calloutMatch[1].toLowerCase();
+            const customTitle = calloutMatch[2].trim() || CALLOUT_LABELS[cType] || cType.toUpperCase();
+            const bodyHtml = await renderBlocks(innerQuoteLines.slice(1), false);
+            out.push(
+              `<div class="cm-callout-export cm-callout-${cType}"><div class="cm-callout-header-widget cm-callout-header-${cType}"><span class="cm-callout-title">${this.escapeHtml(customTitle)}</span></div><div class="cm-callout-body">${bodyHtml}</div></div>`
+            );
+          } else {
+            const innerHtml = await renderBlocks(innerQuoteLines, false);
+            out.push(`<blockquote>${innerHtml}</blockquote>`);
+          }
           continue;
         }
 
@@ -1461,6 +1681,17 @@ class App {
     body.theme-night .cm-syn-function { color: #61afef; }
     body.theme-night .cm-syn-attr { color: #56b6c2; }
     blockquote { border-left: 3.5px solid var(--quote-border-color, #d0d7de); margin: 1rem 0; padding: 4px 16px; color: var(--control-text-color, #57606a); background: rgba(127, 127, 127, 0.03); }
+    .cm-callout-export { border-left: 4px solid #0969da; border-radius: 6px; padding: 10px 16px; margin: 1rem 0; background: rgba(9, 105, 218, 0.06); }
+    .cm-callout-export.cm-callout-tip { border-left-color: #1a7f37; background: rgba(26, 127, 55, 0.06); }
+    .cm-callout-export.cm-callout-important { border-left-color: #8250df; background: rgba(130, 80, 223, 0.06); }
+    .cm-callout-export.cm-callout-warning { border-left-color: #9a6700; background: rgba(154, 103, 0, 0.07); }
+    .cm-callout-export.cm-callout-caution { border-left-color: #cf222e; background: rgba(207, 34, 46, 0.07); }
+    .cm-callout-header-widget { font-weight: 700; margin-bottom: 4px; color: #0969da; }
+    .cm-callout-header-tip { color: #1a7f37; }
+    .cm-callout-header-important { color: #8250df; }
+    .cm-callout-header-warning { color: #9a6700; }
+    .cm-callout-header-caution { color: #cf222e; }
+    .cm-wikilink { color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.08); padding: 1px 6px; border-radius: 4px; font-weight: 500; }
     li.task-list-item { list-style: none; }
     .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
     .cm-footnote-def { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--border-color, #d0d7de); font-size: 0.92em; color: var(--control-text-color, #57606a); }
@@ -1495,12 +1726,13 @@ ${bodyHtml}
     }
   }
 
-  private handleContentChange(content: string) {
+  private handleContentChange(content: string, deltas?: TextDeltaPayload[]) {
     const isDirty = content !== this.savedContent;
     this.isModified = isDirty;
+    const activeTab = this.tabsManager?.getActiveTab();
     const fileName = this.currentFilePath
       ? this.currentFilePath.split(/[\\/]/).pop()!
-      : "未命名.md";
+      : activeTab?.title || "未命名.md";
     updateWindowTitle(fileName, isDirty);
 
     const saveStatus = document.getElementById("footer-save-status");
@@ -1509,10 +1741,11 @@ ${bodyHtml}
       saveStatus.classList.toggle("is-dirty", isDirty);
     }
 
+    this.tabsManager?.notifyPrimaryDocChanged(content, isDirty);
     this.findReplaceCtrl?.notifyDocChanged();
 
     if (isDirty) {
-      saveRecoverySnapshot(this.currentFilePath, content, fileName);
+      saveRecoverySnapshot(this.currentFilePath, content, fileName, deltas);
     } else {
       clearRecoverySnapshot(this.currentFilePath);
     }
@@ -1584,6 +1817,23 @@ ${bodyHtml}
       localStorage.setItem("typora_last_workspace", folderPath);
       document.body.classList.add("has-workspace");
 
+      // 更新扁平工作区文档索引缓存供 [[Wiki Links]] 极速补全
+      const flatList: Array<{ path: string; name: string; stem: string }> = [];
+      const walk = (items: FileItem[]) => {
+        for (const it of items) {
+          if (!it.is_dir && /\.(md|markdown|txt)$/i.test(it.name)) {
+            flatList.push({
+              path: it.path,
+              name: it.name,
+              stem: it.name.replace(/\.(md|markdown|txt)$/i, ""),
+            });
+          }
+          if (it.children) walk(it.children);
+        }
+      };
+      walk(files);
+      this.workspaceFileCache = flatList;
+
       const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
       const nameEl = document.getElementById("workspace-folder-name");
       if (nameEl) {
@@ -1610,6 +1860,8 @@ ${bodyHtml}
         onFileRenamed: (oldPath, newPath) => this.handleFileRenamed(oldPath, newPath),
         onFileDeleted: (deletedPath) => this.handleFileDeleted(deletedPath),
       });
+
+      this.backlinksCtrl?.refresh();
     } catch (e) {
       console.error("加载工作区失败:", e);
       if (!silent) {
@@ -1619,6 +1871,7 @@ ${bodyHtml}
   }
 
   private handleFileRenamed(oldPath: string, newPath: string) {
+    this.tabsManager?.handleFileRenamed(oldPath, newPath);
     if (!this.currentFilePath) return;
     const normCur = this.currentFilePath.replace(/\\/g, "/").toLowerCase();
     const normOld = oldPath.replace(/\\/g, "/").toLowerCase();
@@ -1639,9 +1892,11 @@ ${bodyHtml}
     }
     const treeContainer = document.getElementById("file-library-tree");
     syncActiveTreeItem(treeContainer, this.currentFilePath);
+    this.backlinksCtrl?.refresh();
   }
 
   private handleFileDeleted(deletedPath: string) {
+    this.tabsManager?.handleFileDeleted(deletedPath);
     if (!this.currentFilePath) return;
     const normCur = this.currentFilePath.replace(/\\/g, "/").toLowerCase();
     const normDel = deletedPath.replace(/\\/g, "/").toLowerCase();
@@ -1653,6 +1908,7 @@ ${bodyHtml}
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, null);
     }
+    this.backlinksCtrl?.refresh();
   }
 
   public async loadFile(filePath: string, silentOnError: boolean = false): Promise<boolean> {
@@ -1665,11 +1921,13 @@ ${bodyHtml}
       return true;
     }
 
-    const choice = await this.confirmDiscardOrSave();
-    if (choice === "cancel") {
-      const treeContainer = document.getElementById("file-library-tree");
-      syncActiveTreeItem(treeContainer, this.currentFilePath);
-      return false;
+    // 若该文件已在某个标签页中打开，直接激活该标签页，无需重复读取磁盘或打断其他未保存标签
+    const existingTab = this.tabsManager
+      ?.getAllTabs()
+      .find((t) => t.filePath && t.filePath.replace(/\\/g, "/").toLowerCase() === normTarget);
+    if (existingTab && this.tabsManager) {
+      this.tabsManager.activateTab(existingTab.id);
+      return true;
     }
 
     const seq = ++this.loadSequence;
@@ -1679,6 +1937,7 @@ ${bodyHtml}
         return false;
       }
 
+      const fileName = filePath.split(/[\\/]/).pop() || "未命名.md";
       this.currentFilePath = filePath;
       this.savedContent = content;
       this.isModified = false;
@@ -1687,21 +1946,23 @@ ${bodyHtml}
       addRecentFile(filePath);
       localStorage.setItem("typora_last_file", filePath);
 
-      const fileName = filePath.split(/[\\/]/).pop() || "未命名.md";
-      updateWindowTitle(fileName, false);
-
-      const saveStatus = document.getElementById("footer-save-status");
-      if (saveStatus) {
-        saveStatus.textContent = "已保存";
-        saveStatus.classList.remove("is-dirty");
+      if (this.tabsManager) {
+        const tab = this.tabsManager.openOrActivateFileTab(filePath, fileName, content, true);
+        this.syncFromActiveTab(tab);
+      } else {
+        updateWindowTitle(fileName, false);
+        const saveStatus = document.getElementById("footer-save-status");
+        if (saveStatus) {
+          saveStatus.textContent = "已保存";
+          saveStatus.classList.remove("is-dirty");
+        }
+        if (this.editorView) {
+          resetEditorDocument(this.editorView, content);
+        }
+        const treeContainer = document.getElementById("file-library-tree");
+        syncActiveTreeItem(treeContainer, filePath);
+        this.backlinksCtrl?.refresh();
       }
-
-      if (this.editorView) {
-        resetEditorDocument(this.editorView, content);
-      }
-
-      const treeContainer = document.getElementById("file-library-tree");
-      syncActiveTreeItem(treeContainer, filePath);
       return true;
     } catch (e) {
       if (!silentOnError) {

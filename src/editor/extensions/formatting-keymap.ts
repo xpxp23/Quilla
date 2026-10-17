@@ -1,11 +1,99 @@
 import { EditorView, KeyBinding } from "@codemirror/view";
-import { ChangeSpec } from "@codemirror/state";
+import { ChangeSpec, Text } from "@codemirror/state";
 
 /**
  * 转义正则特殊字符
  */
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 向上查找在指定行 lineNum 之前、相同 quotePrefix 与 targetIndentLen 下的预期有序列表编号：
+ * - 若遇到更浅缩进的父级列表项或空行/非列表行，说明当前是新子列表的起点，重置返回 1
+ * - 若遇到相同缩进的前序兄弟有序列表项，返回其编号 + 1
+ */
+export function computeExpectedOrderedNumber(
+  doc: Text,
+  lineNum: number,
+  quotePrefix: string,
+  targetIndentLen: number
+): number {
+  const quoteLen = quotePrefix.length;
+  for (let ln = lineNum - 1; ln >= 1; ln--) {
+    const prevText = doc.line(ln).text;
+    if (!prevText.startsWith(quotePrefix)) break;
+    const sub = prevText.slice(quoteLen);
+    if (sub.trim() === "") break;
+
+    const listMatch = sub.match(/^(\s*)([-*+]|\d+\.)\s+/);
+    if (!listMatch) break;
+
+    const curIndentLen = listMatch[1].length;
+    if (curIndentLen < targetIndentLen) {
+      // 遇到更浅层级的父列表项，新子列表从 1 开始编号
+      return 1;
+    }
+    if (curIndentLen === targetIndentLen) {
+      const ordMatch = listMatch[2].match(/^(\d+)\.$/);
+      if (ordMatch) {
+        return parseInt(ordMatch[1], 10) + 1;
+      }
+      return 1;
+    }
+    // curIndentLen > targetIndentLen：跳过前序兄弟下的深层子项，继续向上寻找同级兄弟
+  }
+  return 1;
+}
+
+/**
+ * 从 startLine 向后扫描并生成指定缩进层级 ordered list 的连续重编号 ChangeSpec
+ */
+function buildSubsequentRenumberChanges(
+  doc: Text,
+  startLine: number,
+  quotePrefix: string,
+  indentLen: number,
+  startingExpectedNum: number
+): ChangeSpec[] {
+  const changes: ChangeSpec[] = [];
+  const quoteLen = quotePrefix.length;
+  let expectedNum = startingExpectedNum;
+
+  for (let ln = startLine; ln <= doc.lines; ln++) {
+    const nextLine = doc.line(ln);
+    if (!nextLine.text.startsWith(quotePrefix)) break;
+    const subText = nextLine.text.slice(quoteLen);
+    if (subText.trim() === "") break;
+
+    const listMatch = subText.match(/^(\s*)([-*+]|\d+\.)\s+/);
+    if (!listMatch) {
+      const leadingSpaces = (subText.match(/^\s*/)?.[0] || "").length;
+      if (leadingSpaces > indentLen) continue;
+      break;
+    }
+
+    const curIndentLen = listMatch[1].length;
+    if (curIndentLen < indentLen) break;
+    if (curIndentLen > indentLen) continue;
+
+    const ordMatch = listMatch[2].match(/^(\d+)\.$/);
+    if (!ordMatch) break;
+
+    const oldNumStr = ordMatch[1];
+    const newNumStr = String(expectedNum);
+    if (oldNumStr !== newNumStr) {
+      const numFrom = nextLine.from + quoteLen + curIndentLen;
+      changes.push({
+        from: numFrom,
+        to: numFrom + oldNumStr.length,
+        insert: newNumStr,
+      });
+    }
+    expectedNum++;
+  }
+
+  return changes;
 }
 
 /**
@@ -23,7 +111,6 @@ export function smartToggleFormat(
   const selectedText = view.state.sliceDoc(from, to);
 
   if (selectedText.length > 0) {
-    // 1. 检查选中文本是否已被定界符包裹，若已包裹则解开
     if (
       selectedText.startsWith(before) &&
       selectedText.endsWith(after) &&
@@ -40,7 +127,6 @@ export function smartToggleFormat(
       return true;
     }
 
-    // 2. 检查选区外部紧邻是否正是定界符
     const docBefore = view.state.sliceDoc(Math.max(0, from - before.length), from);
     const docAfter = view.state.sliceDoc(to, Math.min(view.state.doc.length, to + after.length));
     if (docBefore === before && docAfter === after) {
@@ -54,7 +140,6 @@ export function smartToggleFormat(
       return true;
     }
 
-    // 3. 正常包裹
     view.dispatch({
       changes: { from, to, insert: `${before}${selectedText}${after}` },
       selection: { anchor: from + before.length, head: to + before.length },
@@ -62,12 +147,10 @@ export function smartToggleFormat(
     return true;
   }
 
-  // 选区为空：检查光标是否停留在定界符包裹的词语内部 (智能解包)
   const line = view.state.doc.lineAt(from);
   const relPos = from - line.from;
   const lineText = line.text;
 
-  // 优先处理 ***加粗斜体*** 内部切换 ** 或 *
   if (before === "**" || before === "*") {
     const tripleRegex = /\*\*\*([^*]+?)\*\*\*/g;
     let tm: RegExpExecArray | null;
@@ -125,7 +208,6 @@ export function smartToggleFormat(
     }
   }
 
-  // 选区为空且不在格式块内：插入成对定界符并将光标置于中间
   view.dispatch({
     changes: { from, insert: `${before}${after}` },
     selection: { anchor: from + before.length },
@@ -135,7 +217,7 @@ export function smartToggleFormat(
 
 /**
  * 列表与引用块智能回车续行与退出状态机
- * 完美支持：顶层列表、引用块内嵌套列表 (> - item / > 1. item / > - [ ] task)、多级缩进逐级退回、有序列表自动重编号
+ * 完美支持：顶层列表、引用块内嵌套列表、多级缩进逐级退回（自动衔接父层级编号）、有序列表自动重编号
  */
 export function handleListEnter(view: EditorView): boolean {
   const selection = view.state.selection.main;
@@ -145,13 +227,12 @@ export function handleListEnter(view: EditorView): boolean {
   const line = doc.lineAt(selection.head);
   const text = line.text;
 
-  // 先提取可选的引用块前缀 (如 `> ` 或 `>> `)，保证每个 `>` 后只吃 1 个空格，保留后续列表缩进
   const quotePrefixMatch = text.match(/^(\s*(?:> ?)+)/);
   const quotePrefix = quotePrefixMatch ? quotePrefixMatch[1] : "";
   const quoteLen = quotePrefix.length;
   const restText = text.slice(quoteLen);
 
-  // 1. 匹配任务列表 (支持顶层及引用块内部): ^(\s*)([-*+]\s+\[[ xX]\]\s+)(.*)$
+  // 1. 匹配任务列表
   const taskMatch = restText.match(/^(\s*)([-*+]\s+\[[ xX]\]\s+)(.*)$/);
   if (taskMatch) {
     const indent = taskMatch[1];
@@ -169,7 +250,6 @@ export function handleListEnter(view: EditorView): boolean {
         });
         return true;
       }
-      // 退出列表，若在引用块中则保留引用前缀 `> `，否则清空整行
       const fallbackLine = quotePrefix ? quotePrefix : "";
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: fallbackLine },
@@ -195,7 +275,7 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 2. 匹配有序列表 (支持顶层及引用块内部): ^(\s*)(\d+)(\.\s+)(.*)$
+  // 2. 匹配有序列表
   const orderedMatch = restText.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
   if (orderedMatch) {
     const indent = orderedMatch[1];
@@ -208,9 +288,25 @@ export function handleListEnter(view: EditorView): boolean {
     if (content.trim() === "") {
       if (indent.length >= 2) {
         const newIndent = indent.slice(2);
-        const newPrefix = `${quotePrefix}${newIndent}1. `;
+        const parentNextNum = computeExpectedOrderedNumber(
+          doc,
+          line.number,
+          quotePrefix,
+          newIndent.length
+        );
+        const newPrefix = `${quotePrefix}${newIndent}${parentNextNum}. `;
+        const changes: ChangeSpec[] = [
+          { from: line.from, to: line.to, insert: newPrefix },
+          ...buildSubsequentRenumberChanges(
+            doc,
+            line.number + 1,
+            quotePrefix,
+            newIndent.length,
+            parentNextNum + 1
+          ),
+        ];
         view.dispatch({
-          changes: { from: line.from, to: line.to, insert: newPrefix },
+          changes,
           selection: { anchor: line.from + newPrefix.length },
         });
         return true;
@@ -233,32 +329,16 @@ export function handleListEnter(view: EditorView): boolean {
 
     const nextNum = num + 1;
     const nextPrefix = `${quotePrefix}${indent}${nextNum}. `;
-    const changes: ChangeSpec[] = [{ from: selection.head, insert: `\n${nextPrefix}` }];
-
-    // 自动递增后续同级有序列表项的编号
-    let expectedNum = nextNum + 1;
-    for (let ln = line.number + 1; ln <= doc.lines; ln++) {
-      const nextLine = doc.line(ln);
-      if (!nextLine.text.startsWith(quotePrefix)) break;
-      const subText = nextLine.text.slice(quoteLen);
-      const m = subText.match(/^(\s*)(\d+)\.\s+/);
-      if (!m) {
-        if (subText.trim() === "") break;
-        if ((subText.match(/^\s*/)?.[0].length || 0) > indent.length) continue;
-        break;
-      }
-      if (m[1].length < indent.length) break;
-      if (m[1].length === indent.length) {
-        const oldNumStr = m[2];
-        const numFrom = nextLine.from + quoteLen + m[1].length;
-        changes.push({
-          from: numFrom,
-          to: numFrom + oldNumStr.length,
-          insert: String(expectedNum),
-        });
-        expectedNum++;
-      }
-    }
+    const changes: ChangeSpec[] = [
+      { from: selection.head, insert: `\n${nextPrefix}` },
+      ...buildSubsequentRenumberChanges(
+        doc,
+        line.number + 1,
+        quotePrefix,
+        indent.length,
+        nextNum + 1
+      ),
+    ];
 
     view.dispatch({
       changes,
@@ -267,7 +347,7 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 3. 匹配无序列表 (支持顶层及引用块内部): ^(\s*)([-*+])(\s+)(.*)$
+  // 3. 匹配无序列表
   const bulletMatch = restText.match(/^(\s*)([-*+])(\s+)(.*)$/);
   if (bulletMatch) {
     const indent = bulletMatch[1];
@@ -310,7 +390,7 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 4. 匹配纯引用块: ^(\s*(?:> ?)+)(.*)$
+  // 4. 匹配纯引用块
   if (quotePrefix) {
     const content = restText;
     const normalizedPrefix = quotePrefix.endsWith(" ") ? quotePrefix : quotePrefix + " ";
@@ -343,13 +423,14 @@ export function handleListEnter(view: EditorView): boolean {
 }
 
 /**
- * 列表与引用块退格键智能回退 (Backspace)
+ * 列表与引用块退格键智能回退 (Backspace) — 支持有序列表退格降级时自动衔接父级编号并重排后续项
  */
 export function handleListBackspace(view: EditorView): boolean {
   const selection = view.state.selection.main;
   if (!selection.empty) return false;
 
-  const line = view.state.doc.lineAt(selection.head);
+  const doc = view.state.doc;
+  const line = doc.lineAt(selection.head);
   const text = line.text;
 
   const quotePrefixMatch = text.match(/^(\s*(?:> ?)+)/);
@@ -357,37 +438,72 @@ export function handleListBackspace(view: EditorView): boolean {
   const quoteLen = quotePrefix.length;
   const restText = text.slice(quoteLen);
 
-  // 优先检查引用块内部或顶层的列表前缀退格
   const listMatch = restText.match(/^(\s*)([-*+]\s+\[[ xX]\]\s*|[-*+]\s+|\d+\.\s+)/);
   if (listMatch && selection.head === line.from + quoteLen + listMatch[0].length) {
     const indent = listMatch[1];
     const prefix = listMatch[2];
+    const isOrdered = /^\d+\.\s+$/.test(prefix);
+
     if (indent.length >= 2) {
       const newIndent = indent.slice(2);
-      const replacement = `${quotePrefix}${newIndent}${prefix}`;
+      let newPrefix = prefix;
+      const extraChanges: ChangeSpec[] = [];
+
+      if (isOrdered) {
+        const expectedNum = computeExpectedOrderedNumber(
+          doc,
+          line.number,
+          quotePrefix,
+          newIndent.length
+        );
+        newPrefix = `${expectedNum}. `;
+        extraChanges.push(
+          ...buildSubsequentRenumberChanges(
+            doc,
+            line.number + 1,
+            quotePrefix,
+            newIndent.length,
+            expectedNum + 1
+          )
+        );
+      }
+
+      const replacement = `${quotePrefix}${newIndent}${newPrefix}`;
       view.dispatch({
-        changes: {
-          from: line.from,
-          to: line.from + quoteLen + listMatch[0].length,
-          insert: replacement,
-        },
+        changes: [
+          {
+            from: line.from,
+            to: line.from + quoteLen + listMatch[0].length,
+            insert: replacement,
+          },
+          ...extraChanges,
+        ],
         selection: { anchor: line.from + replacement.length },
       });
       return true;
     } else {
+      const extraChanges: ChangeSpec[] = [];
+      if (isOrdered) {
+        const prevExpected = computeExpectedOrderedNumber(doc, line.number, quotePrefix, 0);
+        extraChanges.push(
+          ...buildSubsequentRenumberChanges(doc, line.number + 1, quotePrefix, 0, prevExpected)
+        );
+      }
       view.dispatch({
-        changes: {
-          from: line.from + quoteLen,
-          to: line.from + quoteLen + listMatch[0].length,
-          insert: "",
-        },
+        changes: [
+          {
+            from: line.from + quoteLen,
+            to: line.from + quoteLen + listMatch[0].length,
+            insert: "",
+          },
+          ...extraChanges,
+        ],
         selection: { anchor: line.from + quoteLen },
       });
       return true;
     }
   }
 
-  // 检查纯引用块前缀退格
   if (quotePrefix && selection.head === line.from + quoteLen) {
     const quoteDepth = (quotePrefix.match(/>/g) || []).length;
     if (quoteDepth > 1) {
@@ -411,10 +527,53 @@ export function handleListBackspace(view: EditorView): boolean {
 
 /**
  * 列表与引用块缩进/反缩进 (Tab / Shift-Tab)
+ * - 完美修复多级有序列表按 Tab 缩进时编号未重置为 1（如 1、2、3 下按 Tab 自动变为 1.，按 Shift+Tab 退回一级自动恢复为 4.）
+ * - 支持对原层级与目标层级的后续同级项自动连续重编号
+ * - 支持框选多行列表项批量按 Tab / Shift-Tab 增减缩进
  */
 export function handleListTab(view: EditorView, isShift: boolean): boolean {
+  const doc = view.state.doc;
   const selection = view.state.selection.main;
-  const line = view.state.doc.lineAt(selection.head);
+  const startLineNum = doc.lineAt(selection.from).number;
+  const endLineNum = doc.lineAt(
+    selection.to > selection.from && doc.lineAt(selection.to).from === selection.to
+      ? selection.to - 1
+      : selection.to
+  ).number;
+
+  // 1. 多行框选批量列表/段落缩进
+  if (endLineNum > startLineNum) {
+    const changes: ChangeSpec[] = [];
+    let anyHandled = false;
+
+    for (let ln = startLineNum; ln <= endLineNum; ln++) {
+      const l = doc.line(ln);
+      const quoteMatch = l.text.match(/^(\s*(?:> ?)+)/);
+      const quotePrefix = quoteMatch ? quoteMatch[1] : "";
+      const qLen = quotePrefix.length;
+      const rest = l.text.slice(qLen);
+
+      if (isShift) {
+        const removeLen = rest.startsWith("  ") ? 2 : rest.startsWith(" ") ? 1 : 0;
+        if (removeLen > 0) {
+          changes.push({ from: l.from + qLen, to: l.from + qLen + removeLen, insert: "" });
+          anyHandled = true;
+        }
+      } else {
+        changes.push({ from: l.from + qLen, insert: "  " });
+        anyHandled = true;
+      }
+    }
+
+    if (anyHandled) {
+      view.dispatch({ changes, userEvent: isShift ? "delete.dedent" : "input.indent" });
+      return true;
+    }
+    return false;
+  }
+
+  // 2. 单行精细列表与引用块缩进及有序列表智能重编号
+  const line = doc.line(startLineNum);
   const text = line.text;
 
   const quotePrefixMatch = text.match(/^(\s*(?:> ?)+)/);
@@ -422,9 +581,84 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
   const quoteLen = quotePrefix.length;
   const restText = text.slice(quoteLen);
 
-  const isInnerList = /^(\s*)([-*+]|\d+\.)\s+/.test(restText);
+  const orderedMatch = restText.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
+  if (orderedMatch) {
+    const oldIndent = orderedMatch[1];
+    const oldNumStr = orderedMatch[2];
+    const dotSpace = orderedMatch[3];
 
-  if (quotePrefix && isInnerList) {
+    if (isShift && oldIndent.length === 0) {
+      return true;
+    }
+
+    const newIndent = isShift
+      ? oldIndent.slice(Math.min(2, oldIndent.length))
+      : `${oldIndent}  `;
+
+    // 计算当前行在目标缩进层级下的正确编号（例如在 3. 下按 Tab 缩进为二级时重置为 1；按 Shift+Tab 退回一级时恢复为 4）
+    const newNum = computeExpectedOrderedNumber(
+      doc,
+      line.number,
+      quotePrefix,
+      newIndent.length
+    );
+    const newNumStr = String(newNum);
+
+    const oldPrefixLen = quoteLen + oldIndent.length + oldNumStr.length + dotSpace.length;
+    const newPrefix = `${quotePrefix}${newIndent}${newNumStr}${dotSpace}`;
+    const prefixDelta = newPrefix.length - oldPrefixLen;
+
+    const changes: ChangeSpec[] = [
+      {
+        from: line.from,
+        to: line.from + oldPrefixLen,
+        insert: newPrefix,
+      },
+    ];
+
+    // 重排后续同级项（兼容原层级与新层级）
+    const oldExpectedAtCurrent = computeExpectedOrderedNumber(
+      doc,
+      line.number,
+      quotePrefix,
+      oldIndent.length
+    );
+    changes.push(
+      ...buildSubsequentRenumberChanges(
+        doc,
+        line.number + 1,
+        quotePrefix,
+        oldIndent.length,
+        oldExpectedAtCurrent
+      )
+    );
+    if (newIndent.length !== oldIndent.length) {
+      changes.push(
+        ...buildSubsequentRenumberChanges(
+          doc,
+          line.number + 1,
+          quotePrefix,
+          newIndent.length,
+          newNum + 1
+        )
+      );
+    }
+
+    const newCursorHead = Math.max(
+      line.from + quoteLen + newIndent.length,
+      selection.head + prefixDelta
+    );
+
+    view.dispatch({
+      changes,
+      selection: { anchor: newCursorHead },
+      userEvent: isShift ? "delete.dedent" : "input.indent",
+    });
+    return true;
+  }
+
+  const isUnorderedList = /^(\s*)([-*+])\s+/.test(restText);
+  if (isUnorderedList) {
     const insertPos = line.from + quoteLen;
     if (isShift) {
       if (restText.startsWith("  ")) {
@@ -438,16 +672,16 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
         });
         return true;
       }
+      return true;
     } else {
       view.dispatch({
         changes: { from: insertPos, insert: "  " },
       });
       return true;
     }
-    return false;
   }
 
-  if (quotePrefix && !isInnerList) {
+  if (quotePrefix) {
     const quoteDepth = (quotePrefix.match(/>/g) || []).length;
     if (isShift) {
       if (quoteDepth > 1) {
@@ -465,27 +699,6 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       return true;
     }
     return false;
-  }
-
-  if (isInnerList) {
-    if (isShift) {
-      if (text.startsWith("  ")) {
-        view.dispatch({
-          changes: { from: line.from, to: line.from + 2, insert: "" },
-        });
-        return true;
-      } else if (text.startsWith(" ")) {
-        view.dispatch({
-          changes: { from: line.from, to: line.from + 1, insert: "" },
-        });
-        return true;
-      }
-    } else {
-      view.dispatch({
-        changes: { from: line.from, insert: "  " },
-      });
-      return true;
-    }
   }
 
   return false;
@@ -547,27 +760,22 @@ export const formattingKeymap: KeyBinding[] = [
     key: "Shift-Tab",
     run: (view) => handleListTab(view, true),
   },
-  // 1. 加粗 (Mod+B)
   {
     key: "Mod-b",
     run: (view) => smartToggleFormat(view, "**"),
   },
-  // 2. 斜体 (Mod+I)
   {
     key: "Mod-i",
     run: (view) => smartToggleFormat(view, "*"),
   },
-  // 2.1 删除线 (Mod+Shift+X)
   {
     key: "Mod-Shift-x",
     run: (view) => smartToggleFormat(view, "~~"),
   },
-  // 2.2 高亮 (Mod+Shift+H)
   {
     key: "Mod-Shift-h",
     run: (view) => smartToggleFormat(view, "=="),
   },
-  // 3. 行内代码 (Mod+` 或 Mod+E)
   {
     key: "Mod-e",
     run: (view) => smartToggleFormat(view, "`"),
@@ -576,7 +784,6 @@ export const formattingKeymap: KeyBinding[] = [
     key: "Mod-`",
     run: (view) => smartToggleFormat(view, "`"),
   },
-  // 4. 超链接 (Mod+K) - 智能包裹与解包
   {
     key: "Mod-k",
     run: (view) => {
@@ -623,7 +830,6 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 5. 插入图片 (Mod+Shift+I) - 保留选中文本作为 alt 说明
   {
     key: "Mod-Shift-i",
     run: (view) => {
@@ -638,7 +844,6 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 6. 插入多行代码块 (Mod+Shift+K) - 定位至行尾避免截断当前句子
   {
     key: "Mod-Shift-k",
     run: (view) => {
@@ -656,7 +861,6 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 7. 插入数学公式块 (Mod+Shift+M) - 定位至行尾避免截断当前句子
   {
     key: "Mod-Shift-m",
     run: (view) => {
@@ -674,7 +878,6 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 8. 标题级别快捷切换 (Mod-1 ~ Mod-6 / Mod-Alt-1 ~ Mod-Alt-6) 与正文 (Mod-0 / Mod-Alt-0)
   { key: "Mod-1", run: (view) => toggleHeadingLevel(view, 1) },
   { key: "Mod-2", run: (view) => toggleHeadingLevel(view, 2) },
   { key: "Mod-3", run: (view) => toggleHeadingLevel(view, 3) },

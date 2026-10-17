@@ -9,7 +9,8 @@ export interface DragDropCallbacks {
 }
 
 /**
- * 注册剪贴板图片粘贴与外部文件拖入管道（支持按偏好设置自动选择 ./assets 或 ./${filename}.assets）
+ * 注册剪贴板图片粘贴与外部文件拖入管道（支持按偏好设置自动选择 ./assets 或 ./${filename}.assets，
+ * 并通过 Rust check_is_directory 精准区分拖入文件夹与普通附件）
  */
 export function setupImageAndDropHandlers(
   view: EditorView,
@@ -24,7 +25,7 @@ export function setupImageAndDropHandlers(
     lastDroppedPathTime = now;
 
     const lowerName = filePath.toLowerCase();
-    const fileName = filePath.split(/[\\/]/).pop() || "image.png";
+    const fileName = filePath.split(/[\\/]/).pop() || "file";
 
     if (
       lowerName.endsWith(".png") ||
@@ -33,7 +34,8 @@ export function setupImageAndDropHandlers(
       lowerName.endsWith(".gif") ||
       lowerName.endsWith(".svg") ||
       lowerName.endsWith(".webp") ||
-      lowerName.endsWith(".bmp")
+      lowerName.endsWith(".bmp") ||
+      lowerName.endsWith(".avif")
     ) {
       try {
         const folderMode = getPreferences().imageFolderMode;
@@ -50,7 +52,10 @@ export function setupImageAndDropHandlers(
       } catch (err) {
         console.error("复制拖入图片失败:", err);
       }
-    } else if (
+      return;
+    }
+
+    if (
       lowerName.endsWith(".md") ||
       lowerName.endsWith(".markdown") ||
       lowerName.endsWith(".txt")
@@ -58,8 +63,24 @@ export function setupImageAndDropHandlers(
       if (callbacks?.onOpenFile) {
         callbacks.onOpenFile(filePath);
       }
-    } else if (callbacks?.onOpenWorkspace) {
-      callbacks.onOpenWorkspace(filePath);
+      return;
+    }
+
+    // 校验是否为真实文件夹：仅文件夹才切换工作区，其他类型文件作为 Markdown 链接插入
+    const isDir = await invoke<boolean>("check_is_directory", { path: filePath }).catch(
+      () => false
+    );
+    if (isDir) {
+      if (callbacks?.onOpenWorkspace) {
+        callbacks.onOpenWorkspace(filePath);
+      }
+    } else {
+      const normalizedHref = filePath.replace(/\\/g, "/");
+      const insertText = `[${fileName}](${normalizedHref})`;
+      view.dispatch({
+        changes: { from: insertPos, insert: insertText },
+        selection: { anchor: insertPos + insertText.length },
+      });
     }
   };
 

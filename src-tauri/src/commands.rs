@@ -1,4 +1,4 @@
-use crate::buffer::{DocumentBuffer, HeadingItem};
+use crate::buffer::{DocumentBuffer, HeadingItem, TextDelta};
 use crate::safe_io::{DraftSnapshotRecord, SafeIO};
 use crate::search::{SearchEngine, SearchMatch};
 use crate::watcher::WorkspaceWatcher;
@@ -66,22 +66,60 @@ pub fn read_file_content(
 
 #[tauri::command]
 pub fn sync_document_buffer(
-    content: String,
+    content: Option<String>,
+    deltas: Option<Vec<TextDelta>>,
     file_id: Option<String>,
     file_path: Option<String>,
     title: Option<String>,
+    need_headings: Option<bool>,
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<HeadingItem>, String> {
-    if let Some(ref id) = file_id {
-        let _ = SafeIO::save_draft_snapshot(id, file_path, &content, title);
-    }
+    let mut final_content = content.clone().unwrap_or_default();
+
     if let Ok(mut map) = state.document_buffers.lock() {
         let buf = map.entry(window.label().to_string()).or_default();
-        buf.set_text(&content);
-        return Ok(buf.extract_headings());
+        if let Some(ref d_list) = deltas {
+            if !buf.apply_deltas(d_list) {
+                if let Some(ref full_text) = content {
+                    buf.set_text(full_text);
+                }
+            }
+            if final_content.is_empty() {
+                final_content = buf.get_text();
+            }
+        } else if let Some(ref full_text) = content {
+            buf.set_text(full_text);
+        }
+
+        if let Some(ref id) = file_id {
+            if !final_content.is_empty() {
+                let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
+            }
+        }
+
+        if need_headings.unwrap_or(false) {
+            return Ok(buf.extract_headings());
+        }
+    } else if let Some(ref id) = file_id {
+        if !final_content.is_empty() {
+            let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
+        }
     }
+
     Ok(Vec::new())
+}
+
+#[tauri::command]
+pub fn extract_file_headings(path: String) -> Result<Vec<HeadingItem>, String> {
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
+    let buf = DocumentBuffer::new(&content);
+    Ok(buf.extract_headings())
+}
+
+#[tauri::command]
+pub fn check_is_directory(path: String) -> bool {
+    Path::new(&path).is_dir()
 }
 
 #[tauri::command]
@@ -110,6 +148,11 @@ pub fn list_workspace_files(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileItem>, String> {
+    let root_path = Path::new(&root);
+    if !root_path.exists() || !root_path.is_dir() {
+        return Err("无效的工作区目录路径".to_string());
+    }
+
     let label = window.label().to_string();
     if let Ok(mut map) = state.window_workspaces.lock() {
         map.insert(label.clone(), root.clone());
@@ -207,7 +250,7 @@ pub fn list_workspace_files(
     }
 
     let mut count = 0;
-    Ok(build_tree(Path::new(&root), 0, &mut count))
+    Ok(build_tree(root_path, 0, &mut count))
 }
 
 #[tauri::command]
@@ -237,6 +280,41 @@ pub fn search_workspace_content(
         ))
     } else {
         Err("当前未设置工作区目录".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn search_backlinks(
+    target_name: String,
+    current_path: Option<String>,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<Vec<SearchMatch>, String> {
+    let win_root = state
+        .window_workspaces
+        .lock()
+        .ok()
+        .and_then(|m| m.get(window.label()).cloned());
+
+    let fallback_root = state
+        .current_workspace
+        .lock()
+        .ok()
+        .and_then(|ws| ws.clone());
+
+    let inferred_root = current_path
+        .as_deref()
+        .and_then(|p| Path::new(p).parent())
+        .map(|p| p.to_string_lossy().to_string());
+
+    if let Some(root) = win_root.or(fallback_root).or(inferred_root) {
+        Ok(SearchEngine::search_backlinks(
+            root,
+            &target_name,
+            current_path.as_deref(),
+        ))
+    } else {
+        Ok(Vec::new())
     }
 }
 

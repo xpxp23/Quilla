@@ -12,9 +12,9 @@ export type HeadingReorderHandler = (
   insertAfter: boolean
 ) => void;
 
-// 记录大纲中折叠的标题稳定键（基于层级+标题名+同名序号，避免前文增删标题导致折叠状态错位）
 const collapsedOutlineKeys = new Set<string>();
 let allCollapsedMode = false;
+let lastRenderedSignature = "";
 
 function buildStableHeadingKeys(headings: OutlineHeading[]): string[] {
   const counts = new Map<string, number>();
@@ -84,7 +84,9 @@ export function toggleAllOutlineFold(
 }
 
 /**
- * 渲染侧边栏大纲树，支持多级折叠/展开、鼠标点击快速定位与原生 HTML5 拖拽重排章节 (闭包子树整体迁移)
+ * 渲染侧边栏大纲树：
+ * - 采用签名比对增量更新（若仅行号偏移而标题层级与文字未变，仅原位更新 dataset.line，彻底消除打字时大纲闪烁与重排卡顿）
+ * - 基于 Pointer Events 实现丝滑的跨章节拖拽排序（附带半透明残影与圆点指示线，彻底规避 Tauri 原生拖拽冲突）
  */
 export function renderOutline(
   container: HTMLElement,
@@ -92,6 +94,21 @@ export function renderOutline(
   onHeadingClick: (line: number) => void,
   onHeadingReorder?: HeadingReorderHandler
 ) {
+  const newSignature = headings.map((h) => `${h.level}:${h.text}`).join("|");
+  const existingItems = container.querySelectorAll<HTMLElement>(".outline-item");
+
+  if (
+    headings.length > 0 &&
+    newSignature === lastRenderedSignature &&
+    existingItems.length === headings.length
+  ) {
+    headings.forEach((h, idx) => {
+      existingItems[idx].dataset.line = String(h.line);
+    });
+    return;
+  }
+  lastRenderedSignature = newSignature;
+
   container.innerHTML = "";
 
   if (headings.length === 0) {
@@ -99,10 +116,7 @@ export function renderOutline(
     return;
   }
 
-  let draggedIndex: number | null = null;
   const stableKeys = buildStableHeadingKeys(headings);
-
-  // 计算每个标题是否拥有下属子标题，以及最小标题层级用于相对缩进归一化
   const minLevel = Math.min(...headings.map((h) => h.level));
   const hasChildren: boolean[] = new Array(headings.length).fill(false);
   for (let i = 0; i < headings.length; i++) {
@@ -136,18 +150,30 @@ export function renderOutline(
     });
   };
 
+  // 创建统一的 Pointer 拖拽残影
+  let ghostEl = document.getElementById("quilla-outline-drag-ghost");
+  if (!ghostEl) {
+    ghostEl = document.createElement("div");
+    ghostEl.id = "quilla-outline-drag-ghost";
+    ghostEl.className = "quilla-drag-ghost hidden";
+    document.body.appendChild(ghostEl);
+  }
+
   headings.forEach((heading, idx) => {
     const key = stableKeys[idx];
     const isCollapsed = collapsedOutlineKeys.has(key);
     const relDepth = Math.max(0, heading.level - minLevel);
 
     const el = document.createElement("div");
-    el.className = `outline-item outline-h${heading.level}`;
-    el.style.paddingLeft = `${relDepth * 12 + 6}px`;
-    el.title = `H${heading.level}: ${heading.text} (点击跳转，拖拽重排整章)`;
-    el.draggable = true;
+    el.className = `outline-item outline-h${heading.level} outline-depth-${Math.min(5, relDepth)}`;
+    el.style.paddingLeft = `${relDepth * 13 + 8}px`;
+    el.title = `H${heading.level}: ${heading.text} (点击跳转，按住上下拖动重排整章)`;
     el.dataset.index = String(idx);
     el.dataset.line = String(heading.line);
+
+    const grip = document.createElement("span");
+    grip.className = "outline-drag-grip";
+    grip.innerHTML = `<svg width="8" height="10" viewBox="0 0 8 10" fill="currentColor"><circle cx="2" cy="2" r="1"/><circle cx="6" cy="2" r="1"/><circle cx="2" cy="5" r="1"/><circle cx="6" cy="5" r="1"/><circle cx="2" cy="8" r="1"/><circle cx="6" cy="8" r="1"/></svg>`;
 
     const caret = document.createElement("span");
     caret.className = `outline-caret ${hasChildren[idx] ? "has-children" : "empty"} ${
@@ -156,6 +182,7 @@ export function renderOutline(
     if (hasChildren[idx]) {
       caret.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
       caret.title = "折叠/展开子章节";
+      caret.addEventListener("pointerdown", (e) => e.stopPropagation());
       caret.addEventListener("click", (e) => {
         e.stopPropagation();
         if (collapsedOutlineKeys.has(key)) {
@@ -179,66 +206,113 @@ export function renderOutline(
     tag.className = "outline-tag";
     tag.textContent = `H${heading.level}`;
 
+    el.appendChild(grip);
     el.appendChild(caret);
     el.appendChild(title);
     el.appendChild(tag);
 
-    el.addEventListener("click", () => {
-      container.querySelectorAll(".outline-item").forEach((item) => item.classList.remove("active"));
-      el.classList.add("active");
-      onHeadingClick(heading.line);
+    let isPointerDown = false;
+    let isDragging = false;
+    let startY = 0;
+    let hoverTargetIdx: number | null = null;
+    let hoverInsertAfter = false;
+
+    const clearDropIndicators = () => {
+      container.querySelectorAll(".outline-item").forEach((item) => {
+        item.classList.remove("outline-drop-indicator-top", "outline-drop-indicator-bottom");
+      });
+    };
+
+    el.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest(".outline-caret.has-children")) return;
+      e.preventDefault();
+      isPointerDown = true;
+      isDragging = false;
+      startY = e.clientY;
+      hoverTargetIdx = null;
+      el.setPointerCapture(e.pointerId);
     });
 
-    if (onHeadingReorder) {
-      el.addEventListener("dragstart", (e) => {
-        draggedIndex = idx;
+    el.addEventListener("pointermove", (e: PointerEvent) => {
+      if (!isPointerDown || !onHeadingReorder) return;
+      if (!isDragging) {
+        if (Math.abs(e.clientY - startY) < 5) return;
+        isDragging = true;
         el.classList.add("dragging");
-        if (e.dataTransfer) {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", String(idx));
+        if (ghostEl) {
+          ghostEl.textContent = `H${heading.level} · ${heading.text}`;
+          ghostEl.classList.remove("hidden");
         }
-      });
+      }
 
-      el.addEventListener("dragend", () => {
-        draggedIndex = null;
-        el.classList.remove("dragging");
-        container.querySelectorAll(".outline-item").forEach((item) => {
-          item.classList.remove("outline-drop-indicator-top", "outline-drop-indicator-bottom");
-        });
-      });
+      if (ghostEl) {
+        ghostEl.style.left = `${e.clientX + 12}px`;
+        ghostEl.style.top = `${e.clientY - 12}px`;
+      }
 
-      el.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        if (draggedIndex === null || draggedIndex === idx) return;
+      // 侧边栏边缘自动滚动
+      const sidebarScroller = container.closest(".sidebar-content") as HTMLElement | null;
+      if (sidebarScroller) {
+        const sbRect = sidebarScroller.getBoundingClientRect();
+        if (e.clientY < sbRect.top + 32) sidebarScroller.scrollTop -= 6;
+        else if (e.clientY > sbRect.bottom - 32) sidebarScroller.scrollTop += 6;
+      }
 
-        if (e.dataTransfer) {
-          e.dataTransfer.dropEffect = "move";
+      clearDropIndicators();
+      hoverTargetIdx = null;
+
+      const items = Array.from(container.querySelectorAll<HTMLElement>(".outline-item"));
+      for (const candidate of items) {
+        if (candidate.style.display === "none") continue;
+        const cIdx = Number(candidate.dataset.index);
+        if (cIdx === idx) continue;
+        const rect = candidate.getBoundingClientRect();
+        if (e.clientY >= rect.top - 2 && e.clientY <= rect.bottom + 2) {
+          hoverTargetIdx = cIdx;
+          hoverInsertAfter = e.clientY > rect.top + rect.height / 2;
+          candidate.classList.toggle("outline-drop-indicator-top", !hoverInsertAfter);
+          candidate.classList.toggle("outline-drop-indicator-bottom", hoverInsertAfter);
+          break;
         }
+      }
+    });
 
-        const rect = el.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        const isBottom = e.clientY > midY;
+    const endPointer = (e: PointerEvent, commit: boolean) => {
+      if (!isPointerDown) return;
+      isPointerDown = false;
+      try {
+        if (el.hasPointerCapture(e.pointerId)) {
+          el.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
 
-        el.classList.toggle("outline-drop-indicator-top", !isBottom);
-        el.classList.toggle("outline-drop-indicator-bottom", isBottom);
-      });
+      el.classList.remove("dragging");
+      clearDropIndicators();
+      ghostEl?.classList.add("hidden");
 
-      el.addEventListener("dragleave", () => {
-        el.classList.remove("outline-drop-indicator-top", "outline-drop-indicator-bottom");
-      });
+      if (!isDragging) {
+        if (commit) {
+          container
+            .querySelectorAll(".outline-item")
+            .forEach((item) => item.classList.remove("active"));
+          el.classList.add("active");
+          const currentLine = Number(el.dataset.line) || heading.line;
+          onHeadingClick(currentLine);
+        }
+        return;
+      }
 
-      el.addEventListener("drop", (e) => {
-        e.preventDefault();
-        el.classList.remove("outline-drop-indicator-top", "outline-drop-indicator-bottom");
-        if (draggedIndex === null || draggedIndex === idx) return;
+      isDragging = false;
+      if (commit && onHeadingReorder && hoverTargetIdx !== null && hoverTargetIdx !== idx) {
+        onHeadingReorder(idx, hoverTargetIdx, hoverInsertAfter);
+      }
+    };
 
-        const rect = el.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        const insertAfter = e.clientY > midY;
-
-        onHeadingReorder(draggedIndex, idx, insertAfter);
-      });
-    }
+    el.addEventListener("pointerup", (e) => endPointer(e, true));
+    el.addEventListener("pointercancel", (e) => endPointer(e, false));
 
     container.appendChild(el);
   });
@@ -272,7 +346,10 @@ export function syncActiveOutlineHeading(
 }
 
 /**
- * 根据大纲树节点索引，执行 CodeMirror 文档层面的章节原子重排 (闭包识别下属段落与子标题，无损维护章节间空行)
+ * 根据大纲树节点索引，执行 CodeMirror 文档层面的局部章节原子重排
+ * - 识别章节闭包范围（包含下属段落与子标题）
+ * - 仅替换受影响的最小行区间（绝不触碰前文 YAML 或无关代码块内的空行）
+ * - 自动将光标跟随至重排后的章节标题，确保 Ctrl+Z 撤销时视口不乱跳
  */
 export function reorderDocumentHeading(
   view: EditorView,
@@ -290,7 +367,7 @@ export function reorderDocumentHeading(
   const sourceHeading = headings[fromIndex];
   const targetHeading = headings[toIndex];
 
-  // 1. 计算源标题的章节闭包范围 (startLine ~ endLine)
+  // 1. 计算源标题的章节闭包范围 (sourceStartLine ~ sourceEndLine)
   const sourceStartLine = sourceHeading.line;
   let sourceEndLine = doc.lines;
   for (let j = fromIndex + 1; j < headings.length; j++) {
@@ -302,15 +379,22 @@ export function reorderDocumentHeading(
 
   // 2. 计算目标位置的行号
   let targetInsertLine = targetHeading.line;
-  if (insertAfter) {
-    let targetEndLine = doc.lines;
-    for (let k = toIndex + 1; k < headings.length; k++) {
-      if (headings[k].level <= targetHeading.level) {
-        targetEndLine = headings[k].line - 1;
-        break;
-      }
+  let targetSectionEndLine = targetHeading.line;
+  for (let k = toIndex + 1; k < headings.length; k++) {
+    if (headings[k].level <= targetHeading.level) {
+      targetSectionEndLine = headings[k].line - 1;
+      break;
     }
-    targetInsertLine = targetEndLine + 1;
+    if (k === headings.length - 1) {
+      targetSectionEndLine = doc.lines;
+    }
+  }
+  if (toIndex === headings.length - 1) {
+    targetSectionEndLine = doc.lines;
+  }
+
+  if (insertAfter) {
+    targetInsertLine = targetSectionEndLine + 1;
   }
 
   // 若目标插入行落入源章节闭包内部，视为无效移动
@@ -318,32 +402,34 @@ export function reorderDocumentHeading(
     return;
   }
 
-  // 3. 基于行数组执行无损切片重排，彻底消除字符级偏移误吞前文换行符的问题
-  const allLines: string[] = [];
-  for (let i = 1; i <= doc.lines; i++) {
-    allLines.push(doc.line(i).text);
+  // 3. 仅在最小受影响行区间 [minLine, maxLine] 内做局部重排，严禁替换全文或破坏代码块内空行
+  const minLine = Math.min(sourceStartLine, targetHeading.line);
+  const maxLine = Math.max(sourceEndLine, targetSectionEndLine);
+
+  const rangeLines: string[] = [];
+  for (let i = minLine; i <= maxLine; i++) {
+    rangeLines.push(doc.line(i).text);
   }
 
-  const srcZeroStart = sourceStartLine - 1;
+  const relSrcStart = sourceStartLine - minLine;
   const srcCount = sourceEndLine - sourceStartLine + 1;
-  const extractedLines = allLines.slice(srcZeroStart, srcZeroStart + srcCount);
+  const extractedLines = rangeLines.slice(relSrcStart, relSrcStart + srcCount);
   while (extractedLines.length > 1 && extractedLines[extractedLines.length - 1].trim() === "") {
     extractedLines.pop();
   }
   extractedLines.push("");
 
   const remainingLines = [
-    ...allLines.slice(0, srcZeroStart),
-    ...allLines.slice(srcZeroStart + srcCount),
+    ...rangeLines.slice(0, relSrcStart),
+    ...rangeLines.slice(relSrcStart + srcCount),
   ];
 
-  let adjustedInsertIdx = targetInsertLine - 1;
+  let adjustedInsertIdx = targetInsertLine - minLine;
   if (targetInsertLine > sourceEndLine) {
     adjustedInsertIdx -= srcCount;
   }
   adjustedInsertIdx = Math.max(0, Math.min(remainingLines.length, adjustedInsertIdx));
 
-  // 若插入在文档末尾且前一行非空，补一个空行保持段落呼吸感
   if (
     adjustedInsertIdx > 0 &&
     remainingLines[adjustedInsertIdx - 1] !== undefined &&
@@ -353,10 +439,22 @@ export function reorderDocumentHeading(
   }
 
   remainingLines.splice(adjustedInsertIdx, 0, ...extractedLines);
-  const newDocText = remainingLines.join("\n").replace(/\n{3,}/g, "\n\n");
 
+  const replaceFrom = doc.line(minLine).from;
+  const replaceTo = doc.line(maxLine).to;
+  const newSegment = remainingLines.join("\n");
+
+  const headingOffsetInExtracted = extractedLines[0] === "" ? 1 : 0;
+  const linesBeforeNewHeading = remainingLines.slice(0, adjustedInsertIdx + headingOffsetInExtracted);
+  const newHeadingPos =
+    replaceFrom +
+    (linesBeforeNewHeading.length > 0 ? linesBeforeNewHeading.join("\n").length + 1 : 0);
+
+  lastRenderedSignature = "";
   view.dispatch({
-    changes: { from: 0, to: doc.length, insert: newDocText },
+    changes: { from: replaceFrom, to: replaceTo, insert: newSegment },
+    selection: { anchor: Math.min(newHeadingPos, replaceFrom + newSegment.length) },
+    effects: [EditorView.scrollIntoView(newHeadingPos, { y: "start", yMargin: 48 })],
     userEvent: "move.heading",
   });
 }

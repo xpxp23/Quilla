@@ -8,6 +8,12 @@ export interface RecoverySnapshot {
   title: string;
 }
 
+export interface TextDeltaPayload {
+  fromChar: number;
+  toChar: number;
+  insert: string;
+}
+
 interface DiskDraftRecord {
   key: string;
   filePath: string | null;
@@ -78,14 +84,24 @@ function writeSnapshotMap(map: Record<string, RecoverySnapshot>) {
   }
 }
 
-/**
- * 实时在后台按当前窗口会话与文件路径保存脏内容快照（同时同步至 Rust 后端 Ropey 与磁盘草稿）
- */
-export function saveRecoverySnapshot(filePath: string | null, content: string, title: string) {
+let pendingPersistTimer: any = null;
+let pendingSnapshotData: {
+  bucketKey: string;
+  filePath: string | null;
+  content: string;
+  title: string;
+} | null = null;
+
+function flushPendingRecoverySnapshot() {
+  if (pendingPersistTimer) {
+    clearTimeout(pendingPersistTimer);
+    pendingPersistTimer = null;
+  }
+  if (!pendingSnapshotData) return;
+  const { bucketKey, filePath, content, title } = pendingSnapshotData;
+  pendingSnapshotData = null;
+
   const map = readSnapshotMap();
-  const bucketKey = filePath
-    ? `file::${filePath.replace(/\\/g, "/").toLowerCase()}`
-    : CURRENT_SESSION_ID;
   map[bucketKey] = {
     sessionId: CURRENT_SESSION_ID,
     filePath,
@@ -95,7 +111,7 @@ export function saveRecoverySnapshot(filePath: string | null, content: string, t
   };
   writeSnapshotMap(map);
 
-  // 同步至 Rust Ropey 缓冲区与磁盘级原子快照文件（携带完整文件路径与标题元数据）
+  // 同步至 Rust Ropey 缓冲区与磁盘级快照文件
   invoke("sync_document_buffer", {
     content,
     fileId: bucketKey,
@@ -104,10 +120,63 @@ export function saveRecoverySnapshot(filePath: string | null, content: string, t
   }).catch(() => {});
 }
 
+// 窗口失焦或关闭前立即落盘防丢
+if (typeof window !== "undefined") {
+  window.addEventListener("blur", () => {
+    flushPendingRecoverySnapshot();
+  });
+  window.addEventListener("beforeunload", () => {
+    flushPendingRecoverySnapshot();
+  });
+}
+
+/**
+ * 实时在后台按当前窗口会话与文件路径保存脏内容快照（采用 1500ms 闲置防抖与失焦立即刷盘，
+ * 彻底解耦高频打字与 localStorage / 磁盘 I/O 序列化）
+ */
+export function saveRecoverySnapshot(
+  filePath: string | null,
+  content: string,
+  title: string,
+  deltas?: TextDeltaPayload[]
+) {
+  const bucketKey = filePath
+    ? `file::${filePath.replace(/\\/g, "/").toLowerCase()}`
+    : CURRENT_SESSION_ID;
+
+  // 若携带增量字符区间变更，先轻量更新内存 Ropey 缓冲区
+  if (deltas && deltas.length > 0) {
+    invoke("sync_document_buffer", {
+      deltas,
+      fileId: "memory_only",
+    }).catch(() => {});
+  }
+
+  pendingSnapshotData = {
+    bucketKey,
+    filePath,
+    content,
+    title,
+  };
+
+  if (pendingPersistTimer) {
+    clearTimeout(pendingPersistTimer);
+  }
+  pendingPersistTimer = setTimeout(() => {
+    flushPendingRecoverySnapshot();
+  }, 1500);
+}
+
 /**
  * 当当前窗口的文件正常保存或放弃更改时，仅清除当前文件/会话对应的快照
  */
 export function clearRecoverySnapshot(filePath?: string | null) {
+  if (pendingPersistTimer) {
+    clearTimeout(pendingPersistTimer);
+    pendingPersistTimer = null;
+  }
+  pendingSnapshotData = null;
+
   const map = readSnapshotMap();
   delete map[CURRENT_SESSION_ID];
   delete map["legacy"];
