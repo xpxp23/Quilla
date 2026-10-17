@@ -8,6 +8,14 @@ export interface RecoverySnapshot {
   title: string;
 }
 
+interface DiskDraftRecord {
+  key: string;
+  filePath: string | null;
+  content: string;
+  timestamp: number;
+  title: string;
+}
+
 const STORAGE_KEY = "typora_auto_recovery_snapshots_v2";
 const LEGACY_KEY = "typora_auto_recovery_snapshot";
 
@@ -51,7 +59,6 @@ function readSnapshotMap(): Record<string, RecoverySnapshot> {
 
 function writeSnapshotMap(map: Record<string, RecoverySnapshot>) {
   try {
-    // 限制最多保留最近 8 份快照，防止 localStorage 5MB 容量溢出
     const entries = Object.entries(map).sort((a, b) => b[1].timestamp - a[1].timestamp);
     const trimmedMap: Record<string, RecoverySnapshot> = {};
     for (const [k, v] of entries.slice(0, 8)) {
@@ -59,7 +66,6 @@ function writeSnapshotMap(map: Record<string, RecoverySnapshot>) {
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmedMap));
   } catch (e) {
-    // 若遇超长文档引发 QuotaExceededError，仅保留当前最新一条
     try {
       const entries = Object.entries(map).sort((a, b) => b[1].timestamp - a[1].timestamp);
       if (entries.length > 0) {
@@ -89,10 +95,12 @@ export function saveRecoverySnapshot(filePath: string | null, content: string, t
   };
   writeSnapshotMap(map);
 
-  // 同步至 Rust Ropey 缓冲区与磁盘级原子快照文件
+  // 同步至 Rust Ropey 缓冲区与磁盘级原子快照文件（携带完整文件路径与标题元数据）
   invoke("sync_document_buffer", {
     content,
     fileId: bucketKey,
+    filePath,
+    title,
   }).catch(() => {});
 }
 
@@ -112,8 +120,36 @@ export function clearRecoverySnapshot(filePath?: string | null) {
   writeSnapshotMap(map);
 }
 
-export function getRecoverySnapshot(): { key: string; snapshot: RecoverySnapshot } | null {
+/**
+ * 合并读取 localStorage 与 Rust 磁盘兜底快照，返回最新的一份有效未保存草稿
+ */
+export async function getRecoverySnapshotAsync(): Promise<{
+  key: string;
+  snapshot: RecoverySnapshot;
+} | null> {
   const map = readSnapshotMap();
+
+  try {
+    const diskRecords = await invoke<DiskDraftRecord[]>("load_draft_snapshots");
+    if (Array.isArray(diskRecords)) {
+      for (const rec of diskRecords) {
+        if (!rec || !rec.key || !rec.content) continue;
+        const existing = map[rec.key];
+        if (!existing || rec.timestamp >= existing.timestamp) {
+          map[rec.key] = {
+            sessionId: existing?.sessionId || "disk-recovery",
+            filePath: rec.filePath ?? null,
+            content: rec.content,
+            timestamp: rec.timestamp,
+            title: rec.title || "未命名文档",
+          };
+        }
+      }
+    }
+  } catch {
+    // 浏览器环境或后端不可用时静默回退到 localStorage
+  }
+
   const entries = Object.entries(map);
   if (entries.length === 0) return null;
   entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
@@ -122,22 +158,42 @@ export function getRecoverySnapshot(): { key: string; snapshot: RecoverySnapshot
 }
 
 /**
- * 应用启动时检查是否存在未正常保存的快照，若存在则提示一键恢复
+ * 应用启动时检查是否存在未正常保存的快照，若存在且与磁盘原文件确实不同则提示一键恢复
  */
-export function checkAndPromptRecovery(
+export async function checkAndPromptRecovery(
   onRecover: (snapshot: RecoverySnapshot) => void,
   onDiscard?: () => void
 ) {
-  const found = getRecoverySnapshot();
+  const found = await getRecoverySnapshotAsync();
   if (!found || !found.snapshot.content || !found.snapshot.content.trim()) return;
 
   const { key, snapshot } = found;
 
-  if (Date.now() - snapshot.timestamp > 7 * 24 * 3600 * 1000) {
+  const removeSpecificKey = () => {
     const map = readSnapshotMap();
     delete map[key];
     writeSnapshotMap(map);
+    invoke("clear_draft_snapshot", { fileId: key }).catch(() => {});
+  };
+
+  if (Date.now() - snapshot.timestamp > 7 * 24 * 3600 * 1000) {
+    removeSpecificKey();
     return;
+  }
+
+  // 若快照关联了本地文件且快照内容与磁盘文件内容完全一致，说明已保存，直接静默清理
+  if (snapshot.filePath) {
+    try {
+      const diskContent = await invoke<string>("read_file_content", {
+        path: snapshot.filePath,
+      });
+      if (diskContent === snapshot.content) {
+        removeSpecificKey();
+        return;
+      }
+    } catch {
+      // 文件可能已被移动或删除，继续展示恢复横幅
+    }
   }
 
   if (document.querySelector(".ty-recovery-banner")) return;
@@ -161,13 +217,6 @@ export function checkAndPromptRecovery(
       <button type="button" class="recovery-btn btn-discard" title="永久丢弃此快照">丢弃</button>
     </div>
   `;
-
-  const removeSpecificKey = () => {
-    const map = readSnapshotMap();
-    delete map[key];
-    writeSnapshotMap(map);
-    invoke("clear_draft_snapshot", { fileId: key }).catch(() => {});
-  };
 
   banner.querySelector(".btn-restore")?.addEventListener("click", () => {
     removeSpecificKey();

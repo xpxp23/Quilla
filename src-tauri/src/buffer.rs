@@ -19,6 +19,15 @@ impl Default for DocumentBuffer {
     }
 }
 
+fn strip_inline_markdown(raw: &str) -> String {
+    let mut out = raw.trim().to_string();
+    // 剥离 ATX 标题尾部可选的 ` ###`
+    if let Some(stripped) = out.trim_end_matches('#').strip_suffix(' ') {
+        out = stripped.trim().to_string();
+    }
+    out
+}
+
 impl DocumentBuffer {
     pub fn new(initial_text: &str) -> Self {
         Self {
@@ -52,7 +61,7 @@ impl DocumentBuffer {
         self.is_dirty
     }
 
-    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与代码块内部注释
+    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与代码块内部注释，并兼容引用块内标题
     pub fn extract_headings(&self) -> Vec<HeadingItem> {
         let mut headings = Vec::new();
         let mut in_fence = false;
@@ -95,22 +104,26 @@ impl DocumentBuffer {
                 continue;
             }
 
-            if trimmed.starts_with('#') {
+            // 兼容顶层标题与引用块内标题 (> # Heading)
+            let after_quote = trimmed.trim_start_matches(|c: char| c == '>' || c == ' ');
+            if after_quote.starts_with('#') {
                 let mut level = 0;
-                for ch in trimmed.chars() {
+                for ch in after_quote.chars() {
                     if ch == '#' {
                         level += 1;
                     } else {
                         break;
                     }
                 }
-                if (1..=6).contains(&level) && trimmed.chars().nth(level) == Some(' ') {
-                    let text = trimmed[level..].trim().to_string();
-                    headings.push(HeadingItem {
-                        level,
-                        text,
-                        line: idx + 1,
-                    });
+                if (1..=6).contains(&level) && after_quote.chars().nth(level) == Some(' ') {
+                    let text = strip_inline_markdown(&after_quote[level..]);
+                    if !text.is_empty() {
+                        headings.push(HeadingItem {
+                            level,
+                            text,
+                            line: idx + 1,
+                        });
+                    }
                 }
             }
         }
@@ -138,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_heading_extraction() {
-        let content = "---\ntitle: demo\n---\n# Header 1\nSome paragraph\n```python\n# Code comment\n```\n## Subheader 2\n### Subheader 3\nNot # A Header";
+        let content = "---\ntitle: demo\n---\n# Header 1\nSome paragraph\n```python\n# Code comment\n```\n## Subheader 2 ##\n> ### Quoted Header 3\nNot # A Header";
         let buf = DocumentBuffer::new(content);
         let headings = buf.extract_headings();
 
@@ -148,6 +161,6 @@ mod tests {
         assert_eq!(headings[1].level, 2);
         assert_eq!(headings[1].text, "Subheader 2");
         assert_eq!(headings[2].level, 3);
-        assert_eq!(headings[2].text, "Subheader 3");
+        assert_eq!(headings[2].text, "Quoted Header 3");
     }
 }

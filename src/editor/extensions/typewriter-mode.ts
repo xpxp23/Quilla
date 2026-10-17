@@ -3,10 +3,9 @@ import { StateEffect, StateField } from "@codemirror/state";
 
 /**
  * 打字机模式状态管理与优雅平滑居中锁频插件 (F9)
- * - 键盘打字换行或点击导航时：平滑（ease-out 缓动动画）将当前行居中在视口 50% 处
- * - 同一行横向打字时：不重复触发滚动动画，保证输入毫无抖动
+ * - 键盘打字换行或点击光标定位时：平滑（ease-out 缓动动画）将当前行居中在视口 50% 处
+ * - 鼠标按住拖拽框选文本时：智能冻结居中滚动，杜绝选区拖拽过程中视口乱跳
  * - 用户鼠标滚轮滑动时：立即中止动画并释放居中锁，允许用户自由查阅全文
- * - 再次按键或点击编辑时：平滑回弹居中
  */
 
 export const setTypewriterMode = StateEffect.define<boolean>();
@@ -26,11 +25,12 @@ export const typewriterState = StateField.define<boolean>({
 });
 
 let isUserScrolling = false;
+let isPointerDragging = false;
 let scrollTimeout: any = null;
 let currentAnimId: number | null = null;
 let scheduled = false;
 
-function smoothScrollTo(element: HTMLElement, target: number, duration: number = 260) {
+function smoothScrollTo(element: HTMLElement, target: number, duration: number = 240) {
   if (currentAnimId !== null) {
     cancelAnimationFrame(currentAnimId);
     currentAnimId = null;
@@ -47,7 +47,7 @@ function smoothScrollTo(element: HTMLElement, target: number, duration: number =
   }
 
   function animate(currentTime: number) {
-    if (isUserScrolling) {
+    if (isUserScrolling || isPointerDragging) {
       currentAnimId = null;
       return;
     }
@@ -70,7 +70,8 @@ export const typewriterPlugin = ViewPlugin.fromClass(
     private dom: HTMLElement;
     private wheelHandler: () => void;
     private keyHandler: (e: KeyboardEvent) => void;
-    private pointerHandler: () => void;
+    private pointerDownHandler: () => void;
+    private pointerUpHandler: () => void;
 
     constructor(readonly view: EditorView) {
       this.dom = view.scrollDOM;
@@ -87,21 +88,36 @@ export const typewriterPlugin = ViewPlugin.fromClass(
         }, 1200);
       };
 
-      this.keyHandler = (_e: KeyboardEvent) => {
+      this.keyHandler = (e: KeyboardEvent) => {
+        // 若正在用 Shift+方向键做范围框选，不强制居中
+        if (e.shiftKey && e.key.startsWith("Arrow")) return;
         isUserScrolling = false;
         clearTimeout(scrollTimeout);
         this.scheduleCenter();
       };
 
-      this.pointerHandler = () => {
-        isUserScrolling = false;
-        clearTimeout(scrollTimeout);
-        this.scheduleCenter();
+      this.pointerDownHandler = () => {
+        isPointerDragging = true;
+        if (currentAnimId !== null) {
+          cancelAnimationFrame(currentAnimId);
+          currentAnimId = null;
+        }
+      };
+
+      this.pointerUpHandler = () => {
+        if (!isPointerDragging) return;
+        isPointerDragging = false;
+        // 仅在单击定位光标（无范围选区）时平滑居中，框选文本时不触发滚动跳动
+        if (this.view.state.selection.main.empty) {
+          isUserScrolling = false;
+          this.scheduleCenter();
+        }
       };
 
       this.dom.addEventListener("wheel", this.wheelHandler, { passive: true });
       view.contentDOM.addEventListener("keydown", this.keyHandler);
-      view.contentDOM.addEventListener("pointerdown", this.pointerHandler);
+      view.contentDOM.addEventListener("pointerdown", this.pointerDownHandler);
+      window.addEventListener("pointerup", this.pointerUpHandler);
 
       this.updateDomClass();
       if (view.state.field(typewriterState)) {
@@ -121,7 +137,13 @@ export const typewriterPlugin = ViewPlugin.fromClass(
         }
       }
 
-      if (isActive && !isUserScrolling && (update.docChanged || update.selectionSet)) {
+      if (
+        isActive &&
+        !isUserScrolling &&
+        !isPointerDragging &&
+        update.state.selection.main.empty &&
+        (update.docChanged || update.selectionSet)
+      ) {
         this.scheduleCenter();
       }
     }
@@ -142,14 +164,16 @@ export const typewriterPlugin = ViewPlugin.fromClass(
       scheduled = true;
       requestAnimationFrame(() => {
         scheduled = false;
-        if (!this.view.state.field(typewriterState) || isUserScrolling) return;
+        if (!this.view.state.field(typewriterState) || isUserScrolling || isPointerDragging) {
+          return;
+        }
 
         try {
           const head = this.view.state.selection.main.head;
           const lineBlock = this.view.lineBlockAt(head);
           const scroller = this.view.scrollDOM;
-          const targetY = lineBlock.top - (scroller.clientHeight / 2) + (lineBlock.height / 2);
-          smoothScrollTo(scroller, Math.max(0, targetY), 260);
+          const targetY = lineBlock.top - scroller.clientHeight / 2 + lineBlock.height / 2;
+          smoothScrollTo(scroller, Math.max(0, targetY), 240);
         } catch {
           // 容错兜底
         }
@@ -163,7 +187,8 @@ export const typewriterPlugin = ViewPlugin.fromClass(
       }
       this.dom.removeEventListener("wheel", this.wheelHandler);
       this.view.contentDOM.removeEventListener("keydown", this.keyHandler);
-      this.view.contentDOM.removeEventListener("pointerdown", this.pointerHandler);
+      this.view.contentDOM.removeEventListener("pointerdown", this.pointerDownHandler);
+      window.removeEventListener("pointerup", this.pointerUpHandler);
       clearTimeout(scrollTimeout);
     }
   }
@@ -186,8 +211,12 @@ export function isTypewriterModeActive(view: EditorView): boolean {
 /**
  * 在打字机模式下将特定元素 (表格行、图表、公式块) 平滑缓动居中在视口 50% 水平线上
  */
-export function centerElementInTypewriter(view: EditorView, elem: HTMLElement, duration: number = 260) {
-  if (!isTypewriterModeActive(view)) return;
+export function centerElementInTypewriter(
+  view: EditorView,
+  elem: HTMLElement,
+  duration: number = 240
+) {
+  if (!isTypewriterModeActive(view) || isPointerDragging) return;
   requestAnimationFrame(() => {
     try {
       const scroller = view.scrollDOM;
@@ -196,7 +225,7 @@ export function centerElementInTypewriter(view: EditorView, elem: HTMLElement, d
       const elemCenter = rect.top + rect.height / 2;
       const scrollerCenter = scrollerRect.top + scrollerRect.height / 2;
       const diff = elemCenter - scrollerCenter;
-      if (Math.abs(diff) > 4) {
+      if (Math.abs(diff) > 6) {
         smoothScrollTo(scroller, Math.max(0, scroller.scrollTop + diff), duration);
       }
     } catch {
@@ -205,7 +234,4 @@ export function centerElementInTypewriter(view: EditorView, elem: HTMLElement, d
   });
 }
 
-export const typewriterModeExtension = [
-  typewriterState,
-  typewriterPlugin,
-];
+export const typewriterModeExtension = [typewriterState, typewriterPlugin];

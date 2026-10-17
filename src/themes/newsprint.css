@@ -9,13 +9,19 @@
   --primary-bg-subtle: rgba(139, 0, 0, 0.1);
   --border-color: #d8d2c4;
   --quote-border-color: #8b0000;
-  --item-hover-bg-color: rgba(0, 0, 0, 0.05);
+  --item-hover-bg-color: rgba(139, 0, 0, 0.06);
+  --item-hover-text-color: #1f1a17;
 }
 
 body, #write, .cm-editor, .cm-editor .cm-content {
   background-color: var(--bg-color);
   color: var(--text-color) !important;
   font-family: "Georgia", "Cambria", "Times New Roman", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif !important;
+}
+
+#write em, .cm-emphasis, em {
+  font-family: "Georgia", "Cambria", "Times New Roman", "KaiTi", "楷体", "STKaiti", "Source Han Serif SC", serif !important;
+  font-style: italic !important;
 }
 
 #write strong, .cm-strong, strong {

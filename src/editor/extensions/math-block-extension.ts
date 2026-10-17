@@ -120,7 +120,10 @@ class MathBlockWidget extends WidgetType {
         output: "html",
       });
     } catch (err: any) {
-      content.innerHTML = `<span class="math-error">公式语法解析错误: ${err.message || String(err)}</span>`;
+      const errSpan = document.createElement("span");
+      errSpan.className = "math-error";
+      errSpan.textContent = `公式语法解析错误: ${err.message || String(err)}`;
+      content.appendChild(errSpan);
     }
 
     if (this.isLivePreview) {
@@ -133,7 +136,8 @@ class MathBlockWidget extends WidgetType {
       header.querySelector(".live-preview-fold-btn")?.addEventListener("mousedown", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const afterPos = Math.min(view.state.doc.length, this.toPos + 1);
+        const currentTo = Number(container.dataset.toPos ?? this.toPos);
+        const afterPos = Math.min(view.state.doc.length, currentTo + 1);
         view.dispatch({ selection: { anchor: afterPos } });
         view.focus();
       });
@@ -147,7 +151,8 @@ class MathBlockWidget extends WidgetType {
 
       const enterEditMode = (e: Event) => {
         e.stopPropagation();
-        const firstLine = view.state.doc.lineAt(Math.min(this.fromPos, view.state.doc.length));
+        const currentFrom = Number(container.dataset.fromPos ?? this.fromPos);
+        const firstLine = view.state.doc.lineAt(Math.min(currentFrom, view.state.doc.length));
         const targetLine = view.state.doc.line(Math.min(firstLine.number + 1, view.state.doc.lines));
         view.dispatch({
           selection: { anchor: targetLine.to },

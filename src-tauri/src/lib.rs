@@ -5,6 +5,9 @@ pub mod search;
 pub mod watcher;
 
 use commands::AppState;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
@@ -24,12 +27,13 @@ pub fn run() {
     }
 
     let app_state = AppState {
-        current_workspace: std::sync::Mutex::new(None),
-        window_workspaces: std::sync::Mutex::new(std::collections::HashMap::new()),
-        initial_file: std::sync::Mutex::new(initial_file),
-        is_new_window: std::sync::Mutex::new(is_new_window),
-        document_buffer: std::sync::Mutex::new(buffer::DocumentBuffer::default()),
+        current_workspace: Mutex::new(None),
+        window_workspaces: Mutex::new(HashMap::new()),
+        initial_file: Mutex::new(initial_file),
+        is_new_window: Mutex::new(is_new_window),
+        document_buffers: Mutex::new(HashMap::new()),
         workspace_watcher: watcher::WorkspaceWatcher::default(),
+        force_closing_windows: Mutex::new(HashSet::new()),
     };
 
     tauri::Builder::default()
@@ -46,11 +50,35 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                let state = window.state::<AppState>();
+                let label = window.label().to_string();
+                let should_allow = state
+                    .force_closing_windows
+                    .lock()
+                    .map(|mut set| set.remove(&label))
+                    .unwrap_or(false);
+
+                if !should_allow {
+                    api.prevent_close();
+                    let _ = window.emit("window-close-requested", ());
+                }
+            }
+            WindowEvent::Resized(_) => {
+                if let Ok(maximized) = window.is_maximized() {
+                    let _ = window.emit("window-maximized-changed", maximized);
+                }
+            }
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             commands::save_file_content,
             commands::read_file_content,
             commands::sync_document_buffer,
             commands::clear_draft_snapshot,
+            commands::load_draft_snapshots,
+            commands::close_workspace_watcher,
             commands::list_workspace_files,
             commands::search_workspace_content,
             commands::select_workspace_folder,
@@ -66,6 +94,7 @@ pub fn run() {
             commands::read_custom_theme_css,
             commands::window_minimize,
             commands::window_toggle_maximize,
+            commands::window_is_maximized,
             commands::window_close,
             commands::window_set_always_on_top,
             commands::create_file,

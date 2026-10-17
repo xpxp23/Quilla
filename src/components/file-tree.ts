@@ -78,6 +78,7 @@ function sortFileItems(items: FileItem[], mode: "name" | "modified"): FileItem[]
 
 /**
  * 在文件树指定目录容器中启动原位内联输入（新建文件 / 新建文件夹）
+ * 体验优化：若用户未修改默认名称且直接点击外部失焦 (blur)，自动视为取消操作，避免误创建大量 Untitled.md
  */
 export function triggerInlineCreateInTree(
   mountContainer: HTMLElement | null,
@@ -90,9 +91,9 @@ export function triggerInlineCreateInTree(
   const dir = targetDir || options.workspaceRoot;
   if (!dir) return;
 
-  // 移除整个文件树中已有的临时输入行
   document.querySelectorAll(".tree-inline-create-row").forEach((el) => el.remove());
 
+  const defaultName = isFolder ? "新建文件夹" : "Untitled.md";
   const row = document.createElement("div");
   row.className = "tree-item tree-inline-create-row";
   row.style.paddingLeft = `${depth * 14 + 6}px`;
@@ -107,7 +108,8 @@ export function triggerInlineCreateInTree(
   const input = document.createElement("input");
   input.type = "text";
   input.className = "tree-inline-input";
-  input.value = isFolder ? "新建文件夹" : "Untitled.md";
+  input.value = defaultName;
+  input.placeholder = isFolder ? "输入文件夹名称 (Enter 确认)" : "输入文件名 (Enter 确认)";
   input.spellcheck = false;
 
   row.appendChild(spacer);
@@ -126,10 +128,30 @@ export function triggerInlineCreateInTree(
   }
 
   let committed = false;
-  const commit = async () => {
+  let hasUserTyped = false;
+
+  input.addEventListener("input", () => {
+    hasUserTyped = true;
+  });
+
+  const cancel = () => {
     if (committed) return;
     committed = true;
+    row.remove();
+    options.onRefresh?.();
+  };
+
+  const commit = async (fromBlur: boolean) => {
+    if (committed) return;
     const rawName = input.value.trim();
+
+    // 若因点击外部失焦触发，且用户从未输入过任何字符（仍为默认占位名），自动取消而不落盘创建
+    if (fromBlur && !hasUserTyped) {
+      cancel();
+      return;
+    }
+
+    committed = true;
     row.remove();
     if (!rawName) {
       options.onRefresh?.();
@@ -147,7 +169,7 @@ export function triggerInlineCreateInTree(
         options.onRefresh?.();
         showToast(`已创建文件夹 ${finalName}`, "success");
       } else {
-        await invoke("create_file", { path: fullPath });
+        await invoke("create_file", { path: fullPath, initialContent: "" });
         options.onRefresh?.();
         options.onFileSelect(fullPath);
       }
@@ -157,18 +179,11 @@ export function triggerInlineCreateInTree(
     }
   };
 
-  const cancel = () => {
-    if (committed) return;
-    committed = true;
-    row.remove();
-    options.onRefresh?.();
-  };
-
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Enter") {
       e.preventDefault();
-      commit();
+      commit(false);
     } else if (e.key === "Escape") {
       e.preventDefault();
       cancel();
@@ -176,7 +191,7 @@ export function triggerInlineCreateInTree(
   });
 
   input.addEventListener("blur", () => {
-    setTimeout(() => commit(), 80);
+    setTimeout(() => commit(true), 80);
   });
 }
 
@@ -214,14 +229,20 @@ function startInlineRename(rowEl: HTMLElement, item: FileItem, options: FileTree
 
     if (!save || !newName || newName === item.name) return;
 
+    let finalName = newName;
+    if (!item.is_dir && !finalName.includes(".") && item.name.includes(".")) {
+      const ext = item.name.slice(item.name.lastIndexOf("."));
+      finalName += ext;
+    }
+
     const sep = item.path.includes("\\") ? "\\" : "/";
     const parentDir = item.path.replace(/[\\/][^\\/]+$/, "");
-    const newPath = `${parentDir}${sep}${newName}`;
+    const newPath = `${parentDir}${sep}${finalName}`;
     try {
       await invoke("rename_path", { oldPath: item.path, newPath });
       options.onFileRenamed?.(item.path, newPath);
       options.onRefresh?.();
-      showToast(`已重命名为 ${newName}`, "success");
+      showToast(`已重命名为 ${finalName}`, "success");
     } catch (err) {
       showToast(`重命名失败: ${err}`, "error");
     }
@@ -257,7 +278,7 @@ export function renderFileTree(
   const sortedItems = sortFileItems(items, options.sortBy || currentSortBy);
 
   if (sortedItems.length === 0) {
-    container.innerHTML = `<div class="tree-empty-hint" style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">此文件夹为空</div>`;
+    container.innerHTML = `<div class="tree-empty-hint">此工作区暂无 Markdown 文档</div>`;
   }
 
   container.oncontextmenu = (e: MouseEvent) => {
@@ -276,6 +297,7 @@ export function renderFileTree(
     row.style.paddingLeft = `${depth * 14 + 6}px`;
 
     if (item.is_dir) {
+      row.dataset.dirPath = item.path;
       const isCollapsed = collapsedPaths.has(item.path);
 
       const toggle = document.createElement("span");
@@ -368,7 +390,6 @@ export function renderFileTree(
         options.onFileSelect(item.path);
       });
 
-      // 修复 BUG-05：在子文件夹内的文件上右键时，传入其直接父级容器 parentMount，使内联新建输入框精准出现在当前同级目录下
       row.addEventListener("contextmenu", (e: MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
@@ -393,14 +414,38 @@ export function syncActiveTreeItem(
   if (!container) return;
   const normalizedActive = (activeFilePath || "").replace(/\\/g, "/").toLowerCase();
   const treeItems = container.querySelectorAll<HTMLElement>(".tree-item");
+  let activeRow: HTMLElement | null = null;
+
   treeItems.forEach((row) => {
     const rowPath = (row.dataset.path || "").replace(/\\/g, "/").toLowerCase();
     if (normalizedActive && rowPath && rowPath === normalizedActive) {
       row.classList.add("active");
+      activeRow = row;
     } else {
       row.classList.remove("active");
     }
   });
+
+  // 若选中的文件位于已折叠的子目录中，自动展开其祖先目录并滚动至可见区域
+  if (activeRow) {
+    let parent = (activeRow as HTMLElement).parentElement;
+    while (parent && parent !== container) {
+      if (parent.classList.contains("tree-children") && parent.style.display === "none") {
+        parent.style.display = "block";
+        const dirWrapper = parent.parentElement;
+        const dirRow = dirWrapper?.querySelector<HTMLElement>(":scope > .tree-item");
+        if (dirRow) {
+          const dirPath = dirRow.dataset.dirPath;
+          if (dirPath) collapsedPaths.delete(dirPath);
+          dirRow.querySelector(".tree-toggle")?.classList.add("expanded");
+          const iconEl = dirRow.querySelector(".tree-icon");
+          if (iconEl) iconEl.innerHTML = SVG_FOLDER_OPEN;
+        }
+      }
+      parent = parent.parentElement;
+    }
+    (activeRow as HTMLElement).scrollIntoView({ block: "nearest" });
+  }
 }
 
 function showTreeContextMenu(
@@ -428,7 +473,17 @@ function showTreeContextMenu(
   const addMenuItem = (iconSvg: string, label: string, onClick: () => void, danger = false) => {
     const itemEl = document.createElement("div");
     itemEl.className = `menu-item ${danger ? "danger-item" : ""}`;
-    itemEl.innerHTML = `<div class="menu-item-left"><span class="m-icon">${iconSvg}</span><span>${label}</span></div>`;
+    const leftDiv = document.createElement("div");
+    leftDiv.className = "menu-item-left";
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "m-icon";
+    iconSpan.innerHTML = iconSvg;
+    const textSpan = document.createElement("span");
+    textSpan.textContent = label;
+    leftDiv.appendChild(iconSpan);
+    leftDiv.appendChild(textSpan);
+    itemEl.appendChild(leftDiv);
+
     itemEl.addEventListener("click", (e) => {
       e.stopPropagation();
       closeContextMenu();
@@ -443,27 +498,30 @@ function showTreeContextMenu(
     menu.appendChild(div);
   };
 
-  // 1. 原位新建 Markdown 文件
   addMenuItem(ICON_NEW_FILE, "新建文件", () => {
-    if (item?.is_dir) {
+    if (item?.is_dir && rowEl) {
       collapsedPaths.delete(item.path);
       mountContainer.style.display = "block";
+      rowEl.querySelector(".tree-toggle")?.classList.add("expanded");
+      const iconEl = rowEl.querySelector(".tree-icon");
+      if (iconEl) iconEl.innerHTML = SVG_FOLDER_OPEN;
     }
     triggerInlineCreateInTree(mountContainer, false, targetDir, depth);
   });
 
-  // 2. 原位新建文件夹
   addMenuItem(ICON_NEW_FOLDER, "新建文件夹", () => {
-    if (item?.is_dir) {
+    if (item?.is_dir && rowEl) {
       collapsedPaths.delete(item.path);
       mountContainer.style.display = "block";
+      rowEl.querySelector(".tree-toggle")?.classList.add("expanded");
+      const iconEl = rowEl.querySelector(".tree-icon");
+      if (iconEl) iconEl.innerHTML = SVG_FOLDER_OPEN;
     }
     triggerInlineCreateInTree(mountContainer, true, targetDir, depth);
   });
 
   addDivider();
 
-  // 2.5 切换排序方式 (按名称 / 按修改时间)
   const sortLabel =
     currentSortBy === "name" ? "排序：切换为按修改时间" : "排序：切换为按名称 A-Z";
   addMenuItem(ICON_SORT, sortLabel, () => {
@@ -489,12 +547,10 @@ function showTreeContextMenu(
       addDivider();
     }
 
-    // 3. 原位内联重命名
     addMenuItem(ICON_RENAME, "重命名", () => {
       startInlineRename(rowEl, item, options);
     });
 
-    // 4. 非阻塞确认删除
     addMenuItem(
       ICON_DELETE,
       "删除",
@@ -515,7 +571,6 @@ function showTreeContextMenu(
 
     addDivider();
 
-    // 5. 在文件资源管理器中定位
     addMenuItem(ICON_EXPLORER, "在文件资源管理器中显示", async () => {
       try {
         await invoke("reveal_in_explorer", { path: item.path });

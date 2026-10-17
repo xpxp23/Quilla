@@ -109,7 +109,7 @@ class MathWidget extends WidgetType {
   }
 }
 
-// 2. 任务列表 Checkbox Widget (缩进交由行级 CSS padding-left 统一控制，杜绝双重缩进偏移)
+// 2. 任务列表 Checkbox Widget
 class TaskWidget extends WidgetType {
   constructor(readonly checked: boolean, readonly pos: number) {
     super();
@@ -161,7 +161,7 @@ class BulletWidget extends WidgetType {
   }
 }
 
-// 3. 行内图片渲染 Widget (支持内存缓存、原位更新 dataset 偏移，彻底消除打字时图片重绘闪烁)
+// 3. 行内图片渲染 Widget
 class ImageWidget extends WidgetType {
   constructor(
     readonly alt: string,
@@ -277,7 +277,7 @@ class ImageWidget extends WidgetType {
   }
 }
 
-// 4. 代码块头部语言选择器与复制按钮 Widget
+// 4. 代码块头部语言选择器与复制/源码按钮 Widget
 class CodeBlockHeaderWidget extends WidgetType {
   constructor(
     readonly lang: string,
@@ -301,13 +301,24 @@ class CodeBlockHeaderWidget extends WidgetType {
     const header = document.createElement("div");
     header.className = "code-block-header-bar";
 
+    const resolveDynamicHeaderLine = () => {
+      try {
+        const domPos = view.posAtDOM(header);
+        return view.state.doc.lineAt(Math.min(domPos, view.state.doc.length));
+      } catch {
+        return view.state.doc.lineAt(
+          Math.min(this.headerLineFrom, view.state.doc.length)
+        );
+      }
+    };
+
     const langWrap = document.createElement("div");
     langWrap.className = "code-lang-selector-wrap";
 
     const langBtn = document.createElement("button");
     langBtn.type = "button";
     langBtn.className = "code-lang-tag";
-    langBtn.title = "点击选择或输入代码语言，双击编辑围栏源码";
+    langBtn.title = "点击选择或输入代码语言";
     langBtn.innerHTML = `
       <span class="code-lang-dot"></span>
       <span>${this.lang ? this.lang.toUpperCase() : "PLAINTEXT"}</span>
@@ -329,9 +340,7 @@ class CodeBlockHeaderWidget extends WidgetType {
       const cleaned = newLang.trim().toLowerCase();
       const targetLang = cleaned === "plaintext" ? "" : cleaned;
       const newLineText = `${this.fencePrefix}${targetLang}`;
-      const line = view.state.doc.lineAt(
-        Math.min(this.headerLineFrom, view.state.doc.length)
-      );
+      const line = resolveDynamicHeaderLine();
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: newLineText },
       });
@@ -372,14 +381,6 @@ class CodeBlockHeaderWidget extends WidgetType {
       }
     });
 
-    langBtn.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dropdown.classList.add("hidden");
-      view.dispatch({ selection: { anchor: this.headerLineTo } });
-      view.focus();
-    });
-
     filterInput.addEventListener("input", () => {
       renderLangOptions(filterInput.value);
     });
@@ -405,6 +406,22 @@ class CodeBlockHeaderWidget extends WidgetType {
     langWrap.appendChild(langBtn);
     langWrap.appendChild(dropdown);
 
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "code-header-actions";
+
+    const editFenceBtn = document.createElement("button");
+    editFenceBtn.className = "code-copy-btn code-fence-btn";
+    editFenceBtn.type = "button";
+    editFenceBtn.title = "定位并编辑代码块围栏行";
+    editFenceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg><span>围栏</span>`;
+    editFenceBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const line = resolveDynamicHeaderLine();
+      view.dispatch({ selection: { anchor: line.to } });
+      view.focus();
+    });
+
     const copyBtn = document.createElement("button");
     copyBtn.className = "code-copy-btn";
     copyBtn.type = "button";
@@ -425,8 +442,19 @@ class CodeBlockHeaderWidget extends WidgetType {
       });
     });
 
+    actionsWrap.appendChild(editFenceBtn);
+    actionsWrap.appendChild(copyBtn);
+
+    header.addEventListener("click", (e) => {
+      if (e.target === header) {
+        const line = resolveDynamicHeaderLine();
+        view.dispatch({ selection: { anchor: line.to } });
+        view.focus();
+      }
+    });
+
     header.appendChild(langWrap);
-    header.appendChild(copyBtn);
+    header.appendChild(actionsWrap);
     return header;
   }
 
@@ -434,7 +462,6 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       other.lang === this.lang &&
       other.codeText === this.codeText &&
-      other.headerLineFrom === this.headerLineFrom &&
       other.fencePrefix === this.fencePrefix
     );
   }
@@ -473,10 +500,11 @@ class HorizontalRuleWidget extends WidgetType {
 }
 
 /**
- * 清理标题中的行内 Markdown 语法定界符，用于 TOC 与侧边栏大纲干净展示
+ * 清理标题中的行内 Markdown 语法定界符及行尾可选的 ATX # 号，用于 TOC 与侧边栏大纲干净展示
  */
 export function stripInlineMarkdown(raw: string): string {
   return raw
+    .replace(/\s+#+\s*$/, "")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
@@ -514,7 +542,18 @@ class TocWidget extends WidgetType {
     let hasHeadings = false;
     let inFence = false;
     let fenceChar = "";
-    for (let i = 1; i <= doc.lines; i++) {
+    let startLine = 1;
+    if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
+      for (let k = 2; k <= Math.min(doc.lines, 35); k++) {
+        const t = doc.line(k).text.trim();
+        if (t === "---" || t === "...") {
+          startLine = k + 1;
+          break;
+        }
+      }
+    }
+
+    for (let i = startLine; i <= doc.lines; i++) {
       const line = doc.line(i);
       const trimmed = line.text.trim();
       if (/^(```+|~~~+)/.test(trimmed)) {
@@ -529,11 +568,12 @@ class TocWidget extends WidgetType {
       }
       if (inFence) continue;
 
-      const m = line.text.match(/^(#{1,6})\s+(.*)$/);
+      const m = line.text.match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
       if (m) {
+        const headingText = stripInlineMarkdown(m[2]);
+        if (!headingText) continue;
         hasHeadings = true;
         const level = m[1].length;
-        const headingText = stripInlineMarkdown(m[2]);
         const li = document.createElement("li");
         li.className = `cm-toc-item cm-toc-level-${level}`;
         li.style.paddingLeft = `${(level - 1) * 16}px`;
@@ -747,7 +787,7 @@ function getDocStructure(view: EditorView): CachedDocStructure {
   let headingsSignature = "";
   for (let i = Math.max(1, frontMatterEndLine + 1); i <= doc.lines; i++) {
     const t = doc.line(i).text;
-    if (/^#{1,6}\s+/.test(t)) {
+    if (/^\s*(?:>\s*)*#{1,6}\s+/.test(t)) {
       headingsSignature += `${i}:${t}|`;
     }
   }
@@ -1035,7 +1075,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         addDeco(line.from, line.from, Decoration.line({ class: "cm-footnote-def" }));
       }
 
-      // 2.5 引用块 (> Quote，精准只吞掉每个 > 后的单个可选空格，保留内部列表缩进空格)
+      // 2.5 引用块 (> Quote)
       const quoteMatch = text.match(/^(\s*(?:> ?)+)/);
       if (quoteMatch) {
         const quotePrefixLen = quoteMatch[0].length;
@@ -1110,7 +1150,6 @@ function buildDecorations(view: EditorView): DecorationSet {
       const tokens: InlineToken[] = [];
 
       // 2.68 列表项识别与多级缩进引导线
-      // 统一将缩进空格交由行级 CSS padding-left 呈现，消除无序/有序/任务列表缩进不一致与展开抖动
       const afterQuoteAndHeader = text.slice(prefixEnd);
       const taskMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]\s+\[)([ xX])(\]\s*)/);
       const listMatch = afterQuoteAndHeader.match(/^(\s*)([-*+]|\d+\.)(\s+)/);

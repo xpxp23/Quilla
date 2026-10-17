@@ -148,6 +148,14 @@ export function serializeMarkdownTable(
   return lines.join("\n");
 }
 
+function sanitizeSafeHref(url: string): string {
+  const trimmed = url.trim();
+  if (/^(javascript:|vbscript:|data:text\/html)/i.test(trimmed)) {
+    return "#";
+  }
+  return trimmed.replace(/&quot;/g, "").replace(/"/g, "&quot;");
+}
+
 /**
  * 将单元格文本中的行内 Markdown 转换为富文本 HTML
  */
@@ -168,7 +176,9 @@ export function formatMarkdownToHTML(text: string): string {
   working = working
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 
   // 2. 优先提取行内代码 `code`
   working = working.replace(/`([^`\n]+)`/g, (_m, codeContent) =>
@@ -179,7 +189,12 @@ export function formatMarkdownToHTML(text: string): string {
   working = working.replace(
     /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g,
     (_m, tex) => {
-      const rawTex = tex.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+      const rawTex = tex
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'");
       const safeAttr = rawTex.replace(/"/g, "&quot;");
       try {
         const rendered = katex.renderToString(rawTex, {
@@ -200,7 +215,7 @@ export function formatMarkdownToHTML(text: string): string {
 
   // 4. 提取超链接 [text](url)
   working = working.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, label, url) => {
-    const safeUrl = url.replace(/"/g, "&quot;");
+    const safeUrl = sanitizeSafeHref(url);
     return pushPlaceholder(
       `<a href="${safeUrl}" class="cm-link tbl-inline-link" data-href="${safeUrl}">${label}</a>`
     );
@@ -317,7 +332,7 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
 }
 
 /**
- * 现代 Selection/Range 原生 DOM 富文本包裹与插入辅助（彻底替代废弃的 document.execCommand）
+ * 现代 Selection/Range 原生 DOM 富文本包裹与插入辅助
  */
 function insertNodeAtCellSelection(cell: HTMLElement, node: Node) {
   const sel = window.getSelection();
@@ -352,7 +367,6 @@ function toggleCellInlineTag(cell: HTMLElement, tagName: "strong" | "em" | "del"
   const existingTag = parentEl?.closest(tagName);
 
   if (existingTag && cell.contains(existingTag)) {
-    // 解包已有标签
     const frag = document.createDocumentFragment();
     while (existingTag.firstChild) {
       frag.appendChild(existingTag.firstChild);
@@ -376,7 +390,6 @@ function toggleCellInlineTag(cell: HTMLElement, tagName: "strong" | "em" | "del"
     sel.addRange(newRange);
     cell.dispatchEvent(new Event("input", { bubbles: true }));
   } else {
-    // 选区为空时若处于某标签内则跳出，否则包装当前整个单元格文字
     if (cell.children.length === 1 && cell.firstElementChild?.tagName === upper) {
       const inner = cell.firstElementChild;
       const frag = document.createDocumentFragment();
@@ -494,6 +507,7 @@ class InteractiveTableWidget extends WidgetType {
     let activeRow = 0;
     let activeCol = 0;
     let isRebuildingDOM = false;
+    let debouncedInputTimer: any = null;
 
     const resolveCurrentTableSpan = (): { from: number; to: number } => {
       const attrFrom = Number(container.dataset.fromPos);
@@ -503,7 +517,6 @@ class InteractiveTableWidget extends WidgetType {
       }
       const allTables = findTablesInDoc(view.state);
       if (allTables.length > 0) {
-        // 1. 精确坐标匹配
         const exact = allTables.find((t) => t.from === this.trackedFromPos);
         if (exact) {
           this.trackedFromPos = exact.from;
@@ -512,7 +525,6 @@ class InteractiveTableWidget extends WidgetType {
           container.dataset.toPos = String(exact.to);
           return { from: exact.from, to: exact.to };
         }
-        // 2. 表格序号匹配
         if (!Number.isNaN(attrIdx) && attrIdx >= 0 && attrIdx < allTables.length) {
           const byIdx = allTables[attrIdx];
           this.trackedFromPos = byIdx.from;
@@ -521,7 +533,6 @@ class InteractiveTableWidget extends WidgetType {
           container.dataset.toPos = String(byIdx.to);
           return { from: byIdx.from, to: byIdx.to };
         }
-        // 3. 最近距离回退
         let best = allTables[0];
         let minDiff = Math.abs(best.from - this.trackedFromPos);
         for (const t of allTables) {
@@ -560,6 +571,10 @@ class InteractiveTableWidget extends WidgetType {
     };
 
     const syncToDoc = (forceDispatch: boolean = false) => {
+      if (debouncedInputTimer) {
+        clearTimeout(debouncedInputTimer);
+        debouncedInputTimer = null;
+      }
       const newMarkdown = serializeMarkdownTable(
         this.currentHeaders,
         this.currentRows,
@@ -721,7 +736,6 @@ class InteractiveTableWidget extends WidgetType {
         activeRow = rIdx;
         activeCol = cIdx;
         updateToolbarState();
-        centerElementInTypewriter(view, cell);
       });
 
       cell.addEventListener("contextmenu", () => {
@@ -738,6 +752,14 @@ class InteractiveTableWidget extends WidgetType {
         } else if (this.currentRows[rIdx]) {
           this.currentRows[rIdx][cIdx] = val;
         }
+        // 防抖 240ms 自动将表格变更同步到底层 CodeMirror 文档，确保不失焦直接按 Ctrl+S 或 Ctrl+Z 时数据绝不丢失
+        if (debouncedInputTimer) clearTimeout(debouncedInputTimer);
+        debouncedInputTimer = setTimeout(() => {
+          debouncedInputTimer = null;
+          if (cell.isConnected) {
+            syncToDoc();
+          }
+        }, 240);
       });
 
       cell.addEventListener("blur", () => {
@@ -892,6 +914,13 @@ class InteractiveTableWidget extends WidgetType {
       });
     };
 
+    // 仅在按下鼠标开始框选时挂载一次 window mouseup，松开后立即卸载，彻底根除全局监听器泄漏
+    const onWindowMouseUp = () => {
+      isSelecting = false;
+      selectStart = null;
+      window.removeEventListener("mouseup", onWindowMouseUp);
+    };
+
     table.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       const cell = (e.target as HTMLElement).closest("th, td") as HTMLElement;
@@ -905,6 +934,7 @@ class InteractiveTableWidget extends WidgetType {
       };
       isSelecting = true;
       clearSelection();
+      window.addEventListener("mouseup", onWindowMouseUp);
     });
 
     table.addEventListener("mousemove", (e) => {
@@ -924,16 +954,6 @@ class InteractiveTableWidget extends WidgetType {
         updateSelectionHighlight();
       }
     });
-
-    const onMouseUp = () => {
-      if (!container.isConnected) {
-        window.removeEventListener("mouseup", onMouseUp);
-        return;
-      }
-      isSelecting = false;
-      selectStart = null;
-    };
-    window.addEventListener("mouseup", onMouseUp);
 
     const getCaretBoundary = (cellEl: HTMLElement): { atStart: boolean; atEnd: boolean } => {
       const sel = window.getSelection();
@@ -975,10 +995,14 @@ class InteractiveTableWidget extends WidgetType {
     };
 
     table.addEventListener("keydown", (e: KeyboardEvent) => {
-      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做
+      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做（撤销前先冲刷未落盘的单元格输入）
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
+        if (debouncedInputTimer) {
+          flushActiveCellContent();
+          syncToDoc();
+        }
         const savedR = activeRow;
         const savedC = activeCol;
         container.dataset.forceRebuild = "1";
@@ -992,6 +1016,10 @@ class InteractiveTableWidget extends WidgetType {
       ) {
         e.preventDefault();
         e.stopPropagation();
+        if (debouncedInputTimer) {
+          flushActiveCellContent();
+          syncToDoc();
+        }
         const savedR = activeRow;
         const savedC = activeCol;
         container.dataset.forceRebuild = "1";
@@ -1002,7 +1030,7 @@ class InteractiveTableWidget extends WidgetType {
 
       const target = (e.target as HTMLElement).closest("th, td") as HTMLElement | null;
 
-      // 1.5 原生 DOM Selection 富文本快捷键支持 (Ctrl+B / Ctrl+I / Ctrl+Shift+X / Ctrl+E / Ctrl+Shift+H)
+      // 1.5 原生 DOM Selection 富文本快捷键支持
       if (target && target.isContentEditable) {
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "b") {
           e.preventDefault();
@@ -1404,7 +1432,7 @@ export const insertTableCommand = (view: EditorView): boolean => {
 
 export const tableKeymap: KeyBinding[] = [
   {
-    key: "Ctrl-Alt-t",
+    key: "Mod-Alt-t",
     run: insertTableCommand,
   },
 ];

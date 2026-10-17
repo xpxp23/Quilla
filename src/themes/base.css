@@ -1,19 +1,20 @@
 :root {
   --bg-color: #ffffff;
-  --text-color: #333333;
-  --side-bar-bg-color: #f8f9fa;
-  --control-text-color: #777777;
+  --text-color: #24292f;
+  --side-bar-bg-color: #f6f8fa;
+  --control-text-color: #57606a;
   --select-text-bg-color: #b5d6fc;
   --select-text-font-color: auto;
-  --item-hover-bg-color: #ebeef2;
-  --item-hover-text-color: #000000;
+  --item-hover-bg-color: rgba(0, 0, 0, 0.055);
+  --item-hover-text-color: #1f2328;
   --primary-color: #0969da;
   --primary-bg-subtle: rgba(9, 105, 218, 0.1);
+  --unsaved-color: #d97706;
   --monospace: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, "Courier New", monospace;
   --sidebar-width: 260px;
-  --title-bar-height: 30px;
-  --footer-height: 26px;
-  --border-color: rgba(0, 0, 0, 0.08);
+  --title-bar-height: 34px;
+  --footer-height: 28px;
+  --border-color: rgba(0, 0, 0, 0.09);
   --quote-border-color: #d0d7de;
   --editor-font-size: 15px;
   --editor-line-height: 1.75;
@@ -85,7 +86,7 @@ html, body {
 .cm-editor .cm-content {
   max-width: var(--editor-max-width, 860px) !important;
   margin: 0 auto !important;
-  padding: 36px 48px 150px !important;
+  padding: 40px 48px 160px !important;
   box-sizing: border-box !important;
   min-height: 100% !important;
 }
@@ -229,7 +230,7 @@ blockquote, .cm-line.cm-blockquote {
   padding-top: 0.45rem !important;
 }
 
-/* 多级引用块采用带留白间隙的双/三平行竖线，彻底修复原先 inset box-shadow 粘连成粗块的问题 */
+/* 多级引用块采用带留白间隙的双/三平行竖线 */
 .cm-line.cm-blockquote-level-2 {
   padding-left: 28px !important;
   box-shadow: none !important;
@@ -258,7 +259,7 @@ blockquote, .cm-line.cm-blockquote {
   ) !important;
 }
 
-/* 引用块内部嵌套列表分级缩进（与引用块左边框和谐共存，绝不触发双重竖线冲突） */
+/* 引用块内部嵌套列表分级缩进 */
 .cm-line.cm-blockquote.cm-list-level-1 {
   padding-left: 16px !important;
 }
@@ -373,7 +374,7 @@ body.theme-night .cm-syn-attr {
   color: #56b6c2;
 }
 
-/* 链接与加粗/斜体/删除线/高亮 */
+/* 链接与加粗/斜体/删除线/高亮 (斜体默认继承当前主题字体，避免无衬线主题混入楷体产生割裂) */
 a, .cm-link {
   color: var(--primary-color, #0969da);
   text-decoration: underline;
@@ -391,7 +392,6 @@ a:hover, .cm-link:hover {
 strong, .cm-strong { font-weight: 700; color: inherit; }
 em, .cm-emphasis {
   font-style: italic !important;
-  font-family: Georgia, "Times New Roman", "KaiTi", "楷体", "STKaiti", "PingFang SC", "Microsoft YaHei", sans-serif !important;
 }
 .cm-strikethrough { text-decoration: line-through; color: var(--control-text-color); }
 .cm-highlight, mark { background-color: #fff8c5; color: #24292f; padding: 1px 4px; border-radius: 3px; }
@@ -537,7 +537,7 @@ body.theme-night .cm-highlight, body.theme-night mark {
   padding: 12px 16px;
   text-align: center;
   overflow-x: auto;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid transparent;
   background-color: transparent;
   cursor: pointer;
@@ -583,7 +583,7 @@ body.theme-night .cm-highlight, body.theme-night mark {
   opacity: 0;
   background: var(--bg-color);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: 5px;
   padding: 4px 6px;
   color: var(--control-text-color);
   cursor: pointer;
@@ -616,12 +616,12 @@ body.theme-night .cm-highlight, body.theme-night mark {
   font-family: var(--monospace);
 }
 
-/* 表格卡片与可视化内联编辑规范 */
+/* 表格卡片与可视化内联编辑规范 (悬浮工具栏彻底脱离文档流，消除聚焦时的页面纵向跳动 CLS) */
 figure.table-figure {
-  margin: 1.2rem 0;
+  margin: 1.5rem 0;
   padding: 0;
   width: 100%;
-  overflow-x: auto;
+  overflow: visible;
   position: relative;
 }
 
@@ -638,23 +638,31 @@ figure.table-figure.interactive-table.focused {
 }
 
 .table-floating-toolbar {
-  display: none;
+  position: absolute;
+  top: -38px;
+  left: 0;
+  z-index: 40;
+  display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   padding: 4px 8px;
-  margin-bottom: 6px;
   background: var(--bg-color);
-  border-radius: 6px;
+  border-radius: 7px;
   border: 1px solid var(--border-color);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.07);
-  animation: fadeIn 0.12s ease-out;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
   user-select: none;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
 }
 
 figure.table-figure.focused .table-floating-toolbar,
 figure.table-figure:focus-within .table-floating-toolbar {
-  display: flex !important;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .table-dim-badge {
@@ -693,6 +701,7 @@ figure.table-figure:focus-within .table-floating-toolbar {
   gap: 3px;
   transition: all 0.12s ease;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .tbl-btn svg {
@@ -767,13 +776,13 @@ table.md-table td.cell-range-selected * {
   color: #ffffff !important;
 }
 
-/* 多语言代码块卡片与实时行样式 (含左侧行号与交互式语言选择下拉菜单) */
+/* 多语言代码块卡片与实时行样式 (含基线自适应行号与交互式头部操作栏) */
 .cm-line.cm-code-block-first-line {
   background-color: rgba(127, 127, 127, 0.06);
-  border-top-left-radius: 6px;
-  border-top-right-radius: 6px;
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
   border-bottom: 1px solid var(--border-color);
-  padding: 4px 14px !important;
+  padding: 4px 12px !important;
   font-family: var(--monospace);
   font-size: 13px;
   color: var(--control-text-color);
@@ -786,9 +795,15 @@ table.md-table td.cell-range-selected * {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 2px 4px;
+  padding: 2px 2px;
   min-height: 24px;
   user-select: none;
+}
+
+.code-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .code-lang-selector-wrap {
@@ -836,10 +851,10 @@ table.md-table td.cell-range-selected * {
   width: 170px;
   background-color: var(--bg-color);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: 7px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
   z-index: 1000;
-  padding: 4px;
+  padding: 5px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -903,6 +918,16 @@ table.md-table td.cell-range-selected * {
   transition: all 0.15s ease;
 }
 
+.code-copy-btn.code-fence-btn {
+  opacity: 0;
+  border-color: transparent;
+}
+
+.code-block-header-bar:hover .code-copy-btn.code-fence-btn {
+  opacity: 0.85;
+  border-color: var(--border-color);
+}
+
 .code-copy-btn:hover {
   background-color: var(--item-hover-bg-color);
   color: var(--primary-color, #0969da);
@@ -917,27 +942,31 @@ table.md-table td.cell-range-selected * {
   position: relative;
   background-color: rgba(127, 127, 127, 0.045);
   font-family: var(--monospace);
-  font-size: 13.5px;
+  font-size: 0.9em;
   padding: 2px 16px !important;
   color: var(--text-color);
 }
 
 body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line) {
-  padding-left: 50px !important;
+  padding-left: 52px !important;
 }
 
 body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line)::before {
   content: attr(data-code-line);
   position: absolute;
   left: 0;
-  top: 2px;
+  top: 0;
+  bottom: 0;
   width: 34px;
   padding-right: 8px;
-  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   font-family: var(--monospace);
-  font-size: 11.5px;
+  font-size: 0.82em;
+  line-height: inherit;
   color: var(--control-text-color);
-  opacity: 0.45;
+  opacity: 0.48;
   border-right: 1px solid var(--border-color);
   user-select: none;
   pointer-events: none;
@@ -945,14 +974,15 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 
 .cm-line.cm-code-block-last-line {
   background-color: rgba(127, 127, 127, 0.045);
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
-  padding: 4px 16px !important;
+  border-bottom-left-radius: 7px;
+  border-bottom-right-radius: 7px;
+  padding: 3px 16px !important;
   font-family: var(--monospace);
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--control-text-color);
   margin-bottom: 0.9rem;
-  min-height: 10px;
+  min-height: 12px;
+  cursor: text;
 }
 
 /* 图片渲染卡片规范 */
@@ -1054,7 +1084,7 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 /* 吸顶极简查找与替换浮动框 */
 .ty-find-replace-bar {
   position: fixed;
-  top: 38px;
+  top: 42px;
   right: 28px;
   z-index: 9000;
   background-color: var(--bg-color);
@@ -1066,7 +1096,7 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
   flex-direction: column;
   gap: 6px;
   min-width: 350px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px);
   animation: slideDown 0.15s ease-out;
 }
 
@@ -1092,7 +1122,7 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
   padding: 5px 46px 5px 8px;
   font-size: 12.5px;
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: 5px;
   background-color: var(--bg-color);
   color: var(--text-color);
   outline: none;
@@ -1147,8 +1177,9 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 }
 
 .find-btn.active {
-  background-color: var(--primary-color, #0969da);
-  color: #ffffff;
+  background-color: var(--primary-bg-subtle);
+  color: var(--primary-color, #0969da);
+  font-weight: 600;
 }
 
 .find-btn.text-btn {
@@ -1166,18 +1197,19 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 现代汉堡菜单与右键悬浮菜单 */
+/* 现代汉堡菜单与右键悬浮菜单 (采用内缩圆角与柔和悬浮背景，告别生硬纯色通栏) */
 .ty-dropdown-menu {
   position: fixed;
   z-index: 9999;
   background-color: var(--bg-color);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
-  min-width: 205px;
-  padding: 4px 0;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+  min-width: 212px;
+  padding: 5px;
   user-select: none;
   animation: fadeIn 0.1s ease-out;
+  box-sizing: border-box;
 }
 
 .ty-dropdown-menu.hidden {
@@ -1185,14 +1217,15 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 }
 
 .menu-section {
-  padding: 2px 0;
+  padding: 1px 0;
 }
 
 .menu-item-group-title {
-  padding: 4px 14px;
-  font-size: 11px;
+  padding: 4px 10px 3px;
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--control-text-color);
+  letter-spacing: 0.3px;
   text-transform: uppercase;
 }
 
@@ -1200,11 +1233,13 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 14px;
-  font-size: 13px;
+  padding: 6px 10px;
+  margin: 1px 0;
+  border-radius: 5px;
+  font-size: 12.5px;
   color: var(--text-color);
   cursor: pointer;
-  transition: background-color 0.1s;
+  transition: background-color 0.1s ease, color 0.1s ease;
   box-sizing: border-box;
 }
 
@@ -1221,17 +1256,19 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 }
 
 .menu-item:hover {
-  background-color: var(--primary-color, #0969da);
-  color: #ffffff !important;
+  background-color: var(--item-hover-bg-color);
+  color: var(--item-hover-text-color, var(--text-color));
+}
+
+.menu-item.active {
+  background-color: var(--primary-bg-subtle);
+  color: var(--primary-color, #0969da);
+  font-weight: 600;
 }
 
 .menu-item.danger-item:hover {
-  background-color: #cf222e;
-  color: #ffffff !important;
-}
-
-.menu-item:hover .shortcut {
-  color: rgba(255, 255, 255, 0.85);
+  background-color: rgba(207, 34, 46, 0.1);
+  color: #cf222e !important;
 }
 
 .m-icon {
@@ -1241,15 +1278,18 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
   justify-content: center;
   font-size: 12.5px;
   flex-shrink: 0;
+  opacity: 0.82;
 }
 
 .shortcut {
   font-size: 11px;
   color: var(--control-text-color);
+  opacity: 0.78;
   margin-left: auto;
   padding-left: 16px;
   text-align: right;
   flex-shrink: 0;
+  font-family: var(--monospace);
 }
 
 .submenu-arrow {
@@ -1264,7 +1304,7 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
 .menu-divider {
   height: 1px;
   background-color: var(--border-color);
-  margin: 4px 0;
+  margin: 4px 2px;
 }
 
 /* 夜间深色模式 (Night Theme) 变量重载 */
@@ -1272,12 +1312,13 @@ body.theme-night {
   --bg-color: #1e1e1e;
   --text-color: #d4d4d4;
   --side-bar-bg-color: #252526;
-  --control-text-color: #858585;
+  --control-text-color: #8a9199;
   --select-text-bg-color: #264f78;
-  --item-hover-bg-color: #2a2d2e;
+  --item-hover-bg-color: rgba(255, 255, 255, 0.08);
   --item-hover-text-color: #ffffff;
   --primary-color: #4ea1f3;
   --primary-bg-subtle: rgba(78, 161, 243, 0.16);
+  --unsaved-color: #f59e0b;
   --border-color: rgba(255, 255, 255, 0.12);
   --quote-border-color: #4ea1f3;
 }

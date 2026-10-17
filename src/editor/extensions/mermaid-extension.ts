@@ -70,12 +70,19 @@ export function findMermaidBlocks(state: EditorState): MermaidBlock[] {
 
 const svgRenderCache = new Map<string, string>();
 
+function getCurrentMermaidThemeMode(): "dark" | "light" {
+  const isDark =
+    typeof document !== "undefined" && document.body.classList.contains("theme-night");
+  return isDark ? "dark" : "light";
+}
+
 class MermaidWidget extends WidgetType {
   constructor(
     readonly code: string,
     readonly fromPos: number,
     readonly toPos: number,
-    readonly isLivePreview: boolean = false
+    readonly isLivePreview: boolean = false,
+    readonly themeMode: "dark" | "light" = getCurrentMermaidThemeMode()
   ) {
     super();
   }
@@ -92,7 +99,8 @@ class MermaidWidget extends WidgetType {
   updateDOM(dom: HTMLElement): boolean {
     if (
       dom.dataset.isLive === String(this.isLivePreview) &&
-      dom.dataset.code === this.code
+      dom.dataset.code === this.code &&
+      dom.dataset.themeMode === this.themeMode
     ) {
       dom.dataset.fromPos = String(this.fromPos);
       dom.dataset.toPos = String(this.toPos);
@@ -102,6 +110,8 @@ class MermaidWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
+    const isDark = this.themeMode === "dark";
+
     const container = document.createElement("figure");
     container.className = this.isLivePreview
       ? "md-mermaid-card live-preview-card cm-mermaid-container"
@@ -110,13 +120,13 @@ class MermaidWidget extends WidgetType {
     container.dataset.toPos = String(this.toPos);
     container.dataset.isLive = String(this.isLivePreview);
     container.dataset.code = this.code;
+    container.dataset.themeMode = this.themeMode;
+    container.title = this.isLivePreview ? "实时渲染流程图预览" : "点击编辑 Mermaid 流程图源码";
 
     const chartBox = document.createElement("div");
     chartBox.className = "mermaid-chart-box";
 
-    const isDark =
-      typeof document !== "undefined" && document.body.classList.contains("theme-night");
-    const cacheKey = `${isDark ? "dark" : "light"}::${this.code.trim()}`;
+    const cacheKey = `${this.themeMode}::${this.code.trim()}`;
     const cachedSvg = svgRenderCache.get(cacheKey);
 
     if (cachedSvg) {
@@ -141,18 +151,22 @@ class MermaidWidget extends WidgetType {
             chartBox.innerHTML = `
               <div class="mermaid-error">
                 <div class="err-title">流程图语法解析失败</div>
-                <pre class="err-detail">${err.message || String(err)}</pre>
+                <pre class="err-detail"></pre>
               </div>
             `;
+            const detail = chartBox.querySelector(".err-detail");
+            if (detail) detail.textContent = err.message || String(err);
             view.requestMeasure();
           });
       } catch (e: any) {
         chartBox.innerHTML = `
           <div class="mermaid-error">
             <div class="err-title">语法错误</div>
-            <pre class="err-detail">${e.message || String(e)}</pre>
+            <pre class="err-detail"></pre>
           </div>
         `;
+        const detail = chartBox.querySelector(".err-detail");
+        if (detail) detail.textContent = e.message || String(e);
         view.requestMeasure();
       }
     }
@@ -167,7 +181,8 @@ class MermaidWidget extends WidgetType {
       header.querySelector(".live-preview-fold-btn")?.addEventListener("mousedown", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const afterPos = Math.min(view.state.doc.length, this.toPos + 1);
+        const currentTo = Number(container.dataset.toPos ?? this.toPos);
+        const afterPos = Math.min(view.state.doc.length, currentTo + 1);
         view.dispatch({ selection: { anchor: afterPos } });
         view.focus();
       });
@@ -181,8 +196,9 @@ class MermaidWidget extends WidgetType {
 
       const enterEditMode = (e: Event) => {
         e.stopPropagation();
+        const currentFrom = Number(container.dataset.fromPos ?? this.fromPos);
         const firstLineEnd = view.state.doc.lineAt(
-          Math.min(this.fromPos, view.state.doc.length)
+          Math.min(currentFrom, view.state.doc.length)
         ).to;
         const targetAnchor = Math.min(firstLineEnd + 1, view.state.doc.length);
         view.dispatch({
@@ -192,7 +208,7 @@ class MermaidWidget extends WidgetType {
       };
 
       floatingEditBtn.addEventListener("click", enterEditMode);
-      container.addEventListener("dblclick", enterEditMode);
+      container.addEventListener("click", enterEditMode);
       container.appendChild(floatingEditBtn);
     }
 
@@ -210,7 +226,8 @@ class MermaidWidget extends WidgetType {
       other.code === this.code &&
       other.fromPos === this.fromPos &&
       other.toPos === this.toPos &&
-      other.isLivePreview === this.isLivePreview
+      other.isLivePreview === this.isLivePreview &&
+      other.themeMode === this.themeMode
     );
   }
 }
@@ -226,6 +243,7 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
   const selection = state.selection.main;
   const cursorHead = selection.head;
   const cursorLine = state.doc.lineAt(cursorHead).number;
+  const themeMode = getCurrentMermaidThemeMode();
 
   const builder = new RangeSetBuilder<Decoration>();
 
@@ -235,7 +253,7 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
         b.to,
         b.to,
         Decoration.widget({
-          widget: new MermaidWidget(b.code, b.from, b.to, true),
+          widget: new MermaidWidget(b.code, b.from, b.to, true, themeMode),
           side: 1,
           block: true,
         })
@@ -247,7 +265,7 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
       b.from,
       b.to,
       Decoration.replace({
-        widget: new MermaidWidget(b.code, b.from, b.to, false),
+        widget: new MermaidWidget(b.code, b.from, b.to, false, themeMode),
         block: true,
       })
     );

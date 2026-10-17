@@ -12,11 +12,75 @@ export type HeadingReorderHandler = (
   insertAfter: boolean
 ) => void;
 
-// 记录大纲中折叠的标题行号（或标题键）
+// 记录大纲中折叠的标题稳定键（基于层级+标题名+同名序号，避免前文增删标题导致折叠状态错位）
 const collapsedOutlineKeys = new Set<string>();
+let allCollapsedMode = false;
 
-function getHeadingKey(h: OutlineHeading, idx: number): string {
-  return `${h.level}:${h.text}:${idx}`;
+function buildStableHeadingKeys(headings: OutlineHeading[]): string[] {
+  const counts = new Map<string, number>();
+  return headings.map((h) => {
+    const base = `${h.level}::${h.text}`;
+    const n = (counts.get(base) || 0) + 1;
+    counts.set(base, n);
+    return `${base}::${n}`;
+  });
+}
+
+/**
+ * 一键展开或折叠所有包含子章节的大纲项
+ */
+export function toggleAllOutlineFold(
+  container: HTMLElement | null,
+  headings: OutlineHeading[]
+): boolean {
+  const keys = buildStableHeadingKeys(headings);
+  const parentKeys: string[] = [];
+  for (let i = 0; i < headings.length; i++) {
+    if (i + 1 < headings.length && headings[i + 1].level > headings[i].level) {
+      parentKeys.push(keys[i]);
+    }
+  }
+  if (parentKeys.length === 0) return false;
+
+  const anyExpanded = parentKeys.some((k) => !collapsedOutlineKeys.has(k));
+  if (anyExpanded) {
+    parentKeys.forEach((k) => collapsedOutlineKeys.add(k));
+    allCollapsedMode = true;
+  } else {
+    collapsedOutlineKeys.clear();
+    allCollapsedMode = false;
+  }
+
+  if (container) {
+    const carets = container.querySelectorAll<HTMLElement>(".outline-caret.has-children");
+    carets.forEach((c) => {
+      c.classList.toggle("collapsed", allCollapsedMode);
+      c.classList.toggle("expanded", !allCollapsedMode);
+    });
+    const itemEls = container.querySelectorAll<HTMLElement>(".outline-item");
+    let hiddenBelowLevel: number | null = null;
+    headings.forEach((h, i) => {
+      const el = itemEls[i];
+      if (!el) return;
+      if (hiddenBelowLevel !== null) {
+        if (h.level > hiddenBelowLevel) {
+          el.style.display = "none";
+          return;
+        } else {
+          hiddenBelowLevel = null;
+        }
+      }
+      el.style.display = "flex";
+      if (
+        i + 1 < headings.length &&
+        headings[i + 1].level > h.level &&
+        collapsedOutlineKeys.has(keys[i])
+      ) {
+        hiddenBelowLevel = h.level;
+      }
+    });
+  }
+  return allCollapsedMode;
 }
 
 /**
@@ -31,13 +95,15 @@ export function renderOutline(
   container.innerHTML = "";
 
   if (headings.length === 0) {
-    container.innerHTML = `<div style="padding: 24px 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">当前文档无标题或大纲为空</div>`;
+    container.innerHTML = `<div class="outline-empty-hint">当前文档无标题或大纲为空</div>`;
     return;
   }
 
   let draggedIndex: number | null = null;
+  const stableKeys = buildStableHeadingKeys(headings);
 
-  // 计算每个标题是否拥有下属子标题，以及是否被祖先标题折叠隐藏
+  // 计算每个标题是否拥有下属子标题，以及最小标题层级用于相对缩进归一化
+  const minLevel = Math.min(...headings.map((h) => h.level));
   const hasChildren: boolean[] = new Array(headings.length).fill(false);
   for (let i = 0; i < headings.length; i++) {
     if (i + 1 < headings.length && headings[i + 1].level > headings[i].level) {
@@ -63,7 +129,7 @@ export function renderOutline(
       }
 
       el.style.display = "flex";
-      const key = getHeadingKey(h, i);
+      const key = stableKeys[i];
       if (hasChildren[i] && collapsedOutlineKeys.has(key)) {
         hiddenBelowLevel = h.level;
       }
@@ -71,12 +137,14 @@ export function renderOutline(
   };
 
   headings.forEach((heading, idx) => {
-    const key = getHeadingKey(heading, idx);
+    const key = stableKeys[idx];
     const isCollapsed = collapsedOutlineKeys.has(key);
+    const relDepth = Math.max(0, heading.level - minLevel);
 
     const el = document.createElement("div");
     el.className = `outline-item outline-h${heading.level}`;
-    el.title = `${heading.text} (点击跳转，拖拽重排整章)`;
+    el.style.paddingLeft = `${relDepth * 12 + 6}px`;
+    el.title = `H${heading.level}: ${heading.text} (点击跳转，拖拽重排整章)`;
     el.draggable = true;
     el.dataset.index = String(idx);
     el.dataset.line = String(heading.line);
@@ -103,17 +171,17 @@ export function renderOutline(
       });
     }
 
-    const tag = document.createElement("span");
-    tag.className = "outline-tag";
-    tag.textContent = `H${heading.level}`;
-
     const title = document.createElement("span");
     title.className = "outline-title";
     title.textContent = heading.text;
 
+    const tag = document.createElement("span");
+    tag.className = "outline-tag";
+    tag.textContent = `H${heading.level}`;
+
     el.appendChild(caret);
-    el.appendChild(tag);
     el.appendChild(title);
+    el.appendChild(tag);
 
     el.addEventListener("click", () => {
       container.querySelectorAll(".outline-item").forEach((item) => item.classList.remove("active"));
@@ -204,7 +272,7 @@ export function syncActiveOutlineHeading(
 }
 
 /**
- * 根据大纲树节点索引，执行 CodeMirror 文档层面的章节原子重排 (闭包识别下属段落与子标题，并确保章节间空行)
+ * 根据大纲树节点索引，执行 CodeMirror 文档层面的章节原子重排 (闭包识别下属段落与子标题，无损维护章节间空行)
  */
 export function reorderDocumentHeading(
   view: EditorView,
@@ -245,42 +313,50 @@ export function reorderDocumentHeading(
     targetInsertLine = targetEndLine + 1;
   }
 
-  // 3. 提取源文本块
-  let delFrom = doc.line(sourceStartLine).from;
-  const isSourceAtDocEnd = sourceEndLine >= doc.lines;
-  let delTo = isSourceAtDocEnd ? doc.line(sourceEndLine).to : doc.line(sourceEndLine).to + 1;
-  let sourceText = view.state.sliceDoc(delFrom, delTo).trimEnd();
-
-  if (isSourceAtDocEnd && delFrom > 0) {
-    delFrom -= 1;
-  }
-
-  // 4. 计算插入目标坐标
-  let insertPos = 0;
-  if (targetInsertLine > doc.lines) {
-    insertPos = doc.length;
-  } else {
-    insertPos = doc.line(targetInsertLine).from;
-  }
-
-  if (insertPos >= delFrom && insertPos <= delTo) {
+  // 若目标插入行落入源章节闭包内部，视为无效移动
+  if (targetInsertLine >= sourceStartLine && targetInsertLine <= sourceEndLine + 1) {
     return;
   }
 
-  // 5. 规范化插入文本换行与段落间距保护
-  let finalInsertText = sourceText + "\n\n";
-  if (insertPos === doc.length && doc.length > 0) {
-    const prevChar = view.state.sliceDoc(doc.length - 1, doc.length);
-    finalInsertText = (prevChar === "\n" ? "\n" : "\n\n") + sourceText + "\n";
+  // 3. 基于行数组执行无损切片重排，彻底消除字符级偏移误吞前文换行符的问题
+  const allLines: string[] = [];
+  for (let i = 1; i <= doc.lines; i++) {
+    allLines.push(doc.line(i).text);
   }
 
-  const changes = [
-    { from: delFrom, to: delTo, insert: "" },
-    { from: insertPos, insert: finalInsertText },
-  ].sort((a, b) => a.from - b.from);
+  const srcZeroStart = sourceStartLine - 1;
+  const srcCount = sourceEndLine - sourceStartLine + 1;
+  const extractedLines = allLines.slice(srcZeroStart, srcZeroStart + srcCount);
+  while (extractedLines.length > 1 && extractedLines[extractedLines.length - 1].trim() === "") {
+    extractedLines.pop();
+  }
+  extractedLines.push("");
+
+  const remainingLines = [
+    ...allLines.slice(0, srcZeroStart),
+    ...allLines.slice(srcZeroStart + srcCount),
+  ];
+
+  let adjustedInsertIdx = targetInsertLine - 1;
+  if (targetInsertLine > sourceEndLine) {
+    adjustedInsertIdx -= srcCount;
+  }
+  adjustedInsertIdx = Math.max(0, Math.min(remainingLines.length, adjustedInsertIdx));
+
+  // 若插入在文档末尾且前一行非空，补一个空行保持段落呼吸感
+  if (
+    adjustedInsertIdx > 0 &&
+    remainingLines[adjustedInsertIdx - 1] !== undefined &&
+    remainingLines[adjustedInsertIdx - 1].trim() !== ""
+  ) {
+    extractedLines.unshift("");
+  }
+
+  remainingLines.splice(adjustedInsertIdx, 0, ...extractedLines);
+  const newDocText = remainingLines.join("\n").replace(/\n{3,}/g, "\n\n");
 
   view.dispatch({
-    changes,
+    changes: { from: 0, to: doc.length, insert: newDocText },
     userEvent: "move.heading",
   });
 }

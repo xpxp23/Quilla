@@ -2,6 +2,22 @@ import { EditorView } from "@codemirror/view";
 import { handleOpenLink } from "../index";
 import { smartToggleFormat, toggleHeadingLevel } from "./formatting-keymap";
 
+function escapeAttr(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function sanitizeLinkUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^(javascript:|vbscript:|data:text\/html)/i.test(trimmed)) {
+    return "#";
+  }
+  return trimmed;
+}
+
 export function initFloatingToolbars(
   view: EditorView,
   onOpenFile?: (filePath: string) => void
@@ -214,7 +230,6 @@ export function initFloatingToolbars(
       hideAllToolbars();
       return;
     }
-    // 键盘方向键导航进入超链接时自动无感浮出链接预览工具条，配合紧凑链接模式实现零抖动编辑
     if (e.key.startsWith("Arrow") && view.state.selection.main.empty) {
       requestAnimationFrame(() => {
         const activeLink = view.dom.querySelector<HTMLElement>(".cm-link.cm-link-active");
@@ -262,7 +277,6 @@ export function initFloatingToolbars(
   view.dom.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
 
-    // 检查是否点击了图片
     const imgFigure = target.closest(".md-image-card") as HTMLElement;
     if (imgFigure) {
       e.stopPropagation();
@@ -284,7 +298,6 @@ export function initFloatingToolbars(
       return;
     }
 
-    // 检查是否点击了超链接
     const linkEl = target.closest(".cm-link") as HTMLElement;
     if (linkEl && !linkEl.classList.contains("tbl-inline-link")) {
       e.stopPropagation();
@@ -307,7 +320,9 @@ export function initFloatingToolbars(
     const newAlign = btn.dataset.align;
     const action = btn.dataset.action;
 
-    let { from, to, src, alt, width, align } = activeImgTarget;
+    const from = parseInt(activeImgTarget.elem.dataset.from || String(activeImgTarget.from), 10);
+    const to = parseInt(activeImgTarget.elem.dataset.to || String(activeImgTarget.to), 10);
+    let { src, alt, width, align } = activeImgTarget;
 
     if (newSize) {
       width = newSize === "100%" || width === newSize ? "" : newSize;
@@ -315,7 +330,7 @@ export function initFloatingToolbars(
       align = align === newAlign ? "left" : newAlign;
     } else if (action === "source") {
       hideAllToolbars();
-      view.dispatch({ selection: { anchor: from + 2 } });
+      view.dispatch({ selection: { anchor: Math.min(from + 2, view.state.doc.length) } });
       view.focus();
       return;
     } else if (action === "delete") {
@@ -327,10 +342,10 @@ export function initFloatingToolbars(
 
     let newTag = "";
     if (width || align !== "left") {
-      const wAttr = width ? ` width="${width}"` : "";
-      const aAttr = align && align !== "left" ? ` align="${align}"` : "";
-      const altAttr = alt ? ` alt="${alt}"` : "";
-      newTag = `<img src="${src}"${altAttr}${wAttr}${aAttr} />`;
+      const wAttr = width ? ` width="${escapeAttr(width)}"` : "";
+      const aAttr = align && align !== "left" ? ` align="${escapeAttr(align)}"` : "";
+      const altAttr = alt ? ` alt="${escapeAttr(alt)}"` : "";
+      newTag = `<img src="${escapeAttr(src)}"${altAttr}${wAttr}${aAttr} />`;
     } else {
       newTag = `![${alt}](${src})`;
     }
@@ -339,6 +354,7 @@ export function initFloatingToolbars(
       changes: { from, to, insert: newTag },
     });
 
+    activeImgTarget.from = from;
     activeImgTarget.to = from + newTag.length;
     activeImgTarget.width = width;
     activeImgTarget.align = align;
@@ -360,10 +376,17 @@ export function initFloatingToolbars(
     const textInput = linkTooltip.querySelector("#ty-link-edit-text") as HTMLInputElement;
     const urlInput = linkTooltip.querySelector("#ty-link-edit-url") as HTMLInputElement;
     const newText = textInput.value.trim() || activeLinkTarget.text;
-    const newUrl = urlInput.value.trim();
+    const newUrl = sanitizeLinkUrl(urlInput.value);
 
     if (newUrl) {
-      const { from, to } = activeLinkTarget;
+      const from = parseInt(
+        activeLinkTarget.elem.getAttribute("data-from") || String(activeLinkTarget.from),
+        10
+      );
+      const to = parseInt(
+        activeLinkTarget.elem.getAttribute("data-to") || String(activeLinkTarget.to),
+        10
+      );
       const replacement = `[${newText}](${newUrl})`;
       if (from >= 0 && to > from && to <= view.state.doc.length) {
         view.dispatch({
@@ -382,7 +405,9 @@ export function initFloatingToolbars(
     if (!btn || !activeLinkTarget) return;
 
     const action = btn.dataset.action;
-    const { url, text, from, to, elem } = activeLinkTarget;
+    const { url, text, elem } = activeLinkTarget;
+    const from = parseInt(elem.getAttribute("data-from") || String(activeLinkTarget.from), 10);
+    const to = parseInt(elem.getAttribute("data-to") || String(activeLinkTarget.to), 10);
 
     if (action === "open-link") {
       handleOpenLink(url, onOpenFile);

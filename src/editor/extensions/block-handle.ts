@@ -64,7 +64,6 @@ export function resolveSemanticBlockSpan(
   const curText = doc.line(clampedLine).text;
   if (/^\s*>/.test(curText)) {
     const afterQuote = curText.replace(/^\s*(?:> ?)+/, "");
-    // 若非引用内独立列表项，则选中整个连续引用块
     if (!/^(\s*)([-*+]|\d+\.)\s+/.test(afterQuote)) {
       let qStart = clampedLine;
       while (qStart > 1 && /^\s*>/.test(doc.line(qStart - 1).text)) {
@@ -244,34 +243,29 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
 
         if (tgtNum >= startLine && tgtNum <= endLine) return;
 
+        // 基于行数组无损切片重排，彻底避免末尾块上移时误吞前一行换行符
         const doc = this.view.state.doc;
-        const srcStartLine = doc.line(startLine);
-        const srcEndLine = doc.line(endLine);
-        const tgtLine = doc.line(tgtNum);
-        const srcText = this.view.state.sliceDoc(srcStartLine.from, srcEndLine.to);
-
-        let delFrom = srcStartLine.from;
-        let delTo = endLine === doc.lines ? srcEndLine.to : srcEndLine.to + 1;
-        let insertPos = 0;
-        let insertText = "";
-
-        if (endLine < tgtNum) {
-          insertPos = tgtLine.to;
-          insertText = "\n" + srcText;
-        } else {
-          if (endLine === doc.lines && delFrom > 0) {
-            delFrom -= 1;
-          }
-          insertPos = tgtLine.from;
-          insertText = srcText + "\n";
+        const allLines: string[] = [];
+        for (let i = 1; i <= doc.lines; i++) {
+          allLines.push(doc.line(i).text);
         }
 
-        const changes = [
-          { from: delFrom, to: delTo, insert: "" },
-          { from: insertPos, insert: insertText },
-        ].sort((a, b) => a.from - b.from);
+        const srcZeroStart = startLine - 1;
+        const srcCount = endLine - startLine + 1;
+        const movingLines = allLines.slice(srcZeroStart, srcZeroStart + srcCount);
+        const remainingLines = [
+          ...allLines.slice(0, srcZeroStart),
+          ...allLines.slice(srcZeroStart + srcCount),
+        ];
 
-        this.view.dispatch({ changes });
+        let insertIdx = endLine < tgtNum ? tgtNum - srcCount : tgtNum - 1;
+        insertIdx = Math.max(0, Math.min(remainingLines.length, insertIdx));
+        remainingLines.splice(insertIdx, 0, ...movingLines);
+
+        this.view.dispatch({
+          changes: { from: 0, to: doc.length, insert: remainingLines.join("\n") },
+          userEvent: "move.block",
+        });
         this.view.focus();
       });
     }

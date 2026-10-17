@@ -1,10 +1,10 @@
 use crate::buffer::{DocumentBuffer, HeadingItem};
-use crate::safe_io::SafeIO;
+use crate::safe_io::{DraftSnapshotRecord, SafeIO};
 use crate::search::{SearchEngine, SearchMatch};
 use crate::watcher::WorkspaceWatcher;
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -17,8 +17,9 @@ pub struct AppState {
     pub window_workspaces: Mutex<HashMap<String, String>>,
     pub initial_file: Mutex<Option<String>>,
     pub is_new_window: Mutex<bool>,
-    pub document_buffer: Mutex<DocumentBuffer>,
+    pub document_buffers: Mutex<HashMap<String, DocumentBuffer>>,
     pub workspace_watcher: WorkspaceWatcher,
+    pub force_closing_windows: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,12 +35,14 @@ pub struct FileItem {
 pub fn save_file_content(
     path: String,
     content: String,
+    window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.workspace_watcher.mark_self_save();
     SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))?;
     state.workspace_watcher.mark_self_save();
-    if let Ok(mut buf) = state.document_buffer.lock() {
+    if let Ok(mut map) = state.document_buffers.lock() {
+        let buf = map.entry(window.label().to_string()).or_default();
         buf.set_text(&content);
         buf.mark_clean();
     }
@@ -47,9 +50,14 @@ pub fn save_file_content(
 }
 
 #[tauri::command]
-pub fn read_file_content(path: String, state: State<'_, AppState>) -> Result<String, String> {
+pub fn read_file_content(
+    path: String,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))?;
-    if let Ok(mut buf) = state.document_buffer.lock() {
+    if let Ok(mut map) = state.document_buffers.lock() {
+        let buf = map.entry(window.label().to_string()).or_default();
         buf.set_text(&content);
         buf.mark_clean();
     }
@@ -60,12 +68,16 @@ pub fn read_file_content(path: String, state: State<'_, AppState>) -> Result<Str
 pub fn sync_document_buffer(
     content: String,
     file_id: Option<String>,
+    file_path: Option<String>,
+    title: Option<String>,
+    window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<HeadingItem>, String> {
     if let Some(ref id) = file_id {
-        let _ = SafeIO::save_draft_snapshot(id, &content);
+        let _ = SafeIO::save_draft_snapshot(id, file_path, &content, title);
     }
-    if let Ok(mut buf) = state.document_buffer.lock() {
+    if let Ok(mut map) = state.document_buffers.lock() {
+        let buf = map.entry(window.label().to_string()).or_default();
         buf.set_text(&content);
         return Ok(buf.extract_headings());
     }
@@ -78,20 +90,36 @@ pub fn clear_draft_snapshot(file_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn load_draft_snapshots() -> Result<Vec<DraftSnapshotRecord>, String> {
+    Ok(SafeIO::load_all_draft_snapshots())
+}
+
+#[tauri::command]
+pub fn close_workspace_watcher(window: tauri::Window, state: State<'_, AppState>) {
+    let label = window.label().to_string();
+    if let Ok(mut map) = state.window_workspaces.lock() {
+        map.remove(&label);
+    }
+    state.workspace_watcher.unwatch_window(&label);
+}
+
+#[tauri::command]
 pub fn list_workspace_files(
     root: String,
     window: tauri::Window,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileItem>, String> {
-    // 按窗口标签独立维护工作区目录，并同步更新默认工作区与文件监听器
+    let label = window.label().to_string();
     if let Ok(mut map) = state.window_workspaces.lock() {
-        map.insert(window.label().to_string(), root.clone());
+        map.insert(label.clone(), root.clone());
     }
     if let Ok(mut ws) = state.current_workspace.lock() {
         *ws = Some(root.clone());
     }
-    state.workspace_watcher.watch_directory(&root, app);
+    state
+        .workspace_watcher
+        .watch_directory(&label, &root, app);
 
     const MAX_DEPTH: usize = 8;
     const MAX_ITEMS: usize = 3500;
@@ -149,8 +177,8 @@ pub fn list_workspace_files(
                 let modified_ms = get_modified_ms(&path);
 
                 if path.is_dir() {
-                    let children = build_tree(&path, depth + 1, count);
                     *count += 1;
+                    let children = build_tree(&path, depth + 1, count);
                     items.push(FileItem {
                         name: file_name,
                         path: path.to_string_lossy().to_string(),
@@ -185,6 +213,7 @@ pub fn list_workspace_files(
 #[tauri::command]
 pub fn search_workspace_content(
     keyword: String,
+    case_sensitive: Option<bool>,
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<SearchMatch>, String> {
@@ -201,7 +230,11 @@ pub fn search_workspace_content(
         .and_then(|ws| ws.clone());
 
     if let Some(root) = win_root.or(fallback_root) {
-        Ok(SearchEngine::search_workspace(root, &keyword))
+        Ok(SearchEngine::search_workspace(
+            root,
+            &keyword,
+            case_sensitive.unwrap_or(false),
+        ))
     } else {
         Err("当前未设置工作区目录".to_string())
     }
@@ -219,13 +252,16 @@ pub fn select_workspace_folder(
 
     if let Some(path) = folder {
         let path_str = path.to_string_lossy().to_string();
+        let label = window.label().to_string();
         if let Ok(mut map) = state.window_workspaces.lock() {
-            map.insert(window.label().to_string(), path_str.clone());
+            map.insert(label.clone(), path_str.clone());
         }
         if let Ok(mut ws) = state.current_workspace.lock() {
             *ws = Some(path_str.clone());
         }
-        state.workspace_watcher.watch_directory(&path_str, app);
+        state
+            .workspace_watcher
+            .watch_directory(&label, &path_str, app);
         Ok(Some(path_str))
     } else {
         Ok(None)
@@ -358,7 +394,6 @@ pub fn copy_image_to_assets(
         .and_then(|s| s.to_str())
         .unwrap_or("png");
 
-    // 使用毫秒级时间戳，防止同一秒内批量拖入或另存为迁移多张图片时发生文件名覆盖冲突
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -447,8 +482,16 @@ fn urlencoding_decode(input: &str) -> String {
 }
 
 #[tauri::command]
-pub fn read_custom_theme_css(state: State<'_, AppState>) -> Result<String, String> {
+pub fn read_custom_theme_css(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let mut candidates = Vec::new();
+    if let Ok(map) = state.window_workspaces.lock() {
+        if let Some(root) = map.get(window.label()) {
+            candidates.push(Path::new(root).join("base.user.css"));
+        }
+    }
     if let Ok(ws) = state.current_workspace.lock() {
         if let Some(ref root) = *ws {
             candidates.push(Path::new(root).join("base.user.css"));
@@ -481,18 +524,37 @@ pub fn window_minimize(window: tauri::Window) {
 }
 
 #[tauri::command]
-pub fn window_toggle_maximize(window: tauri::Window) {
+pub fn window_toggle_maximize(window: tauri::Window) -> Result<bool, String> {
     if let Ok(is_max) = window.is_maximized() {
         if is_max {
             let _ = window.unmaximize();
+            return Ok(false);
         } else {
             let _ = window.maximize();
+            return Ok(true);
         }
     }
+    Ok(false)
 }
 
 #[tauri::command]
-pub fn window_close(window: tauri::Window) {
+pub fn window_is_maximized(window: tauri::Window) -> Result<bool, String> {
+    window.is_maximized().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn window_close(window: tauri::Window, state: State<'_, AppState>) {
+    let label = window.label().to_string();
+    if let Ok(mut closing) = state.force_closing_windows.lock() {
+        closing.insert(label.clone());
+    }
+    state.workspace_watcher.unwatch_window(&label);
+    if let Ok(mut map) = state.window_workspaces.lock() {
+        map.remove(&label);
+    }
+    if let Ok(mut bufs) = state.document_buffers.lock() {
+        bufs.remove(&label);
+    }
     let _ = window.close();
 }
 
@@ -503,17 +565,23 @@ pub fn window_set_always_on_top(window: tauri::Window, on_top: bool) -> Result<b
 }
 
 #[tauri::command]
-pub fn create_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
+pub fn create_file(
+    path: String,
+    initial_content: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     state.workspace_watcher.mark_self_save();
     let p = Path::new(&path);
+    if p.exists() {
+        return Err("同名文件已存在".to_string());
+    }
     if let Some(parent) = p.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
         }
     }
-    if !p.exists() {
-        fs::write(p, "# Untitled\n\n").map_err(|e| format!("创建文件失败: {}", e))?;
-    }
+    let body = initial_content.unwrap_or_default();
+    SafeIO::atomic_write(p, &body).map_err(|e| format!("创建文件失败: {}", e))?;
     Ok(())
 }
 
@@ -521,6 +589,9 @@ pub fn create_file(path: String, state: State<'_, AppState>) -> Result<(), Strin
 pub fn create_folder(path: String, state: State<'_, AppState>) -> Result<(), String> {
     state.workspace_watcher.mark_self_save();
     let p = Path::new(&path);
+    if p.exists() {
+        return Err("同名文件夹已存在".to_string());
+    }
     fs::create_dir_all(p).map_err(|e| format!("创建文件夹失败: {}", e))?;
     Ok(())
 }
@@ -536,6 +607,11 @@ pub fn rename_path(
     let new_p = Path::new(&new_path);
     if !old_p.exists() {
         return Err("源文件或目录不存在".to_string());
+    }
+    let is_same_case_only = old_path.replace('\\', "/").to_lowercase()
+        == new_path.replace('\\', "/").to_lowercase();
+    if !is_same_case_only && new_p.exists() {
+        return Err("目标名称已存在，无法覆盖".to_string());
     }
     fs::rename(old_p, new_p).map_err(|e| format!("重命名失败: {}", e))?;
     Ok(())

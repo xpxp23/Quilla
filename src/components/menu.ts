@@ -1,6 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
-import { openShortcutGuide } from "./shortcut-guide";
+import { openShortcutGuide, formatModKey } from "./shortcut-guide";
 import { openPreferencesModal } from "./preferences";
 import { getRecentFiles, clearRecentFiles } from "./quick-open";
 import { handleOpenLink } from "../editor/index";
@@ -24,6 +24,15 @@ export interface MenuActions {
   onExportHtml: () => void;
   onPrint?: () => void;
   onQuickOpen?: () => void;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 const SVG = {
@@ -53,6 +62,7 @@ const SVG = {
  * 初始化左上角汉堡弹出菜单与右键上下文菜单
  */
 export function initMenus(view: EditorView, actions: MenuActions) {
+  const mod = formatModKey();
   const menuContainer = document.createElement("div");
   menuContainer.id = "app-hamburger-menu";
   menuContainer.className = "ty-dropdown-menu hidden";
@@ -60,15 +70,15 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     <div class="menu-section">
       <div class="menu-item" data-action="new">
         <div class="menu-item-left"><span class="m-icon">${SVG.file}</span><span>新建</span></div>
-        <span class="shortcut">Ctrl+N</span>
+        <span class="shortcut">${mod}+N</span>
       </div>
       <div class="menu-item" data-action="new-window">
         <div class="menu-item-left"><span class="m-icon">${SVG.window}</span><span>新建窗口</span></div>
-        <span class="shortcut">Ctrl+Shift+N</span>
+        <span class="shortcut">${mod}+Shift+N</span>
       </div>
       <div class="menu-item" data-action="open-file">
         <div class="menu-item-left"><span class="m-icon">${SVG.folderOpen}</span><span>打开文件...</span></div>
-        <span class="shortcut">Ctrl+O</span>
+        <span class="shortcut">${mod}+O</span>
       </div>
       <div class="menu-item" data-action="open-folder">
         <div class="menu-item-left"><span class="m-icon">${SVG.folderOpen}</span><span>打开文件夹...</span></div>
@@ -81,15 +91,15 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       <div class="menu-divider"></div>
       <div class="menu-item" data-action="save">
         <div class="menu-item-left"><span class="m-icon">${SVG.save}</span><span>保存</span></div>
-        <span class="shortcut">Ctrl+S</span>
+        <span class="shortcut">${mod}+S</span>
       </div>
       <div class="menu-item" data-action="save-as">
         <div class="menu-item-left"><span class="m-icon">${SVG.saveAs}</span><span>另存为...</span></div>
-        <span class="shortcut">Ctrl+Shift+S</span>
+        <span class="shortcut">${mod}+Shift+S</span>
       </div>
       <div class="menu-item" data-action="print">
         <div class="menu-item-left"><span class="m-icon">${SVG.print}</span><span>打印 / 导出为 PDF...</span></div>
-        <span class="shortcut">Ctrl+Shift+P</span>
+        <span class="shortcut">${mod}+Shift+P</span>
       </div>
       <div class="menu-item" data-action="export-html">
         <div class="menu-item-left"><span class="m-icon">${SVG.globe}</span><span>导出为 HTML</span></div>
@@ -99,15 +109,15 @@ export function initMenus(view: EditorView, actions: MenuActions) {
     <div class="menu-section">
       <div class="menu-item" data-action="undo">
         <div class="menu-item-left"><span class="m-icon">${SVG.undo}</span><span>撤销</span></div>
-        <span class="shortcut">Ctrl+Z</span>
+        <span class="shortcut">${mod}+Z</span>
       </div>
       <div class="menu-item" data-action="redo">
         <div class="menu-item-left"><span class="m-icon">${SVG.redo}</span><span>重做</span></div>
-        <span class="shortcut">Ctrl+Y</span>
+        <span class="shortcut">${mod}+Y</span>
       </div>
       <div class="menu-item" data-action="quick-open">
         <div class="menu-item-left"><span class="m-icon">${SVG.search}</span><span>快速漫游...</span></div>
-        <span class="shortcut">Ctrl+P</span>
+        <span class="shortcut">${mod}+P</span>
       </div>
       <div class="menu-item" data-action="shortcut-guide">
         <div class="menu-item-left"><span class="m-icon">${SVG.keyboard}</span><span>快捷键指南</span></div>
@@ -115,7 +125,7 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       </div>
       <div class="menu-item" data-action="preferences">
         <div class="menu-item-left"><span class="m-icon">${SVG.settings}</span><span>偏好设置...</span></div>
-        <span class="shortcut">Ctrl+,</span>
+        <span class="shortcut">${mod}+,</span>
       </div>
     </div>
   `;
@@ -137,10 +147,10 @@ export function initMenus(view: EditorView, actions: MenuActions) {
               .slice(0, 10)
               .map(
                 (f) => `
-              <div class="menu-item recent-file-item" data-path="${encodeURIComponent(f.path)}" title="${f.path}">
+              <div class="menu-item recent-file-item" data-path="${encodeURIComponent(f.path)}" title="${escapeHtml(f.path)}">
                 <div class="menu-item-left">
                   <span class="m-icon">${SVG.file}</span>
-                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 170px; text-align: left;">${f.name}</span>
+                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 170px; text-align: left;">${escapeHtml(f.name)}</span>
                 </div>
               </div>
             `
@@ -248,7 +258,7 @@ export function initMenus(view: EditorView, actions: MenuActions) {
         <div class="menu-section">
           <div class="menu-item-group-title">表格行列</div>
           <div class="menu-item" data-action="tbl-add-row-above"><div class="menu-item-left"><span class="m-icon">↑</span><span>上方插入行</span></div></div>
-          <div class="menu-item" data-action="tbl-add-row-below"><div class="menu-item-left"><span class="m-icon">↓</span><span>下方插入行</span></div><span class="shortcut">Ctrl+Enter</span></div>
+          <div class="menu-item" data-action="tbl-add-row-below"><div class="menu-item-left"><span class="m-icon">↓</span><span>下方插入行</span></div><span class="shortcut">${mod}+Enter</span></div>
           <div class="menu-item" data-action="tbl-add-col-left"><div class="menu-item-left"><span class="m-icon">←</span><span>左侧插入列</span></div></div>
           <div class="menu-item" data-action="tbl-add-col-right"><div class="menu-item-left"><span class="m-icon">→</span><span>右侧插入列</span></div></div>
         </div>
@@ -295,7 +305,7 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       contextMenu.innerHTML = `
         <div class="menu-section">
           <div class="menu-item" data-action="link-open"><div class="menu-item-left"><span class="m-icon">${SVG.globe}</span><span>在浏览器中打开</span></div></div>
-          <div class="menu-item" data-action="link-copy" data-url="${href}"><div class="menu-item-left"><span class="m-icon">${SVG.copy}</span><span>复制链接地址</span></div></div>
+          <div class="menu-item" data-action="link-copy" data-url="${escapeHtml(href)}"><div class="menu-item-left"><span class="m-icon">${SVG.copy}</span><span>复制链接地址</span></div></div>
         </div>
       `;
     } else {
@@ -304,57 +314,57 @@ export function initMenus(view: EditorView, actions: MenuActions) {
         <div class="menu-section">
           <div class="menu-item" data-action="cut">
             <div class="menu-item-left"><span class="m-icon">${SVG.scissors}</span><span>剪切</span></div>
-            <span class="shortcut">Ctrl+X</span>
+            <span class="shortcut">${mod}+X</span>
           </div>
           <div class="menu-item" data-action="copy">
             <div class="menu-item-left"><span class="m-icon">${SVG.copy}</span><span>复制</span></div>
-            <span class="shortcut">Ctrl+C</span>
+            <span class="shortcut">${mod}+C</span>
           </div>
           <div class="menu-item" data-action="paste">
             <div class="menu-item-left"><span class="m-icon">${SVG.clipboard}</span><span>智能粘贴</span></div>
-            <span class="shortcut">Ctrl+V</span>
+            <span class="shortcut">${mod}+V</span>
           </div>
           <div class="menu-item" data-action="paste-plain">
             <div class="menu-item-left"><span class="m-icon">${SVG.file}</span><span>纯文本粘贴</span></div>
-            <span class="shortcut">Ctrl+Shift+V</span>
+            <span class="shortcut">${mod}+Shift+V</span>
           </div>
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
           <div class="menu-item" data-action="bold">
             <div class="menu-item-left"><span class="m-icon"><strong>B</strong></span><span>加粗</span></div>
-            <span class="shortcut">Ctrl+B</span>
+            <span class="shortcut">${mod}+B</span>
           </div>
           <div class="menu-item" data-action="italic">
             <div class="menu-item-left"><span class="m-icon"><em>I</em></span><span>斜体</span></div>
-            <span class="shortcut">Ctrl+I</span>
+            <span class="shortcut">${mod}+I</span>
           </div>
           <div class="menu-item" data-action="highlight">
             <div class="menu-item-left"><span class="m-icon">==</span><span>荧光高亮</span></div>
-            <span class="shortcut">Ctrl+Shift+H</span>
+            <span class="shortcut">${mod}+Shift+H</span>
           </div>
           <div class="menu-item" data-action="code">
             <div class="menu-item-left"><span class="m-icon">${SVG.code}</span><span>行内代码</span></div>
-            <span class="shortcut">Ctrl+\`</span>
+            <span class="shortcut">${mod}+E</span>
           </div>
           <div class="menu-item" data-action="link">
             <div class="menu-item-left"><span class="m-icon">${SVG.link}</span><span>插入链接</span></div>
-            <span class="shortcut">Ctrl+K</span>
+            <span class="shortcut">${mod}+K</span>
           </div>
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
           <div class="menu-item" data-action="table">
             <div class="menu-item-left"><span class="m-icon">${SVG.table}</span><span>插入表格</span></div>
-            <span class="shortcut">Ctrl+Alt+T</span>
+            <span class="shortcut">${mod}+Alt+T</span>
           </div>
           <div class="menu-item" data-action="codeblock">
             <div class="menu-item-left"><span class="m-icon">${SVG.code}</span><span>插入代码块</span></div>
-            <span class="shortcut">Ctrl+Shift+K</span>
+            <span class="shortcut">${mod}+Shift+K</span>
           </div>
           <div class="menu-item" data-action="mathblock">
             <div class="menu-item-left"><span class="m-icon">∑</span><span>插入公式块</span></div>
-            <span class="shortcut">Ctrl+Shift+M</span>
+            <span class="shortcut">${mod}+Shift+M</span>
           </div>
         </div>
       `;
@@ -404,12 +414,12 @@ export function initMenus(view: EditorView, actions: MenuActions) {
       }
 
       if (act.startsWith("img-size-") || act.startsWith("img-align-")) {
-        const wAttr = width ? ` width="${width}"` : "";
-        const aAttr = align !== "left" ? ` align="${align}"` : "";
-        const altAttr = alt ? ` alt="${alt}"` : "";
+        const wAttr = width ? ` width="${escapeHtml(width)}"` : "";
+        const aAttr = align !== "left" ? ` align="${escapeHtml(align)}"` : "";
+        const altAttr = alt ? ` alt="${escapeHtml(alt)}"` : "";
         const tag =
           width || align !== "left"
-            ? `<img src="${src}"${altAttr}${wAttr}${aAttr} />`
+            ? `<img src="${escapeHtml(src)}"${altAttr}${wAttr}${aAttr} />`
             : `![${alt}](${src})`;
         view.dispatch({ changes: { from, to, insert: tag } });
       }

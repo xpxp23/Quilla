@@ -411,9 +411,6 @@ export function handleListBackspace(view: EditorView): boolean {
 
 /**
  * 列表与引用块缩进/反缩进 (Tab / Shift-Tab)
- * - 若为引用块内列表 (`> - item`)：在 `> ` 后增减 2 个空格缩进
- * - 若为纯引用块 (`> text`)：按 Tab 增加一级引用 `>> text`，按 Shift+Tab 减少一级引用
- * - 若为普通列表 (`- item`)：在行首增减 2 个空格缩进
  */
 export function handleListTab(view: EditorView, isShift: boolean): boolean {
   const selection = view.state.selection.main;
@@ -550,38 +547,38 @@ export const formattingKeymap: KeyBinding[] = [
     key: "Shift-Tab",
     run: (view) => handleListTab(view, true),
   },
-  // 1. 加粗 (Ctrl+B)
+  // 1. 加粗 (Mod+B)
   {
-    key: "Ctrl-b",
+    key: "Mod-b",
     run: (view) => smartToggleFormat(view, "**"),
   },
-  // 2. 斜体 (Ctrl-I)
+  // 2. 斜体 (Mod+I)
   {
-    key: "Ctrl-i",
+    key: "Mod-i",
     run: (view) => smartToggleFormat(view, "*"),
   },
-  // 2.1 删除线 (Ctrl-Shift-X)
+  // 2.1 删除线 (Mod+Shift+X)
   {
-    key: "Ctrl-Shift-x",
+    key: "Mod-Shift-x",
     run: (view) => smartToggleFormat(view, "~~"),
   },
-  // 2.2 高亮 (Ctrl-Shift-H)
+  // 2.2 高亮 (Mod+Shift+H)
   {
-    key: "Ctrl-Shift-h",
+    key: "Mod-Shift-h",
     run: (view) => smartToggleFormat(view, "=="),
   },
-  // 3. 行内代码 (Ctrl-` 或 Ctrl-E)
+  // 3. 行内代码 (Mod+` 或 Mod+E)
   {
-    key: "Ctrl-e",
+    key: "Mod-e",
     run: (view) => smartToggleFormat(view, "`"),
   },
   {
-    key: "Ctrl-`",
+    key: "Mod-`",
     run: (view) => smartToggleFormat(view, "`"),
   },
-  // 4. 超链接 (Ctrl-K) - 智能包裹与解包
+  // 4. 超链接 (Mod+K) - 智能包裹与解包
   {
-    key: "Ctrl-k",
+    key: "Mod-k",
     run: (view) => {
       const selection = view.state.selection.main;
       const from = selection.from;
@@ -626,9 +623,9 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 5. 插入图片 (Ctrl-Shift-I) - 保留选中文本作为 alt 说明
+  // 5. 插入图片 (Mod+Shift+I) - 保留选中文本作为 alt 说明
   {
-    key: "Ctrl-Shift-i",
+    key: "Mod-Shift-i",
     run: (view) => {
       const selection = view.state.selection.main;
       const selectedAlt = view.state.sliceDoc(selection.from, selection.to).trim() || "图片说明";
@@ -641,9 +638,9 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 6. 插入多行代码块 (Ctrl-Shift-K) - 定位至行尾避免截断当前句子
+  // 6. 插入多行代码块 (Mod+Shift+K) - 定位至行尾避免截断当前句子
   {
-    key: "Ctrl-Shift-k",
+    key: "Mod-Shift-k",
     run: (view) => {
       const selection = view.state.selection.main;
       const line = view.state.doc.lineAt(selection.head);
@@ -659,9 +656,9 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 7. 插入数学公式块 (Ctrl-Shift-M) - 定位至行尾避免截断当前句子
+  // 7. 插入数学公式块 (Mod+Shift+M) - 定位至行尾避免截断当前句子
   {
-    key: "Ctrl-Shift-m",
+    key: "Mod-Shift-m",
     run: (view) => {
       const selection = view.state.selection.main;
       const line = view.state.doc.lineAt(selection.head);
@@ -677,19 +674,19 @@ export const formattingKeymap: KeyBinding[] = [
       return true;
     },
   },
-  // 8. 标题级别快捷切换 (Ctrl-1 ~ Ctrl-6 / Ctrl-Alt-1 ~ Ctrl-Alt-6) 与正文 (Ctrl-0 / Ctrl-Alt-0)
-  { key: "Ctrl-1", run: (view) => toggleHeadingLevel(view, 1) },
-  { key: "Ctrl-2", run: (view) => toggleHeadingLevel(view, 2) },
-  { key: "Ctrl-3", run: (view) => toggleHeadingLevel(view, 3) },
-  { key: "Ctrl-4", run: (view) => toggleHeadingLevel(view, 4) },
-  { key: "Ctrl-5", run: (view) => toggleHeadingLevel(view, 5) },
-  { key: "Ctrl-6", run: (view) => toggleHeadingLevel(view, 6) },
-  { key: "Ctrl-0", run: (view) => toggleHeadingLevel(view, 0) },
-  { key: "Ctrl-Alt-1", run: (view) => toggleHeadingLevel(view, 1) },
-  { key: "Ctrl-Alt-2", run: (view) => toggleHeadingLevel(view, 2) },
-  { key: "Ctrl-Alt-3", run: (view) => toggleHeadingLevel(view, 3) },
-  { key: "Ctrl-Alt-4", run: (view) => toggleHeadingLevel(view, 4) },
-  { key: "Ctrl-Alt-5", run: (view) => toggleHeadingLevel(view, 5) },
-  { key: "Ctrl-Alt-6", run: (view) => toggleHeadingLevel(view, 6) },
-  { key: "Ctrl-Alt-0", run: (view) => toggleHeadingLevel(view, 0) },
+  // 8. 标题级别快捷切换 (Mod-1 ~ Mod-6 / Mod-Alt-1 ~ Mod-Alt-6) 与正文 (Mod-0 / Mod-Alt-0)
+  { key: "Mod-1", run: (view) => toggleHeadingLevel(view, 1) },
+  { key: "Mod-2", run: (view) => toggleHeadingLevel(view, 2) },
+  { key: "Mod-3", run: (view) => toggleHeadingLevel(view, 3) },
+  { key: "Mod-4", run: (view) => toggleHeadingLevel(view, 4) },
+  { key: "Mod-5", run: (view) => toggleHeadingLevel(view, 5) },
+  { key: "Mod-6", run: (view) => toggleHeadingLevel(view, 6) },
+  { key: "Mod-0", run: (view) => toggleHeadingLevel(view, 0) },
+  { key: "Mod-Alt-1", run: (view) => toggleHeadingLevel(view, 1) },
+  { key: "Mod-Alt-2", run: (view) => toggleHeadingLevel(view, 2) },
+  { key: "Mod-Alt-3", run: (view) => toggleHeadingLevel(view, 3) },
+  { key: "Mod-Alt-4", run: (view) => toggleHeadingLevel(view, 4) },
+  { key: "Mod-Alt-5", run: (view) => toggleHeadingLevel(view, 5) },
+  { key: "Mod-Alt-6", run: (view) => toggleHeadingLevel(view, 6) },
+  { key: "Mod-Alt-0", run: (view) => toggleHeadingLevel(view, 0) },
 ];

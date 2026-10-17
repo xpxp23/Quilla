@@ -18,6 +18,7 @@ import {
   OutlineHeading,
   reorderDocumentHeading,
   syncActiveOutlineHeading,
+  toggleAllOutlineFold,
 } from "./components/outline";
 import {
   renderFileTree,
@@ -92,7 +93,7 @@ flowchart TD
     Parse --> Mode{"视图模式?"}
     Mode -->|"实时预览"| Live["所见即所得渲染 (表格/公式/流程图)"]
     Mode -->|"源码模式"| Source["极简纯文本编辑"]
-    Live --> Edit["双击或点击右上角图标进入源码编辑"]
+    Live --> Edit["单击或点击右上角图标进入源码编辑"]
     Edit --> Live
 \`\`\`
 
@@ -131,6 +132,14 @@ $$
 > - 偏好设置中心：按 \`Ctrl+,\` 随时定制字号、行高、版心宽度、代码块行号与自动保存策略
 `;
 
+function sanitizeHref(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (/^(javascript:|vbscript:|data:text\/html)/i.test(trimmed)) {
+    return "#";
+  }
+  return trimmed;
+}
+
 class App {
   private currentFilePath: string | null = null;
   private currentWorkspaceRoot: string | null = null;
@@ -141,6 +150,9 @@ class App {
   private findReplaceCtrl: FindReplaceController | null = null;
   private currentHeadings: OutlineHeading[] = [];
   private autoSaveTimer: any = null;
+  private isClosingConfirmationOpen: boolean = false;
+  private searchCaseSensitive: boolean = false;
+  private searchDebounceTimer: any = null;
 
   async init() {
     applyPreferencesToDOM();
@@ -209,6 +221,13 @@ class App {
       }
       this.setupAutoSaveTimer();
     });
+    window.addEventListener("app-theme-changed", () => {
+      if (this.editorView) {
+        this.editorView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
+      }
+    });
     this.setupAutoSaveTimer();
 
     // 窗口失焦自动保存 (当偏好设置为 onBlur 时)
@@ -259,6 +278,7 @@ class App {
     const toggleSourceMode = () => {
       const isSource = document.body.classList.toggle("source-mode");
       if (toggleSourceBtn) {
+        toggleSourceBtn.classList.toggle("active-mode", isSource);
         const labelSpan = toggleSourceBtn.querySelector(".footer-btn-label");
         if (labelSpan) {
           labelSpan.textContent = isSource ? "实时预览" : "源码模式";
@@ -417,9 +437,36 @@ class App {
       }
     });
 
+    // 全文搜索：支持输入防抖实时检索、回车立即检索及大小写敏感切换
     const searchInput = document.getElementById("workspace-search-input") as HTMLInputElement;
+    const searchCaseBtn = document.getElementById("workspace-search-case-btn");
+
+    searchCaseBtn?.addEventListener("click", () => {
+      this.searchCaseSensitive = !this.searchCaseSensitive;
+      searchCaseBtn.classList.toggle("active", this.searchCaseSensitive);
+      if (searchInput && searchInput.value.trim()) {
+        this.performSearch(searchInput.value.trim());
+      }
+    });
+
+    searchInput?.addEventListener("input", () => {
+      clearTimeout(this.searchDebounceTimer);
+      const val = searchInput.value.trim();
+      if (!val) {
+        const resultsContainer = document.getElementById("workspace-search-results");
+        const metaEl = document.getElementById("workspace-search-meta");
+        if (resultsContainer) resultsContainer.innerHTML = "";
+        if (metaEl) metaEl.classList.add("hidden");
+        return;
+      }
+      this.searchDebounceTimer = setTimeout(() => {
+        this.performSearch(val);
+      }, 220);
+    });
+
     searchInput?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
+        clearTimeout(this.searchDebounceTimer);
         this.performSearch(searchInput.value.trim());
       }
     });
@@ -439,17 +486,29 @@ class App {
     } else {
       const lastWorkspace = localStorage.getItem("typora_last_workspace");
       if (lastWorkspace) {
-        this.loadWorkspace(lastWorkspace).catch(() => {
+        await this.loadWorkspace(lastWorkspace).catch(() => {
           this.closeWorkspace();
         });
       } else {
         this.closeWorkspace();
       }
-      setActiveDocumentPath(null);
-      updateWindowTitle("Untitled.md", false);
+
+      // 自动恢复上次打开的文档，若不存在或已被删除则优雅降级展示欢迎演示文档
+      const lastFile = localStorage.getItem("typora_last_file");
+      if (lastFile) {
+        const loaded = await this.loadFile(lastFile, true);
+        if (!loaded) {
+          localStorage.removeItem("typora_last_file");
+          setActiveDocumentPath(null);
+          updateWindowTitle("未命名.md", false);
+        }
+      } else {
+        setActiveDocumentPath(null);
+        updateWindowTitle("未命名.md", false);
+      }
     }
 
-    checkAndPromptRecovery(async (snapshot) => {
+    await checkAndPromptRecovery(async (snapshot) => {
       this.currentFilePath = snapshot.filePath;
       setActiveDocumentPath(snapshot.filePath);
       if (snapshot.filePath) {
@@ -546,6 +605,10 @@ class App {
         });
         document.getElementById(`tab-${tab}`)?.classList.add("active");
         document.getElementById(`panel-${tab}`)?.classList.add("active");
+        if (tab === "search") {
+          const searchInput = document.getElementById("workspace-search-input") as HTMLInputElement;
+          searchInput?.focus();
+        }
       });
     });
   }
@@ -586,15 +649,24 @@ class App {
     document.getElementById("sidebar-footer-open-folder")?.addEventListener("click", () => {
       this.openWorkspaceFolder();
     });
+
+    document.getElementById("outline-toggle-all-btn")?.addEventListener("click", () => {
+      const outlineContainer = document.getElementById("outline-content");
+      toggleAllOutlineFold(outlineContainer, this.currentHeadings);
+    });
   }
 
   private async handleWindowClose() {
-    const choice = await this.confirmDiscardOrSave();
-    if (choice === "cancel") return;
+    if (this.isClosingConfirmationOpen) return;
+    this.isClosingConfirmationOpen = true;
     try {
+      const choice = await this.confirmDiscardOrSave();
+      if (choice === "cancel") return;
       await invoke("window_close");
     } catch (e) {
       console.error("关闭窗口失败:", e);
+    } finally {
+      this.isClosingConfirmationOpen = false;
     }
   }
 
@@ -635,12 +707,13 @@ class App {
       this.savedContent = content;
       this.isModified = false;
       addRecentFile(this.currentFilePath);
+      localStorage.setItem("typora_last_file", this.currentFilePath);
       clearRecoverySnapshot(this.currentFilePath);
-      const fileName = this.currentFilePath.split(/[\\/]/).pop() || "Untitled.md";
+      const fileName = this.currentFilePath.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, false);
       if (saveStatus) {
         saveStatus.textContent = silent ? "已自动保存" : "已保存";
-        saveStatus.style.color = "var(--control-text-color)";
+        saveStatus.classList.remove("is-dirty");
       }
       return true;
     } catch (err) {
@@ -704,16 +777,17 @@ class App {
       clearImageCache();
       setActiveDocumentPath(targetPath);
       addRecentFile(targetPath);
+      localStorage.setItem("typora_last_file", targetPath);
       clearRecoverySnapshot(oldPath);
       clearRecoverySnapshot(targetPath);
 
-      const fileName = targetPath.split(/[\\/]/).pop() || "Untitled.md";
+      const fileName = targetPath.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, false);
 
       const saveStatus = document.getElementById("footer-save-status");
       if (saveStatus) {
         saveStatus.textContent = "已保存";
-        saveStatus.style.color = "var(--control-text-color)";
+        saveStatus.classList.remove("is-dirty");
       }
 
       if (this.editorView) {
@@ -724,7 +798,10 @@ class App {
 
       if (
         this.currentWorkspaceRoot &&
-        targetPath.toLowerCase().startsWith(this.currentWorkspaceRoot.toLowerCase())
+        targetPath
+          .replace(/\\/g, "/")
+          .toLowerCase()
+          .startsWith(this.currentWorkspaceRoot.replace(/\\/g, "/").toLowerCase())
       ) {
         await this.loadWorkspace(this.currentWorkspaceRoot, true);
       }
@@ -744,16 +821,17 @@ class App {
     if (choice === "cancel") return;
 
     this.currentFilePath = null;
+    localStorage.removeItem("typora_last_file");
     clearImageCache();
     setActiveDocumentPath(null);
-    const initialText = "# Untitled\n\n";
+    const initialText = "";
     this.savedContent = initialText;
     this.isModified = false;
     updateWindowTitle("未命名.md", false);
     const saveStatus = document.getElementById("footer-save-status");
     if (saveStatus) {
       saveStatus.textContent = "已保存";
-      saveStatus.style.color = "var(--control-text-color)";
+      saveStatus.classList.remove("is-dirty");
     }
 
     if (this.editorView) {
@@ -796,6 +874,8 @@ class App {
   private closeWorkspace() {
     this.currentWorkspaceRoot = null;
     localStorage.removeItem("typora_last_workspace");
+    document.body.classList.remove("has-workspace");
+    invoke("close_workspace_watcher").catch(() => {});
 
     const emptyState = document.getElementById("sidebar-empty-state");
     const wsContainer = document.getElementById("sidebar-workspace-container");
@@ -822,8 +902,8 @@ class App {
 
   /**
    * 完整出版级 Markdown -> HTML 递归异步渲染管线：
-   * 支持：引用块内递归块级语法（多级列表、标题、代码块、表格、嵌套引用）、多语言代码块词法高亮与行号、
-   * Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注及内联 Base64 图片。
+   * 支持：连续段落合并、引用块内递归块级语法、多语言代码块词法高亮与行号、
+   * Mermaid 矢量 SVG 预渲染、KaTeX 公式、多级嵌套列表与任务列表、表格、[TOC] 目录、脚注定义与双向锚点及内联 Base64 图片。
    */
   private async renderMarkdownToHtmlBody(md: string): Promise<string> {
     const rawLines = md.replace(/\r\n/g, "\n").split("\n");
@@ -890,7 +970,7 @@ class App {
             : align === "right"
             ? "text-align:right;"
             : "text-align:left;";
-        const imgHtml = `<figure class="md-image-card" style="${wrapStyle}"><img src="${resolvedSrc}" alt="${alt}" style="${widthStyle}max-width:100%;" /></figure>`;
+        const imgHtml = `<figure class="md-image-card" style="${wrapStyle}"><img src="${this.escapeHtml(resolvedSrc)}" alt="${alt}" style="${widthStyle}max-width:100%;" /></figure>`;
         working = working.replace(fullTag, () => pushPh(imgHtml));
       }
 
@@ -900,7 +980,7 @@ class App {
         const fullMatch = m[0];
         const alt = this.escapeHtml(m[1]);
         const resolvedSrc = await resolveImgSrc(m[2]);
-        const imgHtml = `<img alt="${alt}" src="${resolvedSrc}" style="max-width:100%;" />`;
+        const imgHtml = `<img alt="${alt}" src="${this.escapeHtml(resolvedSrc)}" style="max-width:100%;" />`;
         working = working.replace(fullMatch, () => pushPh(imgHtml));
       }
 
@@ -934,13 +1014,17 @@ class App {
         }
       );
 
-      // 5. 超链接与脚注角标
-      working = working.replace(/\[\^([^\]\n]+)\]/g, (_m, fn) =>
-        pushPh(`<sup class="cm-footnote-ref">[${fn}]</sup>`)
-      );
-      working = working.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text, url) =>
-        pushPh(`<a href="${url}" target="_blank" rel="noopener">${text}</a>`)
-      );
+      // 5. 超链接与脚注角标（附带双向锚点与安全协议过滤）
+      working = working.replace(/\[\^([^\]\n]+)\]/g, (_m, fn) => {
+        const safeFnId = fn.replace(/[^\w\-]/g, "_");
+        return pushPh(
+          `<sup class="cm-footnote-ref" id="fn-ref-${safeFnId}"><a href="#fn-def-${safeFnId}">[${fn}]</a></sup>`
+        );
+      });
+      working = working.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text, url) => {
+        const safeHref = sanitizeHref(url);
+        return pushPh(`<a href="${safeHref}" target="_blank" rel="noopener">${text}</a>`);
+      });
 
       // 6. 加粗斜体 / 加粗 / 斜体 / 删除线 / 高亮 / 上下标
       working = working.replace(/(\*{3}|_{3})([^*_\n]+?)\1/g, "<strong><em>$2</em></strong>");
@@ -980,7 +1064,7 @@ class App {
           continue;
         }
         if (inF) continue;
-        const hm = rawLines[k].match(/^(#{1,6})\s+(.*)$/);
+        const hm = rawLines[k].match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
         if (hm) {
           const clean = stripInlineMarkdown(hm[2]);
           const id = `heading-${k}-${clean.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-")}`;
@@ -991,8 +1075,33 @@ class App {
 
     let headingCursor = 0;
     const showLineNumbers = getPreferences().showCodeLineNumbers;
+    const isDarkTheme = document.body.classList.contains("theme-night");
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: isDarkTheme ? "dark" : "default",
+      securityLevel: "loose",
+    });
 
-    // 递归块级解析器（完美支持引用块内嵌套列表、标题、代码块、表格与多级引用）
+    const isBlockBoundary = (lines: string[], idx: number): boolean => {
+      if (idx >= lines.length) return true;
+      const line = lines[idx];
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (/^(```+|~~~+)/.test(trimmed)) return true;
+      if (trimmed === "$$" || /^\$\$\s*(.+?)\s*\$\$$/.test(trimmed)) return true;
+      if (/^\[TOC\]$/i.test(trimmed)) return true;
+      if (trimmed.includes("|") && idx + 1 < lines.length && isTableDelimiter(lines[idx + 1])) {
+        return true;
+      }
+      if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) return true;
+      if (/^(#{1,6})\s+/.test(line)) return true;
+      if (trimmed.startsWith(">")) return true;
+      if (/^\s*([-*+]|\d+\.)\s+/.test(line)) return true;
+      if (/^\[\^([^\]\n]+)\]:\s*/.test(line)) return true;
+      return false;
+    };
+
+    // 递归块级解析器
     const renderBlocks = async (lines: string[], isTopLevel: boolean): Promise<string> => {
       const out: string[] = [];
       let i = 0;
@@ -1152,14 +1261,28 @@ class App {
         const hMatch = line.match(/^(#{1,6})\s+(.*)$/);
         if (hMatch) {
           const lvl = hMatch[1].length;
-          const hMeta = isTopLevel ? allDocHeadings[headingCursor++] : null;
+          const hMeta = allDocHeadings[headingCursor++];
           const idAttr = hMeta ? ` id="${hMeta.id}"` : "";
-          out.push(`<h${lvl}${idAttr}>${await renderInline(hMatch[2].trim())}</h${lvl}>`);
+          const cleanHeading = hMatch[2].trim().replace(/\s+#+\s*$/, "");
+          out.push(`<h${lvl}${idAttr}>${await renderInline(cleanHeading)}</h${lvl}>`);
           i++;
           continue;
         }
 
-        // 7. 引用块（剥离最外层 `> ` 并递归调用 renderBlocks，完美渲染内嵌列表/标题/多级引用）
+        // 6.5 脚注定义行 ([^label]: content)
+        const fnDefMatch = line.match(/^\[\^([^\]\n]+)\]:\s*(.*)$/);
+        if (fnDefMatch) {
+          const fnLabel = this.escapeHtml(fnDefMatch[1]);
+          const safeFnId = fnLabel.replace(/[^\w\-]/g, "_");
+          const fnBody = await renderInline(fnDefMatch[2]);
+          out.push(
+            `<div class="cm-footnote-def" id="fn-def-${safeFnId}"><strong>[${fnLabel}]:</strong> ${fnBody} <a href="#fn-ref-${safeFnId}" class="fn-backref" title="返回正文引用处">↩</a></div>`
+          );
+          i++;
+          continue;
+        }
+
+        // 7. 引用块（剥离最外层 `> ` 并递归调用 renderBlocks）
         if (trimmed.startsWith(">")) {
           const innerQuoteLines: string[] = [];
           while (i < lines.length && lines[i].trim().startsWith(">")) {
@@ -1171,7 +1294,7 @@ class App {
           continue;
         }
 
-        // 8. 多级无序/有序/任务列表（支持缩进层级嵌套）
+        // 8. 多级无序/有序/任务列表
         if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
           const listLines: Array<{
             indent: number;
@@ -1238,9 +1361,21 @@ class App {
           continue;
         }
 
-        // 9. 普通段落
-        out.push(`<p>${await renderInline(line)}</p>`);
-        i++;
+        // 9. 普通段落（合并相邻非空普通文本行，支持行尾双空格软换行）
+        const paraParts: string[] = [];
+        while (i < lines.length && !isBlockBoundary(lines, i)) {
+          const rawLine = lines[i];
+          const hasHardBreak = /\s{2,}$/.test(rawLine);
+          const renderedLine = await renderInline(rawLine.trim());
+          paraParts.push(hasHardBreak ? `${renderedLine}<br />` : renderedLine);
+          i++;
+        }
+        if (paraParts.length > 0) {
+          out.push(`<p>${paraParts.join("\n")}</p>`);
+        } else {
+          out.push(`<p>${await renderInline(line)}</p>`);
+          i++;
+        }
       }
 
       return out.join("\n");
@@ -1282,7 +1417,10 @@ class App {
     const title = this.currentFilePath
       ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
       : "document-export";
-    const themeCss = themeLoader.getThemeMeta().css;
+    const themeMeta = themeLoader.getThemeMeta();
+    const themeCss = themeMeta.css;
+    const isNight = themeMeta.id === "night";
+    const bodyClass = isNight ? `theme-${themeMeta.id} theme-night` : `theme-${themeMeta.id}`;
     const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
 
     const fullHtml = `<!DOCTYPE html>
@@ -1293,18 +1431,19 @@ class App {
   <title>${this.escapeHtml(title)}</title>
   <style>
     ${themeCss}
-    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; }
+    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; background-color: var(--bg-color, #ffffff); color: var(--text-color, #24292f); }
     table.md-table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; }
-    table.md-table th, table.md-table td { border: 1px solid #dfe2e5; padding: 8px 14px; }
-    table.md-table th { background-color: #f6f8fa; font-weight: 600; }
-    pre { padding: 14px 16px; border-radius: 6px; background: #f6f8fa; overflow-x: auto; font-family: Consolas, monospace; }
+    table.md-table th, table.md-table td { border: 1px solid var(--border-color, #dfe2e5); padding: 8px 14px; }
+    table.md-table th { background-color: rgba(127, 127, 127, 0.06); font-weight: 600; }
+    pre { padding: 14px 16px; border-radius: 8px; background: rgba(127, 127, 127, 0.06); border: 1px solid var(--border-color, #dfe2e5); overflow-x: auto; font-family: Consolas, monospace; }
     .exported-code-line[data-code-line]::before {
       content: attr(data-code-line);
       display: inline-block;
       width: 28px;
       margin-right: 14px;
       text-align: right;
-      color: #8c959f;
+      color: var(--control-text-color, #8c959f);
+      opacity: 0.6;
       user-select: none;
     }
     .cm-syn-keyword { color: #cf222e; font-weight: 600; }
@@ -1314,12 +1453,21 @@ class App {
     .cm-syn-type { color: #953800; }
     .cm-syn-function { color: #8250df; }
     .cm-syn-attr { color: #116329; }
-    blockquote { border-left: 4px solid #dfe2e5; margin: 1rem 0; padding: 4px 16px; color: #57606a; }
+    body.theme-night .cm-syn-keyword { color: #c678dd; }
+    body.theme-night .cm-syn-string { color: #98c379; }
+    body.theme-night .cm-syn-comment { color: #7f848e; }
+    body.theme-night .cm-syn-number { color: #d19a66; }
+    body.theme-night .cm-syn-type { color: #e5c07b; }
+    body.theme-night .cm-syn-function { color: #61afef; }
+    body.theme-night .cm-syn-attr { color: #56b6c2; }
+    blockquote { border-left: 3.5px solid var(--quote-border-color, #d0d7de); margin: 1rem 0; padding: 4px 16px; color: var(--control-text-color, #57606a); background: rgba(127, 127, 127, 0.03); }
     li.task-list-item { list-style: none; }
     .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
+    .cm-footnote-def { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--border-color, #d0d7de); font-size: 0.92em; color: var(--control-text-color, #57606a); }
+    .fn-backref { text-decoration: none; margin-left: 4px; color: var(--primary-color, #0969da); }
   </style>
 </head>
-<body id="write">
+<body id="write" class="${bodyClass}">
 ${bodyHtml}
 </body>
 </html>`;
@@ -1358,7 +1506,7 @@ ${bodyHtml}
     const saveStatus = document.getElementById("footer-save-status");
     if (saveStatus) {
       saveStatus.textContent = isDirty ? "● 未保存" : "已保存";
-      saveStatus.style.color = isDirty ? "#e36209" : "var(--control-text-color)";
+      saveStatus.classList.toggle("is-dirty", isDirty);
     }
 
     this.findReplaceCtrl?.notifyDocChanged();
@@ -1434,10 +1582,14 @@ ${bodyHtml}
       const files: FileItem[] = await invoke("list_workspace_files", { root: folderPath });
       this.currentWorkspaceRoot = folderPath;
       localStorage.setItem("typora_last_workspace", folderPath);
+      document.body.classList.add("has-workspace");
 
       const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
       const nameEl = document.getElementById("workspace-folder-name");
-      if (nameEl) nameEl.textContent = folderName;
+      if (nameEl) {
+        nameEl.textContent = folderName;
+        nameEl.title = folderPath;
+      }
 
       const emptyState = document.getElementById("sidebar-empty-state");
       const wsContainer = document.getElementById("sidebar-workspace-container");
@@ -1474,7 +1626,7 @@ ${bodyHtml}
       this.currentFilePath = newPath;
       setActiveDocumentPath(newPath);
       localStorage.setItem("typora_last_file", newPath);
-      const fileName = newPath.split(/[\\/]/).pop() || "Untitled.md";
+      const fileName = newPath.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, this.isModified);
     } else if (normCur.startsWith(normOld + "/")) {
       const rest = this.currentFilePath.slice(oldPath.length);
@@ -1482,7 +1634,7 @@ ${bodyHtml}
       this.currentFilePath = updated;
       setActiveDocumentPath(updated);
       localStorage.setItem("typora_last_file", updated);
-      const fileName = updated.split(/[\\/]/).pop() || "Untitled.md";
+      const fileName = updated.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, this.isModified);
     }
     const treeContainer = document.getElementById("file-library-tree");
@@ -1503,28 +1655,28 @@ ${bodyHtml}
     }
   }
 
-  public async loadFile(filePath: string) {
-    if (!filePath) return;
+  public async loadFile(filePath: string, silentOnError: boolean = false): Promise<boolean> {
+    if (!filePath) return false;
     const normTarget = filePath.replace(/\\/g, "/").toLowerCase();
     const normCurrent = (this.currentFilePath || "").replace(/\\/g, "/").toLowerCase();
     if (normTarget === normCurrent) {
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, filePath);
-      return;
+      return true;
     }
 
     const choice = await this.confirmDiscardOrSave();
     if (choice === "cancel") {
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, this.currentFilePath);
-      return;
+      return false;
     }
 
     const seq = ++this.loadSequence;
     try {
       const content: string = await invoke("read_file_content", { path: filePath });
       if (seq !== this.loadSequence) {
-        return;
+        return false;
       }
 
       this.currentFilePath = filePath;
@@ -1533,14 +1685,15 @@ ${bodyHtml}
       clearImageCache();
       setActiveDocumentPath(filePath);
       addRecentFile(filePath);
+      localStorage.setItem("typora_last_file", filePath);
 
-      const fileName = filePath.split(/[\\/]/).pop() || "Untitled.md";
+      const fileName = filePath.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, false);
 
       const saveStatus = document.getElementById("footer-save-status");
       if (saveStatus) {
         saveStatus.textContent = "已保存";
-        saveStatus.style.color = "var(--control-text-color)";
+        saveStatus.classList.remove("is-dirty");
       }
 
       if (this.editorView) {
@@ -1549,9 +1702,13 @@ ${bodyHtml}
 
       const treeContainer = document.getElementById("file-library-tree");
       syncActiveTreeItem(treeContainer, filePath);
+      return true;
     } catch (e) {
-      console.error("Failed to load file:", e);
-      showToast(`无法打开文件: ${e}`, "error");
+      if (!silentOnError) {
+        console.error("Failed to load file:", e);
+        showToast(`无法打开文件: ${e}`, "error");
+      }
+      return false;
     }
   }
 
@@ -1564,22 +1721,52 @@ ${bodyHtml}
       .replace(/'/g, "&#039;");
   }
 
+  private highlightKeywordHtml(text: string, keyword: string): string {
+    if (!keyword) return this.escapeHtml(text);
+    const escapedKw = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(${escapedKw})`, this.searchCaseSensitive ? "g" : "gi");
+    const parts = text.split(re);
+    return parts
+      .map((part, idx) =>
+        idx % 2 === 1
+          ? `<mark class="search-keyword-hit">${this.escapeHtml(part)}</mark>`
+          : this.escapeHtml(part)
+      )
+      .join("");
+  }
+
   private async performSearch(keyword: string) {
-    if (!keyword) return;
     const resultsContainer = document.getElementById("workspace-search-results");
+    const metaEl = document.getElementById("workspace-search-meta");
     if (!resultsContainer) return;
 
-    resultsContainer.innerHTML = `<div style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">搜索中...</div>`;
+    if (!keyword) {
+      resultsContainer.innerHTML = "";
+      metaEl?.classList.add("hidden");
+      return;
+    }
+
+    resultsContainer.innerHTML = `<div class="search-status-hint">搜索中...</div>`;
+    metaEl?.classList.add("hidden");
 
     try {
       const matches: Array<{ file: string; line: number; text: string }> = await invoke(
         "search_workspace_content",
-        { keyword }
+        { keyword, caseSensitive: this.searchCaseSensitive }
       );
       resultsContainer.innerHTML = "";
       if (matches.length === 0) {
-        resultsContainer.innerHTML = `<div style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">无匹配结果</div>`;
+        resultsContainer.innerHTML = `<div class="search-status-hint">无匹配结果</div>`;
         return;
+      }
+
+      const fileSet = new Set(matches.map((m) => m.file));
+      if (metaEl) {
+        metaEl.textContent =
+          matches.length >= 500
+            ? `已展示前 500 处匹配（分布在 ${fileSet.size} 个文件中）`
+            : `共 ${matches.length} 处匹配（${fileSet.size} 个文件）`;
+        metaEl.classList.remove("hidden");
       }
 
       matches.forEach((m) => {
@@ -1588,7 +1775,7 @@ ${bodyHtml}
         const fileName = m.file.split(/[\\/]/).pop() || m.file;
         item.innerHTML = `
           <div class="search-result-file" title="${this.escapeHtml(m.file)}">${this.escapeHtml(fileName)}</div>
-          <div class="search-result-text"><span class="search-result-line">L${m.line}</span> ${this.escapeHtml(m.text)}</div>
+          <div class="search-result-text"><span class="search-result-line">L${m.line}</span> ${this.highlightKeywordHtml(m.text, keyword)}</div>
         `;
         item.addEventListener("click", () => {
           this.loadFile(m.file).then(() => {
@@ -1600,7 +1787,7 @@ ${bodyHtml}
         resultsContainer.appendChild(item);
       });
     } catch {
-      resultsContainer.innerHTML = `<div style="padding: 12px; color: var(--control-text-color); font-size: 12px; text-align: center;">请先打开工作区文件夹</div>`;
+      resultsContainer.innerHTML = `<div class="search-status-hint">请先打开工作区文件夹</div>`;
     }
   }
 
@@ -1631,10 +1818,11 @@ ${bodyHtml}
         ${Object.values(BUILTIN_THEMES)
           .map(
             (t) => `
-          <div class="menu-item theme-choice ${t.id === cur ? "active" : ""}" data-theme="${t.id}" style="${
-              t.id === cur ? "color: var(--primary-color, #0969da); font-weight: 600;" : ""
-            }">
-            <span>${t.id === cur ? "✓ " : "  "}${t.label}</span>
+          <div class="menu-item theme-choice ${t.id === cur ? "active" : ""}" data-theme="${t.id}">
+            <div class="menu-item-left">
+              <span class="m-icon">${t.id === cur ? "✓" : ""}</span>
+              <span>${this.escapeHtml(t.label)}</span>
+            </div>
           </div>
         `
           )

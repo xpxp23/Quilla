@@ -143,13 +143,17 @@ export function extractOutlineHeadings(doc: {
     }
     if (inFence) continue;
 
-    const match = lineText.match(/^(#{1,6})\s+(.*)$/);
+    // 统一兼容顶层标题与引用块内标题 (> # Heading)，与 live-preview 及 Rust 后端保持一致
+    const match = lineText.match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
     if (match) {
-      headings.push({
-        level: match[1].length,
-        text: stripInlineMarkdown(match[2]),
-        line: i,
-      });
+      const cleanedText = stripInlineMarkdown(match[2]);
+      if (cleanedText) {
+        headings.push({
+          level: match[1].length,
+          text: cleanedText,
+          line: i,
+        });
+      }
     }
   }
   return headings;
@@ -189,7 +193,6 @@ export function createEditor(
 
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
-      // 统一防抖执行全文序列化、字数统计、大纲提取与快照同步，彻底消除高频击键时的 O(N) 阻塞
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         const doc = update.view.state.doc;
@@ -252,9 +255,9 @@ export function createEditor(
       },
     }),
     keymap.of([
-      { key: "Ctrl-z", run: undo },
-      { key: "Ctrl-y", run: redo },
-      { key: "Ctrl-Shift-z", run: redo },
+      { key: "Mod-z", run: undo },
+      { key: "Mod-y", run: redo },
+      { key: "Mod-Shift-z", run: redo },
       ...formattingKeymap,
       ...tableKeymap,
       ...defaultKeymap,

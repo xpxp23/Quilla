@@ -4,6 +4,15 @@ export interface RecentFileItem {
   lastOpened: number;
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 export function getRecentFiles(): RecentFileItem[] {
   try {
     const raw = localStorage.getItem("typora_recent_files");
@@ -15,7 +24,10 @@ export function getRecentFiles(): RecentFileItem[] {
 
 export function addRecentFile(filePath: string) {
   if (!filePath) return;
-  const list = getRecentFiles().filter((f) => f.path !== filePath);
+  const norm = filePath.replace(/\\/g, "/").toLowerCase();
+  const list = getRecentFiles().filter(
+    (f) => f.path.replace(/\\/g, "/").toLowerCase() !== norm
+  );
   const name = filePath.replace(/\\/g, "/").split("/").pop() || filePath;
   list.unshift({ path: filePath, name, lastOpened: Date.now() });
   if (list.length > 20) list.length = 20;
@@ -73,7 +85,7 @@ const SVG_SEARCH = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" 
 const SVG_FILE_MD = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>`;
 
 /**
- * 初始化快速文件漫游 (Ctrl+P) 居中毛玻璃命令面板
+ * 初始化快速文件漫游 (Ctrl+P / Cmd+P) 居中毛玻璃命令面板
  */
 export function initQuickOpen(options: QuickOpenOptions) {
   const overlay = document.createElement("div");
@@ -116,9 +128,9 @@ export function initQuickOpen(options: QuickOpenOptions) {
     if (options.getWorkspaceFiles) {
       try {
         const files = await options.getWorkspaceFiles();
-        const recentPaths = new Set(recent.map((r) => r.path.toLowerCase()));
+        const recentPaths = new Set(recent.map((r) => r.path.replace(/\\/g, "/").toLowerCase()));
         wsFiles = files
-          .filter((f) => !recentPaths.has(f.toLowerCase()))
+          .filter((f) => !recentPaths.has(f.replace(/\\/g, "/").toLowerCase()))
           .map((f) => ({
             path: f,
             name: f.replace(/\\/g, "/").split("/").pop() || f,
@@ -158,8 +170,8 @@ export function initQuickOpen(options: QuickOpenOptions) {
         <div class="item-left">
           <span class="file-icon">${SVG_FILE_MD}</span>
           <div class="file-info">
-            <div class="file-name">${item.name}</div>
-            <div class="file-path">${displayPath}</div>
+            <div class="file-name">${escapeHtml(item.name)}</div>
+            <div class="file-path" title="${escapeHtml(item.path)}">${escapeHtml(displayPath)}</div>
           </div>
         </div>
         <div class="item-right">${badge}</div>

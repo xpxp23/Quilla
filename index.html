@@ -12,42 +12,44 @@
   <!-- 1. 自定义标题栏 (支持拖拽、双击最大化与窗口控制) -->
   <header id="top-titlebar" data-tauri-drag-region>
     <div id="w-titlebar-left" data-tauri-drag-region>
-      <div id="w-menu-btn" title="主菜单">
-        <span class="ty-menu-btn-bar bar1"></span>
-        <span class="ty-menu-btn-bar bar2"></span>
-        <span class="ty-menu-btn-bar bar3"></span>
-      </div>
-      <span class="title-text" id="title-text" data-tauri-drag-region>Untitled.md - Quilla</span>
+      <button type="button" class="toolbar-icon btn" id="w-menu-btn" title="主菜单">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="4" y1="6" x2="20" y2="6"></line>
+          <line x1="4" y1="12" x2="20" y2="12"></line>
+          <line x1="4" y1="18" x2="20" y2="18"></line>
+        </svg>
+      </button>
+      <span class="title-text" id="title-text" data-tauri-drag-region>未命名.md - Quilla</span>
     </div>
     <div id="w-traffic-lights">
-      <button class="toolbar-icon btn" id="w-settings" title="偏好设置 (Ctrl+,)">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <button type="button" class="toolbar-icon btn" id="w-settings" title="偏好设置 (Ctrl+,)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
         </svg>
       </button>
-      <button class="toolbar-icon btn" id="w-pin" title="窗口置顶">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <button type="button" class="toolbar-icon btn" id="w-pin" title="窗口置顶">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="12" y1="17" x2="12" y2="22"></line>
           <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path>
         </svg>
       </button>
-      <button class="toolbar-icon btn" id="w-min" title="最小化">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      <button type="button" class="toolbar-icon btn" id="w-min" title="最小化">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
       </button>
-      <button class="toolbar-icon btn" id="w-max" title="最大化 / 还原">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+      <button type="button" class="toolbar-icon btn" id="w-max" title="最大化">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
       </button>
-      <button class="toolbar-icon btn" id="w-close" title="关闭">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      <button type="button" class="toolbar-icon btn" id="w-close" title="关闭">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
       </button>
     </div>
   </header>
 
   <div id="layout-container">
-    <!-- 2. 侧边栏 (对齐 Typora 官方标准架构: 顶部标签条 + 内容视图 + 底部操作栏 + 边缘拖拽把手) -->
+    <!-- 2. 侧边栏 (顶部标签条 + 内容视图 + 底部操作栏 + 边缘拖拽把手) -->
     <aside id="typora-sidebar">
-      <!-- 2.1 顶部标签切换栏 (Typora 经典 Files / Outline / Search) -->
+      <!-- 2.1 顶部标签切换栏 (Files / Outline / Search) -->
       <div class="info-panel-tab-wrapper">
         <div class="info-panel-tab active" id="tab-files" title="文件库">
           <div class="info-panel-tab-title">文件</div>
@@ -67,7 +69,7 @@
       <div class="sidebar-content" id="sidebar-content">
         <!-- 2.2.1 文件库面板 (树状目录 / 空状态卡片) -->
         <div id="panel-files" class="panel-view active">
-          <!-- 未打开工作区时的优雅空状态卡片 -->
+          <!-- 未打开工作区时的空状态卡片 -->
           <div id="sidebar-empty-state" class="sidebar-empty-state">
             <div class="empty-state-icon">
               <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -135,7 +137,13 @@
         <!-- 2.2.2 大纲视图 -->
         <div id="panel-outline" class="panel-view">
           <div class="outline-filter-bar">
-            <span class="outline-filter-title">文档大纲 (支持折叠与拖拽重排)</span>
+            <span class="outline-filter-title">文档大纲</span>
+            <button type="button" id="outline-toggle-all-btn" class="sidebar-icon-btn" title="全部展开 / 折叠子章节">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="7 15 12 20 17 15"></polyline>
+                <polyline points="7 9 12 4 17 9"></polyline>
+              </svg>
+            </button>
           </div>
           <div id="outline-content" class="outline-content"></div>
         </div>
@@ -147,13 +155,15 @@
               <circle cx="11" cy="11" r="8"></circle>
               <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
             </svg>
-            <input type="text" id="workspace-search-input" placeholder="在工作区文件中搜索 (Enter)..." />
+            <input type="text" id="workspace-search-input" placeholder="在工作区中实时搜索..." autocomplete="off" spellcheck="false" />
+            <button type="button" id="workspace-search-case-btn" class="search-case-toggle-btn" title="区分大小写">Aa</button>
           </div>
+          <div id="workspace-search-meta" class="workspace-search-meta hidden"></div>
           <div id="workspace-search-results" class="workspace-search-results"></div>
         </div>
       </div>
 
-      <!-- 2.3 侧边栏底部操作栏 (Typora 风格) -->
+      <!-- 2.3 侧边栏底部操作栏 -->
       <div id="ty-sidebar-footer" class="ty-sidebar-footer">
         <button type="button" id="sidebar-footer-new-file" class="sidebar-footer-btn" title="新建文件 (Ctrl+N)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>

@@ -68,6 +68,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
   let isWholeWord = false;
   let isRegex = false;
   let matches: Array<{ from: number; to: number }> = [];
+  let activeRegex: RegExp | null = null;
   let currentIndex = -1;
 
   function clearTableSearchHighlights() {
@@ -76,23 +77,25 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     });
   }
 
-  function highlightTableCellIfInsideTable(matchFrom: number, query: string) {
+  function highlightTableCellIfInsideTable(matchFrom: number) {
     clearTableSearchHighlights();
+    if (!activeRegex) return;
     const tables = findTablesInDoc(view.state);
     const hitTable = tables.find((t) => matchFrom >= t.from && matchFrom <= t.to);
     if (!hitTable) return;
 
-    const fig = view.dom.querySelector<HTMLElement>(
-      `figure.table-figure[data-from-pos="${hitTable.from}"], figure.table-figure[data-fromPos="${hitTable.from}"]`
-    ) ||
+    const fig =
+      view.dom.querySelector<HTMLElement>(
+        `figure.table-figure[data-from-pos="${hitTable.from}"], figure.table-figure[data-fromPos="${hitTable.from}"]`
+      ) ||
       Array.from(view.dom.querySelectorAll<HTMLElement>("figure.table-figure")).find(
         (f) => Number(f.dataset.fromPos) === hitTable.from
       );
     if (!fig) return;
 
-    const qLower = query.toLowerCase();
+    const checkRe = new RegExp(activeRegex.source, activeRegex.flags.replace("g", ""));
     fig.querySelectorAll<HTMLElement>("th, td").forEach((cell) => {
-      if ((cell.textContent || "").toLowerCase().includes(qLower)) {
+      if (checkRe.test(cell.textContent || "")) {
         cell.classList.add("tbl-search-hit");
       }
     });
@@ -102,6 +105,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
   function performSearch(moveSelection: boolean = true) {
     const query = findInput.value;
     matches = [];
+    activeRegex = null;
     currentIndex = -1;
     clearTableSearchHighlights();
     findInput.classList.remove("regex-error");
@@ -123,6 +127,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
       }
       const flags = isCaseSensitive ? "g" : "gi";
       const re = new RegExp(pattern, flags);
+      activeRegex = re;
       let m: RegExpExecArray | null;
       while ((m = re.exec(docText)) !== null) {
         if (m[0].length === 0) {
@@ -172,7 +177,7 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         scrollIntoView: true,
         effects: [setSearchMatchesEffect.of({ matches, currentIndex })],
       });
-      highlightTableCellIfInsideTable(m.from, findInput.value);
+      highlightTableCellIfInsideTable(m.from);
     } else {
       view.dispatch({
         effects: [setSearchMatchesEffect.of({ matches, currentIndex })],
@@ -279,6 +284,11 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         const text = view.state.sliceDoc(sel.from, sel.to).trim();
         if (text && !text.includes("\n")) {
           findInput.value = text;
+        }
+      } else {
+        const domSel = window.getSelection()?.toString().trim() || "";
+        if (domSel && domSel.length < 100 && !domSel.includes("\n")) {
+          findInput.value = domSel;
         }
       }
 
