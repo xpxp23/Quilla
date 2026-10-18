@@ -3,6 +3,7 @@ import { findTablesInDoc } from "./table-editor";
 import { findMermaidBlocks } from "./mermaid-extension";
 import { findMathBlocks } from "./math-block-extension";
 import { getDocStructureFromState } from "./doc-structure";
+import { getFoldedSectionSpanAtLine } from "./live-preview";
 
 /**
  * 根据目标表格块起始坐标精准查找对应的 DOM 表格元素
@@ -24,9 +25,10 @@ function findMatchingTableElement(
 }
 
 /**
- * 块级边界漫游扩展 (Widget Boundary Traversal v0.5):
- * 当光标在普通正文行移动时，如果按 ArrowDown/ArrowUp 遇到块级元素 (围栏代码块、表格、Mermaid 流程图、多行公式块)，
- * 自动无缝跨过 ``` 围栏行穿透进入代码内容或下一个段落，彻底消除上下 ``` 围栏单独点击/停留造成的误解与破坏。
+ * 块级边界漫游扩展 (Widget Boundary Traversal v0.6):
+ * 1. 当光标在已折叠标题行按 ArrowDown，或从已折叠章节下方按 ArrowUp 时，自动跨过整个被隐藏的折叠区间，杜绝光标掉入 display:none 黑洞。
+ * 2. 当光标在普通正文行移动时，如果按 ArrowDown/ArrowUp 遇到块级元素 (围栏代码块、表格、Mermaid 流程图、多行公式块)，
+ *    自动无缝跨过 ``` 围栏行穿透进入代码内容或下一个段落。
  */
 export const boundaryTraversalKeymap: KeyBinding[] = [
   {
@@ -39,9 +41,31 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       const line = view.state.doc.lineAt(head);
       const totalLines = view.state.doc.lines;
 
+      // 0a. 检查当前行是否是已折叠标题行（或正处于已折叠章节内部）
+      const foldedSpan =
+        getFoldedSectionSpanAtLine(view.state, line.number) ||
+        (line.number < totalLines ? getFoldedSectionSpanAtLine(view.state, line.number + 1) : null);
+      if (foldedSpan && line.number >= foldedSpan.startLine && line.number <= foldedSpan.endLine) {
+        if (foldedSpan.endLine < totalLines) {
+          const nextVisibleLine = view.state.doc.line(foldedSpan.endLine + 1);
+          view.dispatch({
+            selection: { anchor: nextVisibleLine.from },
+            scrollIntoView: true,
+          });
+        } else {
+          const endDoc = view.state.doc.line(foldedSpan.endLine).to;
+          view.dispatch({
+            changes: { from: endDoc, insert: "\n" },
+            selection: { anchor: endDoc + 1 },
+            scrollIntoView: true,
+          });
+        }
+        return true;
+      }
+
       const struct = getDocStructureFromState(view.state);
 
-      // 0. 检查当前行是否位于普通围栏代码块最后一行代码 (endLine - 1)，或者正要从代码块上方进入 startLine
+      // 0b. 检查当前行是否位于普通围栏代码块最后一行代码 (endLine - 1)，或者正要从代码块上方进入 startLine
       for (const cr of struct.codeRanges) {
         if (cr.unclosed) continue;
         // 从代码块上方一行按 ArrowDown -> 直接跳入第一行代码 (startLine + 1)，跳过 ```lang 顶栏
@@ -140,7 +164,20 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       const line = view.state.doc.lineAt(head);
       const struct = getDocStructureFromState(view.state);
 
-      // 0. 检查围栏代码块边界穿透
+      if (line.number > 1) {
+        // 0a. 检查上一行是否处于已折叠的章节内部 -> 直接跳到该折叠章节的标题行
+        const prevFoldedSpan = getFoldedSectionSpanAtLine(view.state, line.number - 1);
+        if (prevFoldedSpan && line.number - 1 > prevFoldedSpan.startLine) {
+          const headingLine = view.state.doc.line(prevFoldedSpan.startLine);
+          view.dispatch({
+            selection: { anchor: headingLine.to },
+            scrollIntoView: true,
+          });
+          return true;
+        }
+      }
+
+      // 0b. 检查围栏代码块边界穿透
       for (const cr of struct.codeRanges) {
         if (cr.unclosed) continue;
         // 从代码块下方一行 (endLine + 1) 按 ArrowUp -> 直接跳入最后一行代码 (endLine - 1)，跳过底部 ``` 围栏

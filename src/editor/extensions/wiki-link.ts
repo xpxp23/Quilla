@@ -220,11 +220,21 @@ export async function handleWikiLinkTrigger(
 }
 
 /**
- * 触发 #标签 点击检索
+ * 触发 #标签 点击检索（统一对齐 onFilterByTag / onSearchTag 与全局自定义事件）
  */
 export function handleTagClickTrigger(tagName: string) {
+  const cleanTag = (tagName || "").replace(/^#+/, "").trim();
+  if (!cleanTag) return;
+  if (workspaceProvider?.onFilterByTag) {
+    workspaceProvider.onFilterByTag(cleanTag);
+    return;
+  }
   if (workspaceProvider?.onSearchTag) {
-    workspaceProvider.onSearchTag(tagName);
+    workspaceProvider.onSearchTag(cleanTag);
+    return;
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("quilla-filter-by-tag", { detail: { tag: cleanTag } }));
   }
 }
 
@@ -484,7 +494,11 @@ export class BacklinksController {
 
     this.panelEl.querySelector("#backlinks-open-graph-btn")?.addEventListener("click", (e) => {
       e.stopPropagation();
-      workspaceProvider?.onOpenGraphModal?.();
+      if (workspaceProvider?.onOpenGraphModal) {
+        workspaceProvider.onOpenGraphModal();
+      } else {
+        window.dispatchEvent(new CustomEvent("quilla-open-graph-view"));
+      }
     });
   }
 

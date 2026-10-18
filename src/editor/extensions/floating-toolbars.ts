@@ -92,7 +92,7 @@ export function initFloatingToolbars(
   `;
   document.body.appendChild(linkTooltip);
 
-  // 3. 创建选中文本悬浮气泡格式栏 (Selection Bubble Menu) — 统一精致 SVG 矢量图标
+  // 3. 创建选中文本悬浮气泡格式栏 (Selection Bubble Menu) — 统一精致 SVG 矢量图标 + 激活态高亮
   const selToolbar = document.createElement("div");
   selToolbar.className = "ty-selection-toolbar hidden";
   selToolbar.innerHTML = `
@@ -205,6 +205,76 @@ export function initFloatingToolbars(
     });
   }
 
+  function syncSelectionToolbarActiveState() {
+    const state = view.state;
+    const sel = state.selection.main;
+    if (sel.empty) return;
+
+    const checkMarkerActive = (marker: string): boolean => {
+      const mLen = marker.length;
+      const before = sel.from >= mLen ? state.sliceDoc(sel.from - mLen, sel.from) : "";
+      const after = sel.to + mLen <= state.doc.length ? state.sliceDoc(sel.to, sel.to + mLen) : "";
+      if (before === marker && after === marker) return true;
+      const selected = state.sliceDoc(sel.from, sel.to).trim();
+      if (
+        selected.length > mLen * 2 &&
+        selected.startsWith(marker) &&
+        selected.endsWith(marker)
+      ) {
+        return true;
+      }
+      // 多行选区检查：若所有非空行均包裹了该标记，也视为激活态
+      if (selected.includes("\n")) {
+        const startLine = state.doc.lineAt(sel.from).number;
+        const endLine = state.doc.lineAt(Math.max(sel.from, sel.to - 1)).number;
+        let nonEmptyCount = 0;
+        let wrappedCount = 0;
+        for (let ln = startLine; ln <= endLine; ln++) {
+          const line = state.doc.line(ln);
+          const segFrom = Math.max(sel.from, line.from);
+          const segTo = Math.min(sel.to, line.to);
+          const seg = state
+            .sliceDoc(segFrom, segTo)
+            .replace(/^(\s*(?:>\s*)*(?:#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)?)/, "")
+            .trim();
+          if (!seg) continue;
+          nonEmptyCount++;
+          if (seg.startsWith(marker) && seg.endsWith(marker) && seg.length > mLen * 2) {
+            wrappedCount++;
+          }
+        }
+        return nonEmptyCount > 0 && nonEmptyCount === wrappedCount;
+      }
+      return false;
+    };
+
+    const markerMap: Record<string, string> = {
+      bold: "**",
+      italic: "*",
+      strike: "~~",
+      highlight: "==",
+      code: "`",
+      math: "$",
+    };
+
+    selToolbar.querySelectorAll<HTMLElement>("[data-fmt]").forEach((btn) => {
+      const fmt = btn.dataset.fmt || "";
+      const marker = markerMap[fmt];
+      if (marker) {
+        btn.classList.toggle("active", checkMarkerActive(marker));
+      } else {
+        btn.classList.remove("active");
+      }
+    });
+
+    const firstLine = state.doc.lineAt(sel.from);
+    const hMatch = firstLine.text.match(/^\s*(?:>\s*)*(#{1,6})\s+/);
+    const activeHeadingLevel = hMatch ? String(hMatch[1].length) : "";
+    selToolbar.querySelectorAll<HTMLElement>("[data-heading]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.heading === activeHeadingLevel);
+    });
+  }
+
   const checkSelectionBubble = () => {
     setTimeout(() => {
       if (
@@ -225,6 +295,7 @@ export function initFloatingToolbars(
         selToolbar.classList.add("hidden");
         return;
       }
+      syncSelectionToolbarActiveState();
       selToolbar.classList.remove("hidden");
       const tbWidth = selToolbar.offsetWidth || 310;
       const tbHeight = selToolbar.offsetHeight || 34;
@@ -232,8 +303,12 @@ export function initFloatingToolbars(
       if (top < 38) {
         top = Math.max(startCoords.bottom, endCoords.bottom) + 8;
       }
-      const midX = (startCoords.left + endCoords.right) / 2;
-      let left = Math.max(12, Math.min(midX - tbWidth / 2, window.innerWidth - tbWidth - 12));
+      const isMultiLineSel = Math.abs(endCoords.top - startCoords.top) > 10;
+      const contentRect = view.contentDOM.getBoundingClientRect();
+      const midX = isMultiLineSel
+        ? contentRect.left + contentRect.width / 2
+        : (startCoords.left + endCoords.right) / 2;
+      const left = Math.max(12, Math.min(midX - tbWidth / 2, window.innerWidth - tbWidth - 12));
       selToolbar.style.top = `${top}px`;
       selToolbar.style.left = `${left}px`;
     }, 20);
@@ -261,7 +336,7 @@ export function initFloatingToolbars(
     }
   });
 
-  // 选中文本气泡栏点击
+  // 选中文本气泡栏点击（支持连续组合加粗+斜体+删除线而不关闭气泡栏）
   selToolbar.addEventListener("mousedown", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -270,6 +345,8 @@ export function initFloatingToolbars(
     const fmt = btn.dataset.fmt;
     const heading = btn.dataset.heading;
 
+    let keepBubbleAlive = true;
+
     if (fmt === "bold") smartToggleFormat(view, "**");
     else if (fmt === "italic") smartToggleFormat(view, "*");
     else if (fmt === "strike") smartToggleFormat(view, "~~");
@@ -277,6 +354,7 @@ export function initFloatingToolbars(
     else if (fmt === "code") smartToggleFormat(view, "`");
     else if (fmt === "math") smartToggleFormat(view, "$");
     else if (fmt === "wikilink") {
+      keepBubbleAlive = false;
       const sel = view.state.selection.main;
       const text = view.state.sliceDoc(sel.from, sel.to) || "笔记名称";
       const insertStr = `[[${text}]]`;
@@ -285,6 +363,7 @@ export function initFloatingToolbars(
         selection: { anchor: sel.from + 2, head: sel.from + 2 + text.length },
       });
     } else if (fmt === "link") {
+      keepBubbleAlive = false;
       const sel = view.state.selection.main;
       const text = view.state.sliceDoc(sel.from, sel.to) || "链接文字";
       const insertStr = `[${text}](https://)`;
@@ -296,8 +375,12 @@ export function initFloatingToolbars(
       toggleHeadingLevel(view, parseInt(heading, 10));
     }
 
-    selToolbar.classList.add("hidden");
     view.focus();
+    if (keepBubbleAlive && !view.state.selection.main.empty) {
+      checkSelectionBubble();
+    } else {
+      selToolbar.classList.add("hidden");
+    }
   });
 
   // 监听正文点击

@@ -2,12 +2,25 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import {
   resolveSemanticBlockSpanFromState,
-  getDocStructureFromState,
   stripInlineMarkdown,
 } from "./doc-structure";
 import { toggleHeadingLevel } from "./formatting-keymap";
 import { toggleHeadingFoldAtLine, isHeadingFoldedAtLine } from "./live-preview";
 import { showToast } from "../../components/save-dialog";
+
+const BLOCK_SVG = {
+  foldOpen: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>`,
+  foldClosed: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>`,
+  moveUp: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>`,
+  moveDown: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>`,
+  insertAbove: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="4" x2="20" y2="4"></line><line x1="12" y1="9" x2="12" y2="19"></line><polyline points="8 13 12 9 16 13"></polyline></svg>`,
+  insertBelow: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="20"></line><line x1="12" y1="5" x2="12" y2="15"></line><polyline points="8 11 12 15 16 11"></polyline></svg>`,
+  duplicate: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
+  copyMd: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>`,
+  copyText: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>`,
+  cut: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>`,
+  trash: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
+};
 
 /**
  * 计算给定行所属的完整语义块行号区间（支持表格、围栏代码块、Mermaid、多行公式块、Callout、连续引用块及多块框选范围）
@@ -31,6 +44,111 @@ export function resolveSemanticBlockSpan(
     }
   }
   return baseSpan;
+}
+
+/**
+ * 批量转换一个或多个文本块/行区间的块级类型 (Bug #8 核心修复)
+ * 支持：h1~h6、p (普通段落)、ul (无序列表)、ol (自动递增有序列表)、task (任务列表)、quote (引用块)、callout (提示卡)、code (围栏代码块)
+ */
+export function convertBlockSpanType(
+  view: EditorView,
+  span: { startLine: number; endLine: number },
+  targetType: string
+) {
+  const doc = view.state.doc;
+  const startLineNum = Math.max(1, Math.min(span.startLine, doc.lines));
+  const endLineNum = Math.max(startLineNum, Math.min(span.endLine, doc.lines));
+  const firstLine = doc.line(startLineNum);
+  const lastLine = doc.line(endLineNum);
+
+  if (targetType.startsWith("h")) {
+    const lvl = parseInt(targetType.slice(1), 10);
+    view.dispatch({
+      selection: { anchor: firstLine.from, head: lastLine.to },
+    });
+    toggleHeadingLevel(view, lvl);
+    view.focus();
+    return;
+  }
+
+  const rawLines: string[] = [];
+  for (let ln = startLineNum; ln <= endLineNum; ln++) {
+    rawLines.push(doc.line(ln).text);
+  }
+
+  // 如果原本是一个完整的围栏代码块，转换到其他类型时先剥离首尾 ``` 围栏行
+  const isWrappedInFence =
+    rawLines.length >= 2 &&
+    /^\s*(`{3,}|~{3,})/.test(rawLines[0]) &&
+    /^\s*(`{3,}|~{3,})\s*$/.test(rawLines[rawLines.length - 1]);
+
+  if (targetType === "code") {
+    if (isWrappedInFence) {
+      const unwrapped = rawLines.slice(1, -1).join("\n");
+      view.dispatch({
+        changes: { from: firstLine.from, to: lastLine.to, insert: unwrapped },
+        selection: { anchor: firstLine.from, head: firstLine.from + unwrapped.length },
+      });
+    } else {
+      const codeBlock = `\`\`\`\n${rawLines.join("\n")}\n\`\`\``;
+      view.dispatch({
+        changes: { from: firstLine.from, to: lastLine.to, insert: codeBlock },
+        selection: { anchor: firstLine.from + 4 },
+      });
+    }
+    view.focus();
+    return;
+  }
+
+  const effectiveLines = isWrappedInFence ? rawLines.slice(1, -1) : rawLines;
+
+  const stripBlockLinePrefix = (text: string): string => {
+    return text.replace(
+      /^(\s*(?:>\s*)*)(?:\[!([A-Za-z]+)\]\s*|#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)?/,
+      ""
+    );
+  };
+
+  if (targetType === "callout") {
+    const bodyLines = effectiveLines
+      .map((l) => stripBlockLinePrefix(l).trim())
+      .filter((l, idx, arr) => l.length > 0 || arr.length === 1);
+    const calloutContent =
+      bodyLines.length > 0 && bodyLines[0]
+        ? bodyLines.map((l) => `> ${l}`).join("\n")
+        : "> 在此输入内容...";
+    const replacement = `> [!NOTE] 核心提示\n${calloutContent}`;
+    view.dispatch({
+      changes: { from: firstLine.from, to: lastLine.to, insert: replacement },
+      selection: { anchor: firstLine.from, head: firstLine.from + replacement.length },
+    });
+    view.focus();
+    return;
+  }
+
+  let olCounter = 1;
+  const convertedLines = effectiveLines.map((lineText) => {
+    if (lineText.trim().length === 0) {
+      return targetType === "quote" ? ">" : "";
+    }
+    const cleanBody = stripBlockLinePrefix(lineText).trim();
+    if (targetType === "p") return cleanBody;
+    if (targetType === "ul") return `- ${cleanBody}`;
+    if (targetType === "ol") return `${olCounter++}. ${cleanBody}`;
+    if (targetType === "task") return `- [ ] ${cleanBody}`;
+    if (targetType === "quote") return `> ${cleanBody}`;
+    return cleanBody;
+  });
+
+  const replacement = convertedLines.join("\n");
+  view.dispatch({
+    changes: { from: firstLine.from, to: lastLine.to, insert: replacement },
+    selection: {
+      anchor: firstLine.from,
+      head: firstLine.from + replacement.length,
+    },
+  });
+  view.focus();
 }
 
 /**
@@ -99,8 +217,7 @@ export function moveCurrentSemanticBlock(view: EditorView, direction: -1 | 1): b
 
   if (direction === -1) {
     if (src.startLine <= 1) return false;
-    let prevLine = src.startLine - 1;
-    // 若上一行是空行且再上一行存在非空块，连同跨过相隔空行或与上一行互换
+    const prevLine = src.startLine - 1;
     const tgt = resolveSemanticBlockSpanFromState(state, prevLine);
     return executeBlockSpanMove(view, src, tgt, false);
   } else {
@@ -114,7 +231,10 @@ export function moveCurrentSemanticBlock(view: EditorView, direction: -1 | 1): b
 /**
  * 快捷键/菜单：原位克隆当前语义块 (Ctrl+D / Cmd+D)
  */
-export function duplicateCurrentSemanticBlock(view: EditorView, targetSpan?: { startLine: number; endLine: number }): boolean {
+export function duplicateCurrentSemanticBlock(
+  view: EditorView,
+  targetSpan?: { startLine: number; endLine: number }
+): boolean {
   const state = view.state;
   const doc = state.doc;
   const curLine = doc.lineAt(state.selection.main.head).number;
@@ -150,10 +270,7 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * 基于 Pointer Events 的段落/块级左侧拖拽手柄 (⋮⋮ Block Handle v0.5)
- * - 彻底摒弃失真的 view.lineBlockAtHeight(relY)，直接基于 contentDOM.children 真实 DOM 几何边界探测，根治第 10 行左侧激活第 13 行抓手的串行 Bug
- * - 增设“左侧悬停桥接锁 (Hover Bridge Lock)”与扩宽热区，根治二级标题、超链接行移向抓手时抓手瞬移消失指不上的问题
- * - 新增思源笔记/Notion 风格块级右键与点击操作菜单（块类型转换、章节折叠、克隆、上下移动、复制块源码/纯文本、删除块）
+ * 基于 Pointer Events 的段落/块级左侧拖拽手柄 (⋮⋮ Block Handle v0.6)
  */
 export const blockHandlePlugin = ViewPlugin.fromClass(
   class {
@@ -218,10 +335,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       }
     }
 
-    /**
-     * 基于浏览器真实 DOM 渲染几何矩形 (getBoundingClientRect) 查找 clientY 对应的块级元素
-     * 彻底消除 CodeMirror 虚拟 HeightMap 在含标题/代码块/表格 margin 时的跨行偏移串行问题
-     */
     private findBlockElementAtY(clientY: number): HTMLElement | null {
       const children = this.view.contentDOM.children;
       let closestEl: HTMLElement | null = null;
@@ -274,8 +387,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
             this.rafMoveId = null;
             if (this.isPointerDown) return;
 
-            // 悬停桥接锁 (Hover Bridge Lock)：当鼠标正从当前活动行向左移动去触碰抓手时，
-            // 只要纵坐标仍在当前活动行或抓手热区范围内，严格锁定当前行绝不跳变
             if (
               this.activeLineEl &&
               this.activeLineEl.isConnected &&
@@ -328,7 +439,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         }
       });
 
-      // 右键抓手直接打开块级操作菜单
       this.handle.addEventListener("contextmenu", (e: MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
@@ -383,7 +493,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         this.dragGhost.style.left = `${e.clientX + 14}px`;
         this.dragGhost.style.top = `${e.clientY - 14}px`;
 
-        // 视口上下边缘平滑自动滚屏
         const scrollerRect = scroller.getBoundingClientRect();
         if (e.clientY < scrollerRect.top + 42) {
           scroller.scrollTop -= 10;
@@ -476,7 +585,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
 
         if (!src) return;
 
-        // 单击（未发生拖拽）：选中当前语义块并弹出轻量块级操作菜单
         if (!wasDragging) {
           const from = this.view.state.doc.line(src.startLine).from;
           const to = this.view.state.doc.line(src.endLine).to;
@@ -498,7 +606,7 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
     }
 
     /**
-     * 弹出思源笔记 / Notion 风格块级操作菜单
+     * 弹出思源笔记 / Notion 风格块级操作菜单（全线性 SVG 图标 + 支持多块批量转换）
      */
     private openBlockActionMenu(
       clientX: number,
@@ -512,12 +620,15 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       const firstLine = doc.line(span.startLine);
       const isHeading = /^\s*(?:>\s*)*#{1,6}\s+/.test(firstLine.text);
       const isFolded = isHeading && isHeadingFoldedAtLine(this.view, span.startLine);
+      const lineCount = span.endLine - span.startLine + 1;
 
       const menu = document.createElement("div");
       menu.className = "ty-dropdown-menu cm-block-context-menu";
       menu.innerHTML = `
         <div class="menu-section">
-          <div class="menu-item-group-title">转换为 (Turn Into)</div>
+          <div class="menu-item-group-title">${
+            lineCount > 1 ? `批量转换为 (${lineCount} 行)` : "转换为 (Turn Into)"
+          }</div>
           <div class="block-turn-into-grid">
             <button type="button" class="block-turn-btn" data-turn="h1" title="一级标题 (Ctrl+1)">H1</button>
             <button type="button" class="block-turn-btn" data-turn="h2" title="二级标题 (Ctrl+2)">H2</button>
@@ -528,7 +639,7 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
             <button type="button" class="block-turn-btn" data-turn="ol" title="有序列表">1. 列表</button>
             <button type="button" class="block-turn-btn" data-turn="task" title="待办任务">☑ 任务</button>
             <button type="button" class="block-turn-btn" data-turn="quote" title="引用块">❝ 引用</button>
-            <button type="button" class="block-turn-btn" data-turn="callout" title="GitHub Callout 提示框">💡 提示卡</button>
+            <button type="button" class="block-turn-btn" data-turn="callout" title="GitHub Callout 提示框">提示卡</button>
             <button type="button" class="block-turn-btn" data-turn="code" title="围栏代码块">&lt;/&gt; 代码</button>
           </div>
         </div>
@@ -537,44 +648,46 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
           ${
             isHeading
               ? `<div class="menu-item" data-act="toggle-fold">
-                  <div class="menu-item-left"><span class="m-icon">${isFolded ? "▸" : "▾"}</span><span>${
+                  <div class="menu-item-left"><span class="m-icon">${
+                    isFolded ? BLOCK_SVG.foldClosed : BLOCK_SVG.foldOpen
+                  }</span><span>${
                   isFolded ? "展开本章节内容" : "折叠本章节内容"
                 }</span></div>
                 </div>`
               : ""
           }
           <div class="menu-item" data-act="move-up">
-            <div class="menu-item-left"><span class="m-icon">↑</span><span>上移此块</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.moveUp}</span><span>上移此块</span></div>
             <span class="shortcut">Alt+↑</span>
           </div>
           <div class="menu-item" data-act="move-down">
-            <div class="menu-item-left"><span class="m-icon">↓</span><span>下移此块</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.moveDown}</span><span>下移此块</span></div>
             <span class="shortcut">Alt+↓</span>
           </div>
           <div class="menu-item" data-act="insert-above">
-            <div class="menu-item-left"><span class="m-icon">⤒</span><span>在上方插入空行</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.insertAbove}</span><span>在上方插入空行</span></div>
           </div>
           <div class="menu-item" data-act="insert-below">
-            <div class="menu-item-left"><span class="m-icon">⤓</span><span>在下方插入空行</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.insertBelow}</span><span>在下方插入空行</span></div>
           </div>
           <div class="menu-item" data-act="duplicate">
-            <div class="menu-item-left"><span class="m-icon">⧉</span><span>克隆当前块</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.duplicate}</span><span>克隆当前块</span></div>
             <span class="shortcut">Ctrl+D</span>
           </div>
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
           <div class="menu-item" data-act="copy-md">
-            <div class="menu-item-left"><span class="m-icon">📋</span><span>复制块 Markdown</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.copyMd}</span><span>复制块 Markdown</span></div>
           </div>
           <div class="menu-item" data-act="copy-text">
-            <div class="menu-item-left"><span class="m-icon">📄</span><span>复制块纯文本</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.copyText}</span><span>复制块纯文本</span></div>
           </div>
           <div class="menu-item" data-act="cut-block">
-            <div class="menu-item-left"><span class="m-icon">✂</span><span>剪切当前块</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.cut}</span><span>剪切当前块</span></div>
           </div>
           <div class="menu-item danger-item" data-act="delete-block">
-            <div class="menu-item-left"><span class="m-icon">🗑</span><span>删除当前块</span></div>
+            <div class="menu-item-left"><span class="m-icon">${BLOCK_SVG.trash}</span><span>删除当前块</span></div>
           </div>
         </div>
       `;
@@ -582,7 +695,7 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       document.body.appendChild(menu);
       activeBlockMenuEl = menu;
 
-      const menuW = 236;
+      const menuW = 242;
       const menuH = menu.offsetHeight || 310;
       const left = Math.max(8, Math.min(clientX, window.innerWidth - menuW - 10));
       const top = Math.max(8, Math.min(clientY, window.innerHeight - menuH - 10));
@@ -593,7 +706,7 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         e.stopPropagation();
         const turnBtn = (e.target as HTMLElement).closest(".block-turn-btn") as HTMLElement | null;
         if (turnBtn && turnBtn.dataset.turn) {
-          this.convertBlockType(span, turnBtn.dataset.turn);
+          convertBlockSpanType(this.view, span, turnBtn.dataset.turn);
           closeBlockContextMenu();
           return;
         }
@@ -604,61 +717,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         closeBlockContextMenu();
         this.executeBlockMenuAction(span, act);
       });
-    }
-
-    private convertBlockType(span: { startLine: number; endLine: number }, targetType: string) {
-      const doc = this.view.state.doc;
-      const line = doc.line(span.startLine);
-      this.view.dispatch({ selection: { anchor: line.from } });
-
-      if (targetType.startsWith("h")) {
-        const lvl = parseInt(targetType.slice(1), 10);
-        toggleHeadingLevel(this.view, lvl);
-        return;
-      }
-      if (targetType === "p") {
-        const cleaned = line.text.replace(
-          /^(\s*(?:>\s*)*)(?:#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/,
-          ""
-        );
-        this.view.dispatch({
-          changes: { from: line.from, to: line.to, insert: cleaned },
-          selection: { anchor: line.from + cleaned.length },
-        });
-        this.view.focus();
-        return;
-      }
-
-      const bodyText = line.text
-        .replace(/^(\s*(?:>\s*)*)(?:#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/, "")
-        .trim();
-
-      let replacement = bodyText;
-      if (targetType === "ul") replacement = `- ${bodyText}`;
-      else if (targetType === "ol") replacement = `1. ${bodyText}`;
-      else if (targetType === "task") replacement = `- [ ] ${bodyText}`;
-      else if (targetType === "quote") replacement = `> ${bodyText}`;
-      else if (targetType === "callout") replacement = `> [!NOTE] 核心提示\n> ${bodyText || "在此输入内容..."}`;
-      else if (targetType === "code") {
-        const allLines: string[] = [];
-        for (let ln = span.startLine; ln <= span.endLine; ln++) {
-          allLines.push(doc.line(ln).text);
-        }
-        const fullTo = doc.line(span.endLine).to;
-        const codeBlock = `\`\`\`\n${allLines.join("\n")}\n\`\`\``;
-        this.view.dispatch({
-          changes: { from: line.from, to: fullTo, insert: codeBlock },
-          selection: { anchor: line.from + 4 },
-        });
-        this.view.focus();
-        return;
-      }
-
-      this.view.dispatch({
-        changes: { from: line.from, to: line.to, insert: replacement },
-        selection: { anchor: line.from + replacement.length },
-      });
-      this.view.focus();
     }
 
     private executeBlockMenuAction(span: { startLine: number; endLine: number }, act: string) {
@@ -695,14 +753,22 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       } else if (act === "copy-text") {
         const plain = rawBlock
           .split("\n")
-          .map((l) => stripInlineMarkdown(l.replace(/^\s*(?:>\s*)*(?:#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/, "")))
+          .map((l) =>
+            stripInlineMarkdown(
+              l.replace(
+                /^\s*(?:>\s*)*(?:#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/,
+                ""
+              )
+            )
+          )
           .join("\n");
         navigator.clipboard.writeText(plain);
         showToast("已复制块纯文本", "success");
       } else if (act === "cut-block") {
         navigator.clipboard.writeText(rawBlock);
         const delFrom = from > 0 && doc.sliceString(from - 1, from) === "\n" ? from - 1 : from;
-        const delTo = delFrom === from && to < doc.length && doc.sliceString(to, to + 1) === "\n" ? to + 1 : to;
+        const delTo =
+          delFrom === from && to < doc.length && doc.sliceString(to, to + 1) === "\n" ? to + 1 : to;
         this.view.dispatch({
           changes: { from: delFrom, to: delTo, insert: "" },
           selection: { anchor: Math.min(delFrom, doc.length - (delTo - delFrom)) },
@@ -710,7 +776,8 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
         this.view.focus();
       } else if (act === "delete-block") {
         const delFrom = from > 0 && doc.sliceString(from - 1, from) === "\n" ? from - 1 : from;
-        const delTo = delFrom === from && to < doc.length && doc.sliceString(to, to + 1) === "\n" ? to + 1 : to;
+        const delTo =
+          delFrom === from && to < doc.length && doc.sliceString(to, to + 1) === "\n" ? to + 1 : to;
         this.view.dispatch({
           changes: { from: delFrom, to: delTo, insert: "" },
           selection: { anchor: Math.min(delFrom, doc.length - (delTo - delFrom)) },
@@ -725,7 +792,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       const scrollerRect = scroller.getBoundingClientRect();
       const style = window.getComputedStyle(lineEl);
 
-      // 动态扣除标题/代码块的 padding-top，将 22px 高的抓手精确居中于首行文字中线
       const paddingTop = parseFloat(style.paddingTop) || 0;
       const paddingBottom = parseFloat(style.paddingBottom) || 0;
       const contentHeight = Math.max(20, lineRect.height - paddingTop - paddingBottom);
@@ -738,7 +804,6 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       const boxTop = lineRect.top - scrollerRect.top + scroller.scrollTop;
       const alignedTop = boxTop + paddingTop + (firstLineHeight - handleHeight) / 2;
 
-      // 水平紧贴在行元素左边界外侧 24px（处于 .cm-content 的 48px 左内边距热区内，且通过 ::after 桥接消除死区）
       const lineLeft = lineRect.left - scrollerRect.left + scroller.scrollLeft;
       const alignedLeft = Math.max(6, lineLeft - 24);
 

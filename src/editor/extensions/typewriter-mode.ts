@@ -2,7 +2,7 @@ import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 
 /**
- * 打字机模式状态管理与优雅平滑居中锁频插件 (F9 v0.5)
+ * 打字机模式状态管理与优雅平滑居中锁频插件 (F9 v0.6)
  * - 彻底消除模块级全局变量，所有状态挂载于编辑器实例内部，完美隔离左右分屏双实例
  * - 智能忽略代码块复制按钮、语言选择器、任务列表复选框、表格工具栏、标题折叠按钮等非光标交互控件的点击，
  *   彻底根治打字机模式下点击代码块复制按钮会导致视口跳回光标处的 Bug

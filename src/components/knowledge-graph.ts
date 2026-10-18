@@ -44,6 +44,29 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function normalizeGraphData(raw: any): KnowledgeGraphData {
+  const rawNodes = Array.isArray(raw?.nodes) ? raw.nodes : [];
+  const rawEdges = Array.isArray(raw?.edges) ? raw.edges : [];
+  const nodes: GraphNodeItem[] = rawNodes.map((n: any) => {
+    const inDeg = Number(n?.in_degree ?? n?.inDegree ?? n?.degree ?? 0);
+    const outDeg = Number(n?.out_degree ?? n?.outDegree ?? 0);
+    return {
+      id: String(n?.id || ""),
+      label: String(n?.label || n?.id || ""),
+      path: n?.path || null,
+      exists: Boolean(n?.exists),
+      is_active: Boolean(n?.is_active ?? n?.isCenter),
+      in_degree: Number.isFinite(inDeg) ? inDeg : 0,
+      out_degree: Number.isFinite(outDeg) ? outDeg : 0,
+    };
+  });
+  const edges: GraphEdgeItem[] = rawEdges.map((e: any) => ({
+    source: String(e?.source || ""),
+    target: String(e?.target || ""),
+  }));
+  return { nodes, edges };
+}
+
 /**
  * 当未打开工作区或仅单篇文档时，从当前编辑器文档实时提取双链、嵌入块与章节结构构建知识图谱
  */
@@ -193,10 +216,12 @@ export async function openKnowledgeGraphModal(options: {
       const localDepth =
         currentScope === "local-1" ? 1 : currentScope === "local-2" ? 2 : 0;
       try {
-        graphData = await invoke<KnowledgeGraphData>("get_workspace_graph", {
+        const rawRes = await invoke<any>("get_workspace_graph", {
+          centerPath: options.activeFilePath,
           activeFilePath: options.activeFilePath,
           localDepth,
         });
+        graphData = normalizeGraphData(rawRes);
         if (graphData.nodes.length === 0) {
           graphData = buildFallbackGraphFromEditor(
             options.view,
@@ -219,7 +244,6 @@ export async function openKnowledgeGraphModal(options: {
       );
     }
 
-    // 过滤关键词
     const kw = filterKeyword.trim().toLowerCase();
     let filteredNodes = graphData.nodes;
     let filteredEdges = graphData.edges;
@@ -282,14 +306,15 @@ function renderInteractiveSvgGraph(
   const simNodes: SimNode[] = nodes.map((n, idx) => {
     const angle = (2 * Math.PI * idx) / Math.max(1, nodes.length);
     const dist = n.is_active ? 0 : Math.min(width, height) * 0.28;
-    const deg = n.in_degree + n.out_degree;
+    const deg = Math.max(0, (Number(n.in_degree) || 0) + (Number(n.out_degree) || 0));
+    const computedRadius = n.is_active ? 11 : Math.min(13, 6.5 + Math.sqrt(deg) * 1.6);
     return {
       ...n,
       x: cx + Math.cos(angle) * dist + (Math.random() - 0.5) * 20,
       y: cy + Math.sin(angle) * dist + (Math.random() - 0.5) * 20,
       vx: 0,
       vy: 0,
-      radius: n.is_active ? 11 : Math.min(13, 6.5 + Math.sqrt(deg) * 1.6),
+      radius: Number.isFinite(computedRadius) ? computedRadius : 7,
     };
   });
 
@@ -327,7 +352,6 @@ function renderInteractiveSvgGraph(
     viewportG.setAttribute("transform", `translate(${panX}, ${panY}) scale(${scale})`);
   };
 
-  // 创建边元素
   const edgeEls = validEdges.map((edge) => {
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     line.setAttribute("class", "graph-edge-line");
@@ -336,7 +360,6 @@ function renderInteractiveSvgGraph(
     return { el: line, edge };
   });
 
-  // 创建节点元素
   let draggedNode: SimNode | null = null;
   let dragMoved = false;
 
@@ -363,7 +386,6 @@ function renderInteractiveSvgGraph(
     g.appendChild(text);
     nodesG.appendChild(g);
 
-    // 悬停高亮一度邻接节点与连线
     g.addEventListener("mouseenter", () => {
       const neighborIds = new Set<string>([node.id]);
       edgeEls.forEach(({ el, edge }) => {
@@ -409,7 +431,6 @@ function renderInteractiveSvgGraph(
     return { el: g, node };
   });
 
-  // 画布平移与缩放
   let isPanning = false;
   let panStartX = 0;
   let panStartY = 0;
@@ -461,7 +482,6 @@ function renderInteractiveSvgGraph(
     { passive: false }
   );
 
-  // 力导向物理模拟引擎
   let alpha = 1.0;
   const tick = () => {
     if (alpha < 0.008 && !draggedNode) {
@@ -469,7 +489,6 @@ function renderInteractiveSvgGraph(
       return;
     }
 
-    // 1. 库仑斥力 (节点间防重叠)
     for (let i = 0; i < simNodes.length; i++) {
       for (let j = i + 1; j < simNodes.length; j++) {
         const a = simNodes[i];
@@ -496,7 +515,6 @@ function renderInteractiveSvgGraph(
       }
     }
 
-    // 2. 胡克弹簧引力 (边连接)
     const idealLen = 115;
     for (const { source, target } of validEdges) {
       const dx = target.x - source.x;
@@ -515,7 +533,6 @@ function renderInteractiveSvgGraph(
       }
     }
 
-    // 3. 向心引力
     for (const n of simNodes) {
       if (n === draggedNode) continue;
       const gravity = n.is_active ? 0.04 : 0.012;
@@ -529,7 +546,6 @@ function renderInteractiveSvgGraph(
 
     alpha *= 0.96;
 
-    // 更新 SVG 坐标
     for (const { el, edge } of edgeEls) {
       el.setAttribute("x1", edge.source.x.toFixed(1));
       el.setAttribute("y1", edge.source.y.toFixed(1));
@@ -553,7 +569,7 @@ function renderInteractiveSvgGraph(
 }
 
 /**
- * 扫描并渲染侧边栏 #标签 聚合面板（支持多级父子标签 #工作/周报 与点击筛选）
+ * 扫描并渲染侧边栏 #标签 聚合面板
  */
 export async function renderSidebarTagsCloud(
   container: HTMLElement | null,
@@ -569,7 +585,6 @@ export async function renderSidebarTagsCloud(
     tags = [];
   }
 
-  // 同时合并当前正在编辑文档中的内联 #标签（即便尚未打开工作区也能即时展示）
   const localTagSet = new Set<string>();
   const matches = activeDocText.matchAll(
     /(?:^|[\s,，。；;（(])#([\u4e00-\u9fa5a-zA-Z0-9_\-]+(?:\/[\u4e00-\u9fa5a-zA-Z0-9_\-]+)*)/g

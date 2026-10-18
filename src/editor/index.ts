@@ -36,6 +36,7 @@ import { smartAutopairExtension } from "./extensions/smart-autopair";
 import { blockHandlePlugin } from "./extensions/block-handle";
 import { slashCommandExtension } from "./extensions/slash-command";
 import { setupWikiLinkInteractions, handleTagClickTrigger } from "./extensions/wiki-link";
+import { isOutlineJumpLocked } from "../components/outline";
 import { TextDeltaPayload } from "../components/auto-recovery";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -129,7 +130,6 @@ export function extractOutlineHeadings(
   },
   state?: EditorState
 ): Array<{ level: number; text: string; line: number }> {
-  // 若传入 EditorState 且存在单趟 AST 结构缓存，直接 O(1) 读取
   if (state) {
     const cached = state.field(docStructureField, false);
     if (cached) {
@@ -146,7 +146,6 @@ export function extractOutlineHeadings(
   let fenceChar = "";
   let fenceLen = 0;
 
-  // 跳过顶部 YAML Front Matter
   let startScanLine = 1;
   if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
     const limit = Math.min(doc.lines, 35);
@@ -181,7 +180,6 @@ export function extractOutlineHeadings(
     }
     if (inFence) continue;
 
-    // 统一兼容顶层标题与引用块内标题 (> # Heading)，与 live-preview 及 Rust 后端保持一致
     const match = lineText.match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
     if (match) {
       const cleanedText = stripInlineMarkdown(match[2]);
@@ -307,7 +305,6 @@ export function createEditor(
     livePreviewPlugin,
     EditorView.domEventHandlers({
       mousedown: (event, view) => {
-        // 代码块开启行号时，点击左侧行号槽区域 (40px 内) 直接选中整行代码
         if (
           event.button === 0 &&
           document.documentElement.classList.contains("show-code-line-numbers")
@@ -340,7 +337,6 @@ export function createEditor(
       click: (event, view) => {
         const target = event.target as HTMLElement;
 
-        // 点击内联 #标签 胶囊，一键打开侧边栏标签聚合检索
         const tagElem = target.closest(".cm-hashtag") as HTMLElement | null;
         if (tagElem && tagElem.dataset.tag) {
           event.preventDefault();
@@ -409,8 +405,9 @@ export function createEditor(
     return (origPosAndSideAtCoords as any)(coords, precise);
   };
 
-  // 视口滚动联动大纲 Scroll Spy：
-  // 采用真实 DOM 几何检测替代虚拟高度，并在打字/光标移动后 350ms 内优先以光标所在章节为准，彻底消除大纲高亮抢跳
+  // 视口滚动联动大纲 Scroll Spy (Bug #7 彻底修复)：
+  // 1. 当用户刚刚点击左侧大纲跳转 (isOutlineJumpLocked()) 时，严禁 Scroll Spy 反向覆盖大纲高亮。
+  // 2. 当处于打字机模式或非滚轮触发的编辑/跳转时，以光标所在行为准。
   let scrollSpyRaf: number | null = null;
   let lastWheelTime = 0;
   view.scrollDOM.addEventListener(
@@ -425,14 +422,19 @@ export function createEditor(
     "scroll",
     () => {
       if (!callbacks.onCursorLineChange || scrollSpyRaf !== null) return;
-      // 若刚刚由打字触发了滚动且并非鼠标滚轮浏览，交由光标行更新大纲高亮
-      if (performance.now() - lastEditTime < 350 && performance.now() - lastWheelTime > 400) {
+      if (isOutlineJumpLocked()) return;
+      if (performance.now() - lastEditTime < 450 && performance.now() - lastWheelTime > 400) {
+        return;
+      }
+      if (isTypewriterModeActive(view) && performance.now() - lastWheelTime > 300) {
         return;
       }
       scrollSpyRaf = requestAnimationFrame(() => {
         scrollSpyRaf = null;
+        if (isOutlineJumpLocked()) return;
         try {
-          const scrollerRect = view.scrollDOM.getBoundingClientRect();
+          const scroller = view.scrollDOM;
+          const scrollerRect = scroller.getBoundingClientRect();
           const probeY = scrollerRect.top + 64;
           const children = view.contentDOM.children;
           for (let i = 0; i < children.length; i++) {

@@ -4,7 +4,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { isInsideCodeContextAST } from "./doc-structure";
 
 /**
- * Typora 风格成对标点与选区自动包裹扩展 (v0.5)
+ * Typora 风格成对标点与选区自动包裹扩展 (v0.6)
  * 修复行首输入 *** 水平分割线或列表符号时被误扩展为 **** 的逻辑异常
  */
 const markdownSurroundHandler = EditorView.domEventHandlers({

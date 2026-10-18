@@ -292,11 +292,34 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
   {
     id: "frontmatter",
     title: "YAML 文档属性面板 (Front Matter)",
-    subtitle: "在文档顶部插入可视化元数据属性卡片",
+    subtitle: "在文档顶部插入或定位可视化元数据属性卡片",
     keywords: ["yaml", "frontmatter", "properties", "meta", "shuxing"],
     iconSvg: SLASH_ICONS.yaml,
     shortcut: "---",
     execute: (view, from, to) => {
+      const doc = view.state.doc;
+      let hasExistingFrontMatter = false;
+      if (doc.lines >= 3 && doc.line(1).text.trim() === "---") {
+        for (let k = 2; k <= Math.min(doc.lines, 35); k++) {
+          const t = doc.line(k).text.trim();
+          if (t === "---" || t === "...") {
+            hasExistingFrontMatter = true;
+            break;
+          }
+        }
+      }
+
+      if (hasExistingFrontMatter) {
+        const line2Pos = doc.line(2).to;
+        view.dispatch({
+          changes: { from, to, insert: "" },
+          selection: { anchor: Math.min(line2Pos, doc.length - (to - from)) },
+          scrollIntoView: true,
+        });
+        view.focus();
+        return;
+      }
+
       const now = new Date().toISOString().slice(0, 10);
       const tpl = `---\ntitle: 未命名笔记\ndate: ${now}\ntags: [笔记, 知识库]\n---\n\n`;
       view.dispatch({
@@ -305,6 +328,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
           { from: 0, to: 0, insert: tpl },
         ],
         selection: { anchor: tpl.length },
+        scrollIntoView: true,
       });
       view.focus();
     },
@@ -406,7 +430,6 @@ class SlashMenuOverlay {
     const line = state.doc.lineAt(head);
     const beforeCursor = line.text.slice(0, head - line.from);
 
-    // 匹配行首或空白字符后的 `/query`（排除 URL 如 https:// 或路径 a/b）
     const slashMatch = beforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_\-\u4e00-\u9fa5]{0,20})$/);
     if (!slashMatch) {
       this.close();

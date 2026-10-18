@@ -74,6 +74,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::save_file_content,
+            commands::save_base64_file,
             commands::read_file_content,
             commands::sync_document_buffer,
             commands::extract_file_headings,
@@ -93,6 +94,8 @@ pub fn run() {
             commands::select_workspace_folder,
             commands::select_save_file_path,
             commands::select_export_html_path,
+            commands::select_export_word_path,
+            commands::select_save_image_path,
             commands::select_open_file_path,
             commands::create_new_window,
             commands::get_cli_open_file,
@@ -111,6 +114,7 @@ pub fn run() {
             commands::rename_path,
             commands::delete_path,
             commands::reveal_in_explorer,
+            commands::reveal_in_folder,
             commands::open_external_url
         ])
         .run(tauri::generate_context!())

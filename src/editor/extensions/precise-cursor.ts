@@ -3,7 +3,8 @@ import { EditorView, MouseSelectionStyle } from "@codemirror/view";
 
 /**
  * 基于原生浏览器 DOM 精准坐标计算文档位置，
- * 彻底绕过 CodeMirror 虚拟 HeightMap 测量误差累积导致的长文档底部光标下偏问题
+ * 彻底绕过 CodeMirror 虚拟 HeightMap 测量误差累积导致的长文档底部光标下偏问题，
+ * 同时避免鼠标拖拽框选经过行间空白或边缘时发生选区首尾跳变闪烁 (Bug #4)。
  */
 export function getExactPosAtCoords(
   view: EditorView,
@@ -15,20 +16,47 @@ export function getExactPosAtCoords(
 
   const contentRect = contentDOM.getBoundingClientRect();
 
-  // 若点击在内容区上方
-  if (y < contentRect.top) {
-    return { pos: 0, assoc: 1 };
-  }
-  // 若点击在内容区下方
-  if (y > contentRect.bottom) {
-    return { pos: view.state.doc.length, assoc: -1 };
+  // 若坐标位于编辑内容区视口上下范围之外，交由 CodeMirror 原生 posAndSideAtCoords 平滑插值，
+  // 严禁直接返回 0 或 doc.length 导致拖拽框选时瞬间全选整个文档而乱闪
+  if (y < contentRect.top + 2 || y > contentRect.bottom - 2) {
+    return null;
   }
 
   if (typeof document !== "undefined") {
+    // 1. 先检查鼠标所在元素是否位于某一行 (.cm-line) 的水平留白区域（行首左侧或行尾右侧）
+    const el = document.elementFromPoint(x, y);
+    if (el && contentDOM.contains(el)) {
+      // 如果落点在折叠占位的装饰部件或块级交互卡片内，交由原生计算
+      if (
+        el.closest(
+          ".cm-code-header, .cm-code-expand-footer, .md-table, .md-mermaid-card, .md-math-block-card, .cm-frontmatter-card, .cm-transclusion-card, .cm-toc-card"
+        )
+      ) {
+        return null;
+      }
+
+      const lineEl = el.closest(".cm-line") as HTMLElement | null;
+      if (lineEl && contentDOM.contains(lineEl)) {
+        try {
+          const linePos = view.posAtDOM(lineEl, 0);
+          const line = view.state.doc.lineAt(linePos);
+          const rect = lineEl.getBoundingClientRect();
+          // 仅当鼠标明确在行文本内容区最左侧之外时定位到行首
+          if (x <= rect.left + 2) {
+            return { pos: line.from, assoc: 1 };
+          }
+          // 若整行是空行，直接返回行首
+          if (line.from === line.to) {
+            return { pos: line.from, assoc: 1 };
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 2. 使用 Chromium / WebKit 标准 caretRangeFromPoint 精准解析字符内偏移
     let node: Node | null = null;
     let offset = 0;
 
-    // 1. 首选 Chromium / WebKit 标准 caretRangeFromPoint
     if ((document as any).caretRangeFromPoint) {
       const range = (document as any).caretRangeFromPoint(x, y);
       if (range) {
@@ -44,17 +72,28 @@ export function getExactPosAtCoords(
     }
 
     if (node && contentDOM.contains(node)) {
-      try {
-        const pos = view.posAtDOM(node, offset);
-        if (typeof pos === "number" && !isNaN(pos)) {
-          const clamped = Math.max(0, Math.min(view.state.doc.length, pos));
-          return { pos: clamped, assoc: 1 };
-        }
-      } catch (_) {}
+      const parentEl =
+        node.nodeType === Node.ELEMENT_NODE
+          ? (node as HTMLElement)
+          : node.parentElement;
+      // 避免把装饰 Widget 内部的虚拟文本节点映射成行首位置导致跳闪
+      if (
+        parentEl &&
+        !parentEl.closest(
+          ".cm-code-header, .cm-code-expand-footer, .cm-heading-fold-badge, .cm-callout-header, .cm-hr-widget"
+        )
+      ) {
+        try {
+          const pos = view.posAtDOM(node, offset);
+          if (typeof pos === "number" && !isNaN(pos)) {
+            const clamped = Math.max(0, Math.min(view.state.doc.length, pos));
+            return { pos: clamped, assoc: 1 };
+          }
+        } catch (_) {}
+      }
     }
 
-    // 2. 若点击在某行的空白处（如行尾右侧空白留白区）
-    const el = document.elementFromPoint(x, y);
+    // 3. 若鼠标点击在某行的最右侧留白处且 caretRangeFromPoint 未命中文本节点
     if (el && contentDOM.contains(el)) {
       const lineEl = el.closest(".cm-line") as HTMLElement | null;
       if (lineEl && contentDOM.contains(lineEl)) {
@@ -62,11 +101,7 @@ export function getExactPosAtCoords(
           const linePos = view.posAtDOM(lineEl, 0);
           const line = view.state.doc.lineAt(linePos);
           const rect = lineEl.getBoundingClientRect();
-          if (x >= rect.right) {
-            return { pos: line.to, assoc: -1 };
-          } else if (x <= rect.left) {
-            return { pos: line.from, assoc: 1 };
-          } else {
+          if (x >= rect.right - 4) {
             return { pos: line.to, assoc: -1 };
           }
         } catch (_) {}
@@ -91,17 +126,26 @@ export function createPreciseMouseSelection(
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      "button, a, input, select, textarea, .md-table, .md-mermaid-card, .md-math-block-card, .cm-link"
+      "button, a, input, select, textarea, .md-table, .md-mermaid-card, .md-math-block-card, .cm-link, .cm-code-header, .cm-code-expand-footer, .cm-block-handle, .cm-frontmatter-card"
     )
   ) {
     return null;
   }
 
+  const resolvePosAt = (clientX: number, clientY: number, fallbackPos: number) => {
+    return (
+      getExactPosAtCoords(view, clientX, clientY) ||
+      (view as any)._origPosAndSideAtCoords?.({ x: clientX, y: clientY }, false) ||
+      view.posAndSideAtCoords({ x: clientX, y: clientY }, false) || {
+        pos: fallbackPos,
+        assoc: 1 as const,
+      }
+    );
+  };
+
   const startCoord = { x: event.clientX, y: event.clientY };
-  let start =
-    getExactPosAtCoords(view, startCoord.x, startCoord.y) ||
-    (view as any)._origPosAndSideAtCoords?.(startCoord, false) ||
-    view.posAndSideAtCoords(startCoord, false) || { pos: 0, assoc: 1 as const };
+  let start = resolvePosAt(startCoord.x, startCoord.y, view.state.selection.main.head);
+  let lastValidCur = { ...start };
 
   const type = getClickType(event);
   let startSel = view.state.selection;
@@ -126,20 +170,13 @@ export function createPreciseMouseSelection(
     update(update) {
       if (update.docChanged) {
         start.pos = update.changes.mapPos(start.pos);
+        lastValidCur.pos = update.changes.mapPos(lastValidCur.pos);
         startSel = startSel.map(update.changes);
       }
     },
     get(curEvent: MouseEvent, extend: boolean, multiple: boolean) {
-      const cur =
-        getExactPosAtCoords(view, curEvent.clientX, curEvent.clientY) ||
-        (view as any)._origPosAndSideAtCoords?.(
-          { x: curEvent.clientX, y: curEvent.clientY },
-          false
-        ) ||
-        view.posAndSideAtCoords({ x: curEvent.clientX, y: curEvent.clientY }, false) || {
-          pos: 0,
-          assoc: 1 as const,
-        };
+      const cur = resolvePosAt(curEvent.clientX, curEvent.clientY, lastValidCur.pos);
+      lastValidCur = cur;
 
       let range = rangeForClick(cur.pos, cur.assoc);
       if (start.pos !== cur.pos && !extend) {
@@ -147,9 +184,9 @@ export function createPreciseMouseSelection(
         const from = Math.min(startRange.from, range.from);
         const to = Math.max(startRange.to, range.to);
         range =
-          from < range.from
-            ? EditorSelection.range(from, to, range.assoc)
-            : EditorSelection.range(to, from, range.assoc);
+          start.pos <= cur.pos
+            ? EditorSelection.range(from, to, 1)
+            : EditorSelection.range(to, from, -1);
       }
 
       if (extend) {

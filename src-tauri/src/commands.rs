@@ -71,6 +71,31 @@ pub fn save_file_content(
 }
 
 #[tauri::command]
+pub fn save_base64_file(
+    path: String,
+    base64_data: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.workspace_watcher.mark_self_save();
+    let clean_b64 = if let Some(idx) = base64_data.find(',') {
+        &base64_data[idx + 1..]
+    } else {
+        &base64_data
+    };
+    let bytes = BASE64_STANDARD
+        .decode(clean_b64.trim())
+        .map_err(|e| format!("Base64 解码失败: {}", e))?;
+    let p = Path::new(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+        }
+    }
+    fs::write(p, bytes).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn read_file_content(
     path: String,
     window: tauri::Window,
@@ -190,17 +215,21 @@ pub fn scan_workspace_tags(
 #[tauri::command]
 pub fn get_workspace_graph(
     center_path: Option<String>,
+    active_file_path: Option<String>,
+    local_depth: Option<usize>,
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<KnowledgeGraphData, String> {
-    let inferred_root = center_path
+    let effective_center = center_path.or(active_file_path);
+    let inferred_root = effective_center
         .as_deref()
         .and_then(|p| Path::new(p).parent())
         .map(|p| p.to_string_lossy().to_string());
     if let Some(root) = resolve_window_workspace(&window, &state).or(inferred_root) {
         Ok(SearchEngine::build_knowledge_graph(
             root,
-            center_path.as_deref(),
+            effective_center.as_deref(),
+            local_depth.unwrap_or(2),
         ))
     } else {
         Ok(KnowledgeGraphData {
@@ -436,10 +465,39 @@ pub fn select_save_file_path(default_name: Option<String>) -> Result<Option<Stri
 #[tauri::command]
 pub fn select_export_html_path(default_name: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
-        .set_title("导出文档")
+        .set_title("导出 HTML 网页")
         .add_filter("HTML 网页 (*.html)", &["html", "htm"])
+        .add_filter("所有文件 (*.*)", &["*"]);
+
+    if let Some(name) = default_name {
+        dialog = dialog.set_file_name(&name);
+    }
+
+    let file = dialog.save_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn select_export_word_path(default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("导出为 Word 文档 (.doc)")
         .add_filter("Word 文档 (*.doc)", &["doc"])
-        .add_filter("SVG 矢量海报 (*.svg)", &["svg"])
+        .add_filter("所有文件 (*.*)", &["*"]);
+
+    if let Some(name) = default_name {
+        dialog = dialog.set_file_name(&name);
+    }
+
+    let file = dialog.save_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn select_save_image_path(default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("选择长图卡片保存位置")
+        .add_filter("PNG 高清长图 (*.png)", &["png"])
+        .add_filter("SVG 矢量卡片 (*.svg)", &["svg"])
         .add_filter("所有文件 (*.*)", &["*"]);
 
     if let Some(name) = default_name {
@@ -811,6 +869,11 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
             .map_err(|e| format!("打开文件管理器失败: {}", e))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn reveal_in_folder(path: String) -> Result<(), String> {
+    reveal_in_explorer(path)
 }
 
 #[tauri::command]

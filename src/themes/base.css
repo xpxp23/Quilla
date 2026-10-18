@@ -1545,15 +1545,24 @@ figure.table-figure:hover .tbl-edge-add-col {
 }
 
 .code-copy-btn.code-fence-btn,
-.code-copy-btn.code-format-btn {
-  opacity: 0;
-  border-color: transparent;
+.code-copy-btn.code-format-btn,
+.code-copy-btn.code-wrap-btn {
+  opacity: 0.82;
+  border-color: var(--border-color);
 }
 
 .code-block-header-bar:hover .code-copy-btn.code-fence-btn,
-.code-block-header-bar:hover .code-copy-btn.code-format-btn {
-  opacity: 0.85;
+.code-block-header-bar:hover .code-copy-btn.code-format-btn,
+.code-block-header-bar:hover .code-copy-btn.code-wrap-btn {
+  opacity: 1;
   border-color: var(--border-color);
+}
+
+.code-copy-btn.code-wrap-btn.active {
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.12));
+  color: var(--primary-color, #0969da);
+  border-color: rgba(9, 105, 218, 0.3);
+  font-weight: 600;
 }
 
 .code-copy-btn:hover {
@@ -1990,4 +1999,51 @@ body.theme-night .cm-search-match-selected {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 代码块单行不自动折行模式与超长代码折叠底栏 */
+.cm-line.cm-code-block-line.cm-code-nowrap {
+  white-space: pre !important;
+  overflow-x: auto !important;
+}
+
+.cm-code-expand-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 5px 12px;
+  background: linear-gradient(to bottom, rgba(127, 127, 127, 0.03), rgba(127, 127, 127, 0.09));
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  border-top: 1px dashed var(--border-color);
+  user-select: none;
+}
+
+.code-expand-more-btn {
+  background: var(--bg-color);
+  color: var(--primary-color, #0969da);
+  border: 1px solid rgba(9, 105, 218, 0.28);
+  border-radius: 999px;
+  padding: 2px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.code-expand-more-btn:hover {
+  background: var(--primary-color, #0969da);
+  color: #ffffff;
+}
+
+.fm-prop-text {
+  padding: 1px 5px;
+  border-radius: 4px;
+  cursor: text;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.fm-prop-text:hover {
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  color: var(--primary-color, #0969da);
 }

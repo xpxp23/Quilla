@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quilla (羽墨) v0.5 - 极简所见即所得 Markdown 编辑器与双链知识库</title>
+  <title>Quilla (羽墨) v0.6 - 极简所见即所得 Markdown 编辑器与双链知识库</title>
   <link rel="stylesheet" href="./src/themes/base.css" />
   <link rel="stylesheet" href="./src/themes/window.css" />
   <link rel="stylesheet" id="base_user_css" />
@@ -72,7 +72,7 @@
           <div class="info-panel-tab-title">文件</div>
           <div class="info-panel-tab-border"></div>
         </div>
-        <div class="info-panel-tab" id="tab-outline" title="大纲目录 (支持右键升级/降级/子树操作)">
+        <div class="info-panel-tab" id="tab-outline" title="大纲目录 (支持多选、右键点选转换与拖拽重排)">
           <div class="info-panel-tab-title">大纲</div>
           <div class="info-panel-tab-border"></div>
         </div>
@@ -154,7 +154,7 @@
         <!-- 2.2.2 大纲视图 -->
         <div id="panel-outline" class="panel-view">
           <div class="outline-filter-bar">
-            <span class="outline-filter-title">文档大纲 (支持右键菜单)</span>
+            <input type="text" id="outline-search-input" class="outline-search-input" placeholder="筛选章节标题 (Ctrl+点击多选)..." autocomplete="off" spellcheck="false" />
             <button type="button" id="outline-toggle-all-btn" class="sidebar-icon-btn" title="全部展开 / 折叠子章节">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="7 15 12 20 17 15"></polyline>

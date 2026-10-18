@@ -3,7 +3,7 @@ import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { resolveSemanticBlockSpanFromState } from "./doc-structure";
 
 /**
- * 专注模式状态管理与段落级视差聚焦插件 (F8 v0.5)
+ * 专注模式状态管理与段落级视差聚焦插件 (F8 v0.6)
  * - 严格按单个 EditorView 实例 `.cm-editor.focus-mode` 作用域生效，绝不污染左右分屏副编辑器
  */
 

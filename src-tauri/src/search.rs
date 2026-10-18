@@ -29,8 +29,11 @@ pub struct GraphNode {
     pub label: String,
     pub path: Option<String>,
     pub exists: bool,
+    pub is_active: bool,
     #[serde(rename = "isCenter")]
     pub is_center: bool,
+    pub in_degree: usize,
+    pub out_degree: usize,
     pub degree: usize,
 }
 
@@ -115,7 +118,6 @@ impl SearchEngine {
             .collect()
     }
 
-    /// 在指定工作区目录下并发流式搜索关键词（忽略扩展名大小写、过滤黑名单目录、限制最大返回数防止大目录卡死）
     pub fn search_workspace<P: AsRef<Path>>(
         root: P,
         keyword: &str,
@@ -188,7 +190,6 @@ impl SearchEngine {
         results
     }
 
-    /// 多线程检索指向目标文档的双向链接与 Markdown 引用 ([[Target]] / ![[Target]] / [[Target#Heading]] / [[Target|Alias]] / ](...Target.md))
     pub fn search_backlinks<P: AsRef<Path>>(
         root: P,
         target_name: &str,
@@ -273,7 +274,6 @@ impl SearchEngine {
         results
     }
 
-    /// 扫描工作区全部标签 (#tag / #parent/child 及 YAML front matter tags)
     pub fn scan_workspace_tags<P: AsRef<Path>>(root: P) -> Vec<TagSummary> {
         let files = Self::collect_markdown_files(root);
         let per_file_hits: Vec<Vec<(String, SearchMatch)>> = files
@@ -304,7 +304,9 @@ impl SearchEngine {
                             if let Some(rest) = trimmed.strip_prefix("tags:") {
                                 let clean = rest.trim().trim_matches(|c| c == '[' || c == ']');
                                 for part in clean.split(',') {
-                                    let t = part.trim().trim_matches(|c| c == '"' || c == '\'' || c == '#');
+                                    let t = part
+                                        .trim()
+                                        .trim_matches(|c| c == '"' || c == '\'' || c == '#');
                                     if !t.is_empty() {
                                         hits.push((
                                             t.to_string(),
@@ -327,7 +329,6 @@ impl SearchEngine {
                         if in_fence {
                             continue;
                         }
-                        // 提取行内 #标签（排除 # 标题与 URL 锚点）
                         let chars: Vec<char> = raw_line.chars().collect();
                         let mut i = 0;
                         while i < chars.len() {
@@ -341,12 +342,22 @@ impl SearchEngine {
                             }
                             if chars[i] == '#' {
                                 let prev_ok = i == 0 || chars[i - 1].is_whitespace();
-                                if prev_ok && i + 1 < chars.len() && !chars[i + 1].is_whitespace() && chars[i + 1] != '#' && chars[i + 1] != '[' {
+                                if prev_ok
+                                    && i + 1 < chars.len()
+                                    && !chars[i + 1].is_whitespace()
+                                    && chars[i + 1] != '#'
+                                    && chars[i + 1] != '['
+                                {
                                     let start = i + 1;
                                     let mut end = start;
                                     while end < chars.len() {
                                         let c = chars[end];
-                                        if c.is_alphanumeric() || c == '_' || c == '-' || c == '/' || ('\u{4e00}'..='\u{9fa5}').contains(&c) {
+                                        if c.is_alphanumeric()
+                                            || c == '_'
+                                            || c == '-'
+                                            || c == '/'
+                                            || ('\u{4e00}'..='\u{9fa5}').contains(&c)
+                                        {
                                             end += 1;
                                         } else {
                                             break;
@@ -354,7 +365,6 @@ impl SearchEngine {
                                     }
                                     if end > start {
                                         let tag_str: String = chars[start..end].iter().collect();
-                                        // 排除纯数字如 #123 或纯色值
                                         if !tag_str.chars().all(|c| c.is_ascii_digit()) {
                                             hits.push((
                                                 tag_str,
@@ -398,10 +408,11 @@ impl SearchEngine {
         summaries
     }
 
-    /// 构建工作区双链知识图谱数据 (Nodes & Edges)
+    /// 构建工作区双链知识图谱数据 (支持 local_depth = 1 / 2 / 0 全局模式)
     pub fn build_knowledge_graph<P: AsRef<Path>>(
         root: P,
         center_file_path: Option<&str>,
+        local_depth: usize,
     ) -> KnowledgeGraphData {
         let files = Self::collect_markdown_files(root);
         let center_stem = center_file_path
@@ -465,15 +476,16 @@ impl SearchEngine {
 
         let mut edges = Vec::new();
         let mut seen_edges = HashSet::new();
-        let mut degree_map: HashMap<String, usize> = HashMap::new();
+        let mut in_deg_map: HashMap<String, usize> = HashMap::new();
+        let mut out_deg_map: HashMap<String, usize> = HashMap::new();
         let mut missing_nodes: HashSet<String> = HashSet::new();
 
         for (src, targets) in extracted_links {
             for (tgt, kind) in targets {
                 let edge_key = format!("{}->{}", src, tgt);
                 if seen_edges.insert(edge_key) {
-                    *degree_map.entry(src.clone()).or_insert(0) += 1;
-                    *degree_map.entry(tgt.clone()).or_insert(0) += 1;
+                    *out_deg_map.entry(src.clone()).or_insert(0) += 1;
+                    *in_deg_map.entry(tgt.clone()).or_insert(0) += 1;
                     if !stem_to_path.contains_key(&tgt) {
                         missing_nodes.insert(tgt.clone());
                     }
@@ -486,9 +498,8 @@ impl SearchEngine {
             }
         }
 
-        // 若传入了当前聚焦文档且节点过多，优先过滤出与当前文档 1~2 跳关联的子图（若关联为空则展示全图前 60 个核心节点）
         let mut allowed_ids: HashSet<String> = HashSet::new();
-        if !center_stem.is_empty() {
+        if local_depth > 0 && !center_stem.is_empty() {
             allowed_ids.insert(center_stem.clone());
             for e in &edges {
                 if e.source == center_stem {
@@ -497,30 +508,37 @@ impl SearchEngine {
                     allowed_ids.insert(e.source.clone());
                 }
             }
-            // 二跳扩展
-            let hop1 = allowed_ids.clone();
-            for e in &edges {
-                if hop1.contains(&e.source) || hop1.contains(&e.target) {
-                    allowed_ids.insert(e.source.clone());
-                    allowed_ids.insert(e.target.clone());
+            if local_depth >= 2 {
+                let hop1 = allowed_ids.clone();
+                for e in &edges {
+                    if hop1.contains(&e.source) || hop1.contains(&e.target) {
+                        allowed_ids.insert(e.source.clone());
+                        allowed_ids.insert(e.target.clone());
+                    }
                 }
             }
         }
 
-        let filter_by_hop = allowed_ids.len() > 1;
+        let filter_by_hop = local_depth > 0 && allowed_ids.len() > 1;
         let mut nodes = Vec::new();
 
         for (id, (label, path)) in &stem_to_path {
             if filter_by_hop && !allowed_ids.contains(id) {
                 continue;
             }
+            let in_deg = *in_deg_map.get(id).unwrap_or(&0);
+            let out_deg = *out_deg_map.get(id).unwrap_or(&0);
+            let is_center = *id == center_stem;
             nodes.push(GraphNode {
                 id: id.clone(),
                 label: label.clone(),
                 path: Some(path.clone()),
                 exists: true,
-                is_center: *id == center_stem,
-                degree: *degree_map.get(id).unwrap_or(&0),
+                is_active: is_center,
+                is_center,
+                in_degree: in_deg,
+                out_degree: out_deg,
+                degree: in_deg + out_deg,
             });
         }
 
@@ -528,14 +546,18 @@ impl SearchEngine {
             if filter_by_hop && !allowed_ids.contains(&missing) {
                 continue;
             }
-            let degree = *degree_map.get(&missing).unwrap_or(&1);
+            let in_deg = *in_deg_map.get(&missing).unwrap_or(&1);
+            let out_deg = *out_deg_map.get(&missing).unwrap_or(&0);
             nodes.push(GraphNode {
                 id: missing.clone(),
                 label: missing,
                 path: None,
                 exists: false,
+                is_active: false,
                 is_center: false,
-                degree,
+                in_degree: in_deg,
+                out_degree: out_deg,
+                degree: in_deg + out_deg,
             });
         }
 
@@ -545,8 +567,8 @@ impl SearchEngine {
                 .then(b.degree.cmp(&a.degree))
                 .then(a.label.cmp(&b.label))
         });
-        if nodes.len() > 80 {
-            nodes.truncate(80);
+        if nodes.len() > 100 {
+            nodes.truncate(100);
         }
         let valid_node_ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
         edges.retain(|e| valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target));

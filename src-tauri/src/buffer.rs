@@ -79,18 +79,24 @@ impl DocumentBuffer {
         self.is_dirty = true;
     }
 
-    /// O(log N) 增量更新 Rope 缓冲区，避免每次打字重建整棵 Rope 树
+    /// O(log N) 增量更新 Rope 缓冲区，自动将前端 CodeMirror UTF-16 代码单元偏移转换至 Unicode 标量字符偏移，
+    /// 彻底解决文档包含 Emoji 或增补平面字符时增量同步错位崩溃的问题。
     pub fn apply_deltas(&mut self, deltas: &[TextDelta]) -> bool {
         for d in deltas {
-            let len = self.rope.len_chars();
-            if d.from > d.to || d.to > len {
+            let total_utf16 = self.rope.len_utf16_cu();
+            if d.from > d.to || d.to > total_utf16 {
                 return false;
             }
-            if d.from < d.to {
-                self.rope.remove(d.from..d.to);
+            let char_from = self.rope.utf16_cu_to_char(d.from);
+            let char_to = self.rope.utf16_cu_to_char(d.to);
+            if char_from > char_to || char_to > self.rope.len_chars() {
+                return false;
+            }
+            if char_from < char_to {
+                self.rope.remove(char_from..char_to);
             }
             if !d.insert.is_empty() {
-                self.rope.insert(d.from, &d.insert);
+                self.rope.insert(char_from, &d.insert);
             }
         }
         self.is_dirty = true;
@@ -245,7 +251,7 @@ impl DocumentBuffer {
             return out.trim().to_string();
         }
 
-        // 未命中特定标题时回退返回正文前 12 行摘要
+        // 未命中特定标题时回退返回正文前 15 行摘要
         let mut out = String::new();
         for idx in start_line_idx..total_lines.min(start_line_idx + 15) {
             out.push_str(&self.rope.line(idx).to_string());

@@ -83,17 +83,17 @@ import {
 } from "./components/publisher-export";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.5 全景工作台指南
+title: Quilla (羽墨) v0.6 全景工作台指南
 author: Quilla Studio
 tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.5.0
+version: 0.6.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.5
+# 欢迎使用 Quilla (羽墨) v0.6
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
-> [!TIP] Quilla v0.5 三大阶段全新跃迁速览
+> [!TIP] Quilla v0.6 全景深度精进与架构升级
 > - **第一阶段 · 块级与大纲深度操控**：左侧 6 点抓手采用真实 DOM 几何与悬停桥接锁，点击或右键唤起 **块级命令菜单（Turn Into / 克隆 / 移动 / 章节折叠）**；侧边栏大纲支持右键 **单标题升降级、带子标题整体升级/降级（思源笔记风格）、复制章节双链与整章操作**。
 > - **第二阶段 · 块级嵌入与知识图谱**：支持 \`![[文档#标题]]\` 块级/章节实时嵌入卡片、YAML Front Matter 可视化属性面板、多级 \`#父标签/子标签\` 胶囊检索，以及按 \`Ctrl+G\` 唤起 **交互式双链知识图谱**。
 > - **第三阶段 · 时间机器与多渠道发布**：按 \`Ctrl+Alt+H\` 打开 **本地版本历史（Time Machine）** 进行逐行 Diff 对比与一键无损回滚；支持 **一键复制微信公众号/知乎内联富文本**、导出 **Word (\`.doc\`)** 及 **社交长图分享卡片 (\`.png\`)**。
@@ -135,7 +135,7 @@ version: 0.5.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.5"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
+    Start["Quilla v0.6"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
     Start --> Phase2["![[块级嵌入]] & 双链知识图谱"]
     Start --> Phase3["时间机器 Diff & 公众号/长图发布"]
 \`\`\`
@@ -146,7 +146,7 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.5!");
+    println!("Hello, Quilla (羽墨) v0.6!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
@@ -271,6 +271,20 @@ class App {
           this.performSearch(`#${tag}`);
         }
       },
+      onSearchTag: (tag: string) => {
+        document.body.classList.add("pin-outline");
+        document.getElementById("tab-search")?.click();
+        const searchInput = document.getElementById(
+          "workspace-search-input"
+        ) as HTMLInputElement | null;
+        if (searchInput) {
+          searchInput.value = `#${tag}`;
+          this.performSearch(`#${tag}`);
+        }
+      },
+      onOpenGraphModal: () => {
+        this.openKnowledgeGraph();
+      },
     });
 
     // 监听反向链接面板知识图谱按钮与全局标签点击事件
@@ -318,6 +332,15 @@ class App {
       },
       onOpenFileRequest: (filePath) => {
         this.loadFile(filePath);
+      },
+      onSaveTabRequest: async () => {
+        await this.saveFile();
+      },
+      onSaveTabAsRequest: async () => {
+        await this.saveFileAs();
+      },
+      onOpenInNewWindowRequest: async (tab) => {
+        await this.createNewWindow(tab.filePath);
       },
       onSecondaryDocChanged: (tab, content) => {
         saveRecoverySnapshot(tab.filePath, content, tab.title);
@@ -1492,7 +1515,7 @@ class App {
         /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g,
         "<em>$1$2</em>"
       );
-      working = working.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+      working = working.replace(/~~([^~\n]+)~~/g, "<s style=\"text-decoration:line-through;\">$1</s>");
       working = working.replace(/==([^=\n]+)==/g, "<mark>$1</mark>");
       working = working.replace(/(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g, "<sub>$1</sub>");
       working = working.replace(/\^([^\^\s\n][^\^\n]*?)\^/g, "<sup>$1</sup>");
@@ -2006,6 +2029,8 @@ class App {
     .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
     .cm-footnote-def { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--border-color, #d0d7de); font-size: 0.92em; color: var(--control-text-color, #57606a); }
     .fn-backref { text-decoration: none; margin-left: 4px; color: var(--primary-color, #0969da); }
+    s, del { text-decoration: line-through; opacity: 0.75; }
+    .katex-mathml { display: none; }
   </style>
 </head>
 <body id="write" class="${bodyClass}">

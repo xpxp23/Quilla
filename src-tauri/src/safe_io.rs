@@ -17,14 +17,15 @@ pub struct DraftSnapshotRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistorySnapshotRecord {
     pub id: String,
-    #[serde(rename = "filePath")]
+    #[serde(rename = "filePath", alias = "file_path")]
     pub file_path: String,
+    #[serde(rename = "timestamp_ms", alias = "timestamp")]
     pub timestamp: u64,
     pub label: String,
     pub content: String,
-    #[serde(rename = "charCount")]
+    #[serde(rename = "char_count", alias = "charCount")]
     pub char_count: usize,
-    #[serde(rename = "lineCount")]
+    #[serde(rename = "line_count", alias = "lineCount")]
     pub line_count: usize,
 }
 
@@ -73,7 +74,6 @@ impl SafeIO {
             let _ = fs::rename(path, &backup_path);
             if let Err(_e) = fs::rename(&tmp_path, path) {
                 let _ = fs::rename(&backup_path, path);
-                // 同步盘文件锁冲突降级方案：直接复制内容并移除临时文件
                 fs::copy(&tmp_path, path)?;
                 let _ = fs::remove_file(&tmp_path);
             }
@@ -90,7 +90,7 @@ impl SafeIO {
         Self::atomic_write_with_options(path, content, true)
     }
 
-    /// 计算确定性 64-bit FNV-1a 哈希，彻底解决中文或特殊符号文件路径转化为下划线后的文件名碰撞覆盖问题
+    /// 计算确定性 64-bit FNV-1a 哈希
     pub fn fnv1a_hash(input: &str) -> u64 {
         let mut hash: u64 = 0xcbf29ce484222325;
         for byte in input.as_bytes() {
@@ -124,7 +124,7 @@ impl SafeIO {
             .collect()
     }
 
-    /// 非阻塞快速保存后台崩溃快照 (Draft Snapshot)，采用 OS 页缓存写入 + 原子重命名，消除打字期间 sync_all 磁盘锁卡顿
+    /// 非阻塞快速保存后台崩溃快照 (Draft Snapshot)
     pub fn save_draft_snapshot(
         file_id: &str,
         file_path: Option<String>,
@@ -163,7 +163,7 @@ impl SafeIO {
         Ok(draft_path)
     }
 
-    /// 清理指定会话或文件的崩溃恢复草稿（同时清理新版哈希草稿与旧版遗留文件）
+    /// 清理指定会话或文件的崩溃恢复草稿
     pub fn remove_draft_snapshot(file_id: &str) -> io::Result<()> {
         let draft_dir = std::env::temp_dir().join("quilla-recovery-drafts");
         let draft_path = draft_dir.join(Self::build_draft_filename(file_id));
@@ -171,7 +171,8 @@ impl SafeIO {
             let _ = fs::remove_file(draft_path);
         }
 
-        let legacy_path = draft_dir.join(format!("{}.draft", Self::legacy_sanitize_file_id(file_id)));
+        let legacy_path =
+            draft_dir.join(format!("{}.draft", Self::legacy_sanitize_file_id(file_id)));
         if legacy_path.exists() {
             let _ = fs::remove_file(legacy_path);
         }
@@ -241,7 +242,6 @@ impl SafeIO {
         let store_path = Self::build_history_store_path(file_path);
         let mut list = Self::list_file_history_snapshots(file_path);
 
-        // 若与最新一条快照内容完全一致，跳过重复记录
         if let Some(latest) = list.first() {
             if latest.content == content {
                 return Ok(());

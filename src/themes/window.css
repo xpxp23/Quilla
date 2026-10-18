@@ -438,12 +438,47 @@ body:not(.pin-outline) .sidebar-resizer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 8px;
+  gap: 6px;
+  padding: 5px 6px;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--control-text-color);
   border-bottom: 1px solid var(--border-color);
   margin-bottom: 6px;
+}
+
+.outline-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.outline-search-input:focus {
+  border-color: var(--primary-color, #0969da);
+  box-shadow: 0 0 0 2px var(--primary-bg-subtle);
+}
+
+.outline-item.multi-selected {
+  background-color: rgba(9, 105, 218, 0.14) !important;
+  color: var(--primary-color, #0969da) !important;
+  box-shadow: inset 2.5px 0 0 var(--primary-color, #0969da);
+  font-weight: 600;
+}
+
+.outline-item.outline-filter-hidden {
+  display: none !important;
+}
+
+.outline-item.outline-filter-match .outline-title {
+  color: var(--primary-color, #0969da);
+  font-weight: 600;
 }
 
 .outline-content {
@@ -2984,11 +3019,27 @@ body.focus-mode-active .cm-editor .cm-line.cm-focus-active-block,
 
 .poster-card-header {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.poster-header-top {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 14px;
-  margin-bottom: 18px;
-  border-bottom: 1px dashed rgba(127, 127, 127, 0.3);
+  gap: 8px;
+}
+
+.poster-doc-main-title {
+  font-size: 1.72rem;
+  font-weight: 800;
+  line-height: 1.35;
+  margin: 2px 0 0;
+  letter-spacing: -0.01em;
 }
 
 .poster-brand-pill {
@@ -3010,12 +3061,16 @@ body.focus-mode-active .cm-editor .cm-line.cm-focus-active-block,
 .poster-card-body h1 { font-size: 1.65rem; margin-top: 0.4rem; }
 .poster-card-body h2 { font-size: 1.32rem; }
 .poster-card-body pre {
-  padding: 12px;
+  padding: 14px 16px;
   border-radius: 8px;
   background-color: rgba(127, 127, 127, 0.08);
-  overflow-x: auto;
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
   font-family: var(--monospace);
   font-size: 12.5px;
+  line-height: 1.65;
 }
 
 .poster-card-footer {
@@ -3151,4 +3206,10 @@ body.theme-night .ty-recovery-banner {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }
+}
+
+/* 分屏主副面板焦点指示条 */
+.editor-split-container.secondary-pane-focused .secondary-pane .split-pane-header {
+  border-bottom-color: var(--primary-color, #0969da);
+  background-color: var(--primary-bg-subtle);
 }

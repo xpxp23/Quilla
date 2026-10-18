@@ -5,6 +5,10 @@ import { openPreferencesModal } from "./preferences";
 import { getRecentFiles, clearRecentFiles } from "./quick-open";
 import { handleOpenLink } from "../editor/index";
 import { smartToggleFormat } from "../editor/extensions/formatting-keymap";
+import {
+  resolveSemanticBlockSpan,
+  convertBlockSpanType,
+} from "../editor/extensions/block-handle";
 import { insertTableCommand } from "../editor/extensions/table-editor";
 import { htmlToMarkdown } from "../editor/extensions/smart-paste";
 
@@ -66,6 +70,7 @@ const SVG = {
   link: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>`,
   table: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>`,
   code: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>`,
+  strike: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4H9a3 3 0 0 0-2.83 4"></path><path d="M14 12a4 4 0 0 1 0 8H6"></path><line x1="4" y1="12" x2="20" y2="12"></line></svg>`,
 };
 
 /**
@@ -276,18 +281,19 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
   let currentContextTarget: {
     type: "table" | "image" | "link" | "text";
     element: HTMLElement;
+    span?: { startLine: number; endLine: number };
   } | null = null;
 
   const writeArea = document.getElementById("content");
   writeArea?.addEventListener("contextmenu", (e) => {
     const target = e.target as HTMLElement;
-    // 若右键点击在左侧块抓手上，交由块抓手菜单处理
     if (target.closest(".cm-block-handle, .cm-block-context-menu")) {
       return;
     }
 
     e.preventDefault();
 
+    const view = getView();
     const tableEl = target.closest(".in-place-edit") as HTMLElement;
     const imgEl = target.closest(".md-image-card") as HTMLElement;
     const linkEl = target.closest(".cm-link") as HTMLElement;
@@ -349,8 +355,31 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
         </div>
       `;
     } else {
-      currentContextTarget = { type: "text", element: target };
+      const sel = view.state.selection.main;
+      const headLine = view.state.doc.lineAt(sel.head).number;
+      const span = resolveSemanticBlockSpan(view.state, headLine);
+      const lineCount = span.endLine - span.startLine + 1;
+      currentContextTarget = { type: "text", element: target, span };
       contextMenu.innerHTML = `
+        <div class="menu-section">
+          <div class="menu-item-group-title">${
+            lineCount > 1 ? `段落批量转换 (${lineCount} 行)` : "段落转换为 (Turn Into)"
+          }</div>
+          <div class="block-turn-into-grid">
+            <button type="button" class="block-turn-btn" data-turn="h1" title="一级标题 (${mod}+1)">H1</button>
+            <button type="button" class="block-turn-btn" data-turn="h2" title="二级标题 (${mod}+2)">H2</button>
+            <button type="button" class="block-turn-btn" data-turn="h3" title="三级标题 (${mod}+3)">H3</button>
+            <button type="button" class="block-turn-btn" data-turn="h4" title="四级标题 (${mod}+4)">H4</button>
+            <button type="button" class="block-turn-btn" data-turn="p" title="普通段落 (${mod}+0)">正文</button>
+            <button type="button" class="block-turn-btn" data-turn="ul" title="无序列表">• 列表</button>
+            <button type="button" class="block-turn-btn" data-turn="ol" title="有序列表">1. 列表</button>
+            <button type="button" class="block-turn-btn" data-turn="task" title="待办任务">☑ 任务</button>
+            <button type="button" class="block-turn-btn" data-turn="quote" title="引用块">❝ 引用</button>
+            <button type="button" class="block-turn-btn" data-turn="callout" title="GitHub Callout 提示框">提示卡</button>
+            <button type="button" class="block-turn-btn" data-turn="code" title="围栏代码块">&lt;/&gt; 代码</button>
+          </div>
+        </div>
+        <div class="menu-divider"></div>
         <div class="menu-section">
           <div class="menu-item" data-action="cut">
             <div class="menu-item-left"><span class="m-icon">${SVG.scissors}</span><span>剪切</span></div>
@@ -381,6 +410,10 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
           <div class="menu-item" data-action="italic">
             <div class="menu-item-left"><span class="m-icon"><em>I</em></span><span>斜体</span></div>
             <span class="shortcut">${mod}+I</span>
+          </div>
+          <div class="menu-item" data-action="strike">
+            <div class="menu-item-left"><span class="m-icon">${SVG.strike}</span><span>删除线</span></div>
+            <span class="shortcut">${mod}+Shift+X</span>
           </div>
           <div class="menu-item" data-action="highlight">
             <div class="menu-item-left"><span class="m-icon">==</span><span>荧光高亮</span></div>
@@ -414,19 +447,29 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
     }
 
     contextMenu.classList.remove("hidden");
-    const menuWidth = 230;
-    const menuHeight = contextMenu.offsetHeight || 290;
-    const posX = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
-    const posY = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
+    const menuWidth = 242;
+    const menuHeight = contextMenu.offsetHeight || 350;
+    const posX = Math.max(8, Math.min(e.clientX, window.innerWidth - menuWidth - 8));
+    const posY = Math.max(8, Math.min(e.clientY, window.innerHeight - menuHeight - 8));
     contextMenu.style.top = `${posY}px`;
     contextMenu.style.left = `${posX}px`;
   });
 
   contextMenu.addEventListener("click", (e) => {
+    const view = getView();
+    const turnBtn = (e.target as HTMLElement).closest(".block-turn-btn") as HTMLElement | null;
+    if (turnBtn && turnBtn.dataset.turn) {
+      const sel = view.state.selection.main;
+      const headLine = view.state.doc.lineAt(sel.head).number;
+      const span = currentContextTarget?.span || resolveSemanticBlockSpan(view.state, headLine);
+      convertBlockSpanType(view, span, turnBtn.dataset.turn);
+      contextMenu.classList.add("hidden");
+      return;
+    }
+
     const item = (e.target as HTMLElement).closest(".menu-item") as HTMLElement;
     if (!item) return;
     const act = item.dataset.action;
-    const view = getView();
 
     if (act?.startsWith("tbl-") && currentContextTarget?.element) {
       const btnAct = act.replace("tbl-", "");
@@ -545,6 +588,8 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
       smartToggleFormat(view, "**");
     } else if (act === "italic") {
       smartToggleFormat(view, "*");
+    } else if (act === "strike") {
+      smartToggleFormat(view, "~~");
     } else if (act === "highlight") {
       smartToggleFormat(view, "==");
     } else if (act === "code") {

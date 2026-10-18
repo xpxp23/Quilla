@@ -2,7 +2,7 @@ import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { forceRefreshEffect } from "./refresh-effect";
 
 /**
- * IME 防护守卫 (v0.5)：
+ * IME 防护守卫 (v0.6)：
  * - 支持多视图实例独立跟踪 CompositionState
  * - 增加 blur 失焦自动释放锁，根治输入法选词中途切换标签页导致实时预览永久冻结的 Bug
  */

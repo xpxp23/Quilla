@@ -22,11 +22,32 @@ function escapeHtml(str: string): string {
 }
 
 function formatTimestamp(ms: number): string {
-  const d = new Date(ms);
+  const safeMs = Number.isFinite(ms) && ms > 0 ? ms : Date.now();
+  const d = new Date(safeMs);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
     d.getHours()
   )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * 归一化后端或本地缓存返回的历史快照字段（兼容 timestamp / timestamp_ms、charCount / char_count、lineCount / line_count）
+ */
+function normalizeSnapshotRecord(raw: any): HistorySnapshotRecord {
+  const content = typeof raw?.content === "string" ? raw.content : "";
+  const ts = Number(raw?.timestamp_ms ?? raw?.timestamp ?? Date.now());
+  const charCount = Number(raw?.char_count ?? raw?.charCount ?? content.length);
+  const lineCount = Number(
+    raw?.line_count ?? raw?.lineCount ?? (content ? content.split("\n").length : 1)
+  );
+  return {
+    id: String(raw?.id || `snap-${ts}`),
+    timestamp_ms: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+    label: String(raw?.label || "自动历史快照"),
+    char_count: Number.isFinite(charCount) ? charCount : content.length,
+    line_count: Number.isFinite(lineCount) ? lineCount : 1,
+    content,
+  };
 }
 
 /**
@@ -36,7 +57,8 @@ function loadFallbackLocalHistory(docKey: string): HistorySnapshotRecord[] {
   try {
     const raw = localStorage.getItem(`${LOCAL_HISTORY_KEY}::${docKey}`);
     if (!raw) return [];
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(normalizeSnapshotRecord) : [];
   } catch {
     return [];
   }
@@ -93,7 +115,6 @@ function computeLineDiff(snapshotText: string, currentText: string): DiffRow[] {
   const a = snapshotText.replace(/\r\n/g, "\n").split("\n");
   const b = currentText.replace(/\r\n/g, "\n").split("\n");
 
-  // 若行数过大，采用前后公共块裁剪加速 LCS
   let start = 0;
   while (start < a.length && start < b.length && a[start] === b[start]) {
     start++;
@@ -204,9 +225,10 @@ export async function openTimeMachineModal(options: {
   const fetchSnapshots = async () => {
     if (options.filePath) {
       try {
-        snapshots = await invoke<HistorySnapshotRecord[]>("list_file_history", {
+        const rawList = await invoke<any[]>("list_file_history", {
           path: options.filePath,
         });
+        snapshots = (rawList || []).map(normalizeSnapshotRecord);
       } catch {
         snapshots = loadFallbackLocalHistory(docKey);
       }

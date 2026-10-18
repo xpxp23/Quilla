@@ -1,5 +1,6 @@
 import { ChangeSet, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { invoke } from "@tauri-apps/api/core";
 import {
   createEditor,
   createEditorStateForView,
@@ -10,6 +11,8 @@ import {
 } from "../editor";
 import { initFloatingToolbars } from "../editor/extensions/floating-toolbars";
 import { initSmartPaste } from "../editor/extensions/smart-paste";
+import { showToast } from "./save-dialog";
+import { formatModKey } from "./shortcut-guide";
 
 export interface DocumentTab {
   id: string;
@@ -27,6 +30,9 @@ export interface TabsManagerCallbacks {
   onTabCloseConfirm: (tab: DocumentTab) => Promise<"save" | "discard" | "cancel">;
   onNewBlankTabRequest: () => void;
   onOpenFileRequest: (filePath: string) => void;
+  onSaveTabRequest?: (tab: DocumentTab) => Promise<void>;
+  onSaveTabAsRequest?: (tab: DocumentTab) => Promise<void>;
+  onOpenInNewWindowRequest?: (tab: DocumentTab) => Promise<void>;
   onSecondaryDocChanged?: (tab: DocumentTab, content: string) => void;
 }
 
@@ -72,11 +78,29 @@ function computeMinimalTextDiff(
   };
 }
 
+let activeTabContextMenu: HTMLElement | null = null;
+function closeTabContextMenu() {
+  if (activeTabContextMenu) {
+    activeTabContextMenu.remove();
+    activeTabContextMenu = null;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("mousedown", (e) => {
+    if (activeTabContextMenu && !activeTabContextMenu.contains(e.target as Node)) {
+      closeTabContextMenu();
+    }
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeTabContextMenu();
+  });
+}
+
 /**
- * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器
- * - 每个标签独立保存自己的 EditorState（含独立 Undo/Redo 历史栈与选区）和 scrollTop
- * - 支持 Pointer Events 标签拖拽排序、鼠标中键关闭、Ctrl+Tab 循环切换、Ctrl+W 关闭当前标签
- * - 支持一键开启左右分屏（Ctrl+\），右侧副编辑器具备完整的悬浮气泡栏、智能粘贴与焦点感知保存能力
+ * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.6
+ * - 新增顶部标签右键菜单（保存、另存为/重命名、在右侧分屏打开、独立窗口打开、复制路径/文件名、定位文件夹、关闭其他/右侧/已保存标签）(Bug #2)
+ * - 修复非激活脏标签关闭时的保存逻辑 (Homologous Bug #9)
  */
 export class TabsManager {
   private tabs: DocumentTab[] = [];
@@ -172,7 +196,13 @@ export class TabsManager {
       }
     });
 
-    // 绑定主编辑器滚动事件，当开启同步滚动且处于分屏模式时按比例联动副视图
+    // 双击标签栏空白处快速新建空白标签
+    this.tabsListEl?.addEventListener("dblclick", (e) => {
+      if (e.target === this.tabsListEl) {
+        this.callbacks.onNewBlankTabRequest();
+      }
+    });
+
     const primaryView = this.callbacks.getPrimaryView();
     if (primaryView) {
       primaryView.scrollDOM.addEventListener(
@@ -201,7 +231,6 @@ export class TabsManager {
       );
     }
 
-    // 快捷键：Ctrl+\ 切换分屏，Ctrl+Tab 切换下一标签，Ctrl+W 关闭当前标签
     window.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "\\") {
         e.preventDefault();
@@ -210,7 +239,7 @@ export class TabsManager {
         e.preventDefault();
         this.cycleTab(e.shiftKey ? -1 : 1);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w" && !e.shiftKey) {
-        if (this.tabs.length > 1) {
+        if (this.tabs.length >= 1) {
           e.preventDefault();
           this.closeTab(this.activeTabId);
         }
@@ -271,9 +300,6 @@ export class TabsManager {
     return this.tabs.find((t) => t.id === this.secondaryTabId);
   }
 
-  /**
-   * 获取当前实际拥有焦点的编辑器视图（支持分屏副视图焦点感知）
-   */
   public getFocusedView(): EditorView | null {
     if (
       this.splitActive &&
@@ -285,9 +311,6 @@ export class TabsManager {
     return this.callbacks.getPrimaryView();
   }
 
-  /**
-   * 获取当前实际拥有焦点的文档标签页（当用户在右侧分屏按 Ctrl+S 时可精准定位副面板所属标签）
-   */
   public getFocusedTab(): DocumentTab | undefined {
     if (
       this.splitActive &&
@@ -319,9 +342,6 @@ export class TabsManager {
     return this.splitActive;
   }
 
-  /**
-   * 同步保存主编辑器的最新 EditorState 与 scrollTop 到当前活动标签
-   */
   public snapshotActiveTabState() {
     const primaryView = this.callbacks.getPrimaryView();
     const activeTab = this.getActiveTab();
@@ -330,9 +350,6 @@ export class TabsManager {
     activeTab.scrollTop = primaryView.scrollDOM.scrollTop;
   }
 
-  /**
-   * 当主编辑器内容发生变更时，更新当前标签脏状态，并在双栏同文档模式下使用增量 Diff 同步至副编辑器
-   */
   public notifyPrimaryDocChanged(content: string, isModified: boolean) {
     const activeTab = this.getActiveTab();
     if (!activeTab) return;
@@ -347,7 +364,6 @@ export class TabsManager {
       this.renderTabs();
     }
 
-    // 若处于分屏模式且右侧副视图正在展示同一标签，实时做最小增量同步（保护副编辑器 Undo 栈与光标偏移）
     if (
       this.splitActive &&
       this.secondaryView &&
@@ -377,9 +393,6 @@ export class TabsManager {
     }
   }
 
-  /**
-   * 打开或激活指定文件路径的标签页（若已打开则直接丝滑切换，保留原有 Undo 栈与滚动位置）
-   */
   public openOrActivateFileTab(
     filePath: string,
     title: string,
@@ -399,7 +412,6 @@ export class TabsManager {
     }
 
     const active = this.getActiveTab();
-    // 若当前活动标签是未修改的空白或初始演示未命名标签，直接原位复用该标签
     if (
       replaceCurrentIfCleanUntitled &&
       active &&
@@ -433,9 +445,6 @@ export class TabsManager {
     return newTab;
   }
 
-  /**
-   * 新建一个空白未命名文档标签页
-   */
   public createNewBlankTab(initialText: string = ""): DocumentTab {
     const primaryView = this.callbacks.getPrimaryView()!;
     this.snapshotActiveTabState();
@@ -502,14 +511,15 @@ export class TabsManager {
     if (idx === -1) return false;
     const tab = this.tabs[idx];
 
-    if (tab.id === this.activeTabId) {
-      this.snapshotActiveTabState();
-    }
+    this.snapshotActiveTabState();
 
     if (tab.isModified) {
       const choice = await this.callbacks.onTabCloseConfirm(tab);
       if (choice === "cancel") return false;
     }
+
+    const currentIdx = this.tabs.findIndex((t) => t.id === tabId);
+    if (currentIdx === -1) return true;
 
     if (this.tabs.length === 1) {
       const primaryView = this.callbacks.getPrimaryView()!;
@@ -525,9 +535,9 @@ export class TabsManager {
       return true;
     }
 
-    this.tabs.splice(idx, 1);
+    this.tabs.splice(currentIdx, 1);
     if (this.activeTabId === tabId) {
-      const nextTab = this.tabs[Math.min(idx, this.tabs.length - 1)];
+      const nextTab = this.tabs[Math.min(currentIdx, this.tabs.length - 1)];
       this.activeTabId = nextTab.id;
       this.applyTabToPrimaryView(nextTab);
       this.callbacks.onActiveTabChanged(nextTab);
@@ -541,6 +551,34 @@ export class TabsManager {
 
     this.renderTabs();
     return true;
+  }
+
+  public async closeOtherTabs(keepTabId: string) {
+    const others = this.tabs.filter((t) => t.id !== keepTabId).map((t) => t.id);
+    for (const id of others) {
+      const ok = await this.closeTab(id);
+      if (!ok) break;
+    }
+  }
+
+  public async closeTabsToRight(fromIndex: number) {
+    const rightIds = this.tabs.slice(fromIndex + 1).map((t) => t.id);
+    for (const id of rightIds) {
+      const ok = await this.closeTab(id);
+      if (!ok) break;
+    }
+  }
+
+  public async closeCleanTabs() {
+    const cleanIds = this.tabs.filter((t) => !t.isModified).map((t) => t.id);
+    if (cleanIds.length === this.tabs.length && this.tabs.length === 1) {
+      await this.closeTab(this.tabs[0].id);
+      return;
+    }
+    for (const id of cleanIds) {
+      if (this.tabs.length <= 1 && !this.tabs[0].filePath && !this.tabs[0].isModified) break;
+      await this.closeTab(id);
+    }
   }
 
   public updateTabSavedMetaById(
@@ -594,9 +632,6 @@ export class TabsManager {
     this.renderTabs();
   }
 
-  /**
-   * 开启或关闭左右分屏对比编辑视图 (Split View)
-   */
   public toggleSplitView(forceState?: boolean, targetSecondaryTabId?: string) {
     this.splitActive = forceState !== undefined ? forceState : !this.splitActive;
 
@@ -652,7 +687,6 @@ export class TabsManager {
           this.renderTabs();
         }
 
-        // 若左右分屏打开的是同一个文档标签，将副编辑器的改动通过最小增量 Diff 实时同步回主编辑器
         const primaryView = this.callbacks.getPrimaryView();
         if (primaryView && this.secondaryTabId === this.activeTabId) {
           const primDoc = primaryView.state.doc.toString();
@@ -685,7 +719,6 @@ export class TabsManager {
       onOpenFile: (filePath) => this.callbacks.onOpenFileRequest(filePath),
     });
 
-    // 为右侧分屏副编辑器完整挂载悬浮气泡工具栏、图片/链接悬浮栏与智能 HTML 转 Markdown 粘贴引擎
     initFloatingToolbars(this.secondaryView, (filePath) =>
       this.callbacks.onOpenFileRequest(filePath)
     );
@@ -696,7 +729,6 @@ export class TabsManager {
       this.splitContainerEl?.classList.add("secondary-pane-focused");
     });
 
-    // 副编辑器滚动时若开启同步滚动，反向联动主编辑器
     this.secondaryView.scrollDOM.addEventListener(
       "scroll",
       () => {
@@ -761,11 +793,123 @@ export class TabsManager {
       .join("");
   }
 
+  /**
+   * 顶部文档标签（如 未命名.md）右键上下文菜单 (Bug #2)
+   */
+  private openTabContextMenu(
+    clientX: number,
+    clientY: number,
+    tab: DocumentTab,
+    tabIndex: number
+  ) {
+    closeTabContextMenu();
+    const mod = formatModKey();
+    const hasOthers = this.tabs.length > 1;
+    const hasRight = tabIndex < this.tabs.length - 1;
+    const hasClean = this.tabs.some((t) => !t.isModified);
+
+    const menu = document.createElement("div");
+    menu.className = "context-menu tab-context-menu";
+    menu.innerHTML = `
+      <div class="context-menu-item" data-act="save-tab">
+        <span>保存${tab.filePath ? "" : "新文档..."}</span>
+        <span class="menu-shortcut">${mod}+S</span>
+      </div>
+      <div class="context-menu-item" data-act="save-as-tab">
+        <span>${tab.filePath ? "另存为 / 重命名..." : "指定文件名保存..."}</span>
+        <span class="menu-shortcut">${mod}+Shift+S</span>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" data-act="split-right">
+        <span>在右侧分屏中打开</span>
+        <span class="menu-shortcut">${mod}+\\</span>
+      </div>
+      <div class="context-menu-item" data-act="open-new-window">
+        <span>在独立新窗口中打开</span>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" data-act="copy-name">
+        <span>复制文件名 (${escapeHtml(tab.title)})</span>
+      </div>
+      ${
+        tab.filePath
+          ? `
+      <div class="context-menu-item" data-act="copy-path">
+        <span>复制文件完整路径</span>
+      </div>
+      <div class="context-menu-item" data-act="reveal-folder">
+        <span>在文件管理器中定位</span>
+      </div>`
+          : ""
+      }
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" data-act="close-this">
+        <span>${this.tabs.length === 1 && !tab.filePath ? "清空并重置当前标签" : "关闭当前标签"}</span>
+        <span class="menu-shortcut">${mod}+W</span>
+      </div>
+      <div class="context-menu-item ${hasOthers ? "" : "disabled"}" data-act="close-others">
+        <span>关闭其他标签</span>
+      </div>
+      <div class="context-menu-item ${hasRight ? "" : "disabled"}" data-act="close-right">
+        <span>关闭右侧全部标签</span>
+      </div>
+      <div class="context-menu-item ${hasClean ? "" : "disabled"}" data-act="close-clean">
+        <span>关闭所有已保存标签</span>
+      </div>
+    `;
+
+    document.body.appendChild(menu);
+    activeTabContextMenu = menu;
+
+    const rect = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8));
+    const top = Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+
+    menu.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const item = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+      if (!item || item.classList.contains("disabled")) return;
+      const act = item.dataset.act;
+      closeTabContextMenu();
+
+      if (act === "save-tab") {
+        if (tab.id !== this.activeTabId) this.activateTab(tab.id);
+        await this.callbacks.onSaveTabRequest?.(tab);
+      } else if (act === "save-as-tab") {
+        if (tab.id !== this.activeTabId) this.activateTab(tab.id);
+        await this.callbacks.onSaveTabAsRequest?.(tab);
+      } else if (act === "split-right") {
+        this.toggleSplitView(true, tab.id);
+      } else if (act === "open-new-window") {
+        await this.callbacks.onOpenInNewWindowRequest?.(tab);
+      } else if (act === "copy-name") {
+        navigator.clipboard.writeText(tab.title).catch(() => {});
+        showToast("已复制文件名", "success");
+      } else if (act === "copy-path" && tab.filePath) {
+        navigator.clipboard.writeText(tab.filePath).catch(() => {});
+        showToast("已复制文件完整路径", "success");
+      } else if (act === "reveal-folder" && tab.filePath) {
+        invoke("reveal_in_folder", { path: tab.filePath }).catch((err) => {
+          showToast(`无法定位文件夹: ${err}`, "error");
+        });
+      } else if (act === "close-this") {
+        await this.closeTab(tab.id);
+      } else if (act === "close-others") {
+        await this.closeOtherTabs(tab.id);
+      } else if (act === "close-right") {
+        await this.closeTabsToRight(tabIndex);
+      } else if (act === "close-clean") {
+        await this.closeCleanTabs();
+      }
+    });
+  }
+
   public renderTabs() {
     const listEl = this.tabsListEl;
     if (!listEl) return;
 
-    // 同步单标签自动隐藏状态
     if (this.tabsBarEl) {
       this.tabsBarEl.classList.toggle(
         "single-tab-only",
@@ -782,7 +926,7 @@ export class TabsManager {
       }`;
       tabEl.dataset.tabId = tab.id;
       tabEl.dataset.index = String(index);
-      tabEl.title = tab.filePath || tab.title;
+      tabEl.title = `${tab.filePath || tab.title}\n右键打开标签操作菜单 · 中键关闭`;
 
       tabEl.innerHTML = `
         <span class="doc-tab-icon">
@@ -811,6 +955,13 @@ export class TabsManager {
         if (tab.id !== this.activeTabId) {
           this.activateTab(tab.id);
         }
+      });
+
+      // 右键弹出标签页上下文菜单 (Bug #2)
+      tabEl.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openTabContextMenu(e.clientX, e.clientY, tab, index);
       });
 
       // 鼠标中键关闭标签
