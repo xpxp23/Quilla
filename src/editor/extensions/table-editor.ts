@@ -8,8 +8,8 @@ import {
   getDocStructureFromState,
   isTableDelimiter,
   TableBlock,
-  parseBalancedLinksAndImages,
 } from "./doc-structure";
+import { parseInlineAST, renderInlineASTSync } from "../markdown-ast-renderer";
 
 export { isTableDelimiter };
 export type { TableBlock };
@@ -111,104 +111,8 @@ function sanitizeSafeHref(url: string): string {
  */
 export function formatMarkdownToHTML(text: string): string {
   if (!text) return "";
-
-  const placeholders: string[] = [];
-  const pushPlaceholder = (htmlSnippet: string): string => {
-    const id = `\u0000PH_${placeholders.length}_\u0000`;
-    placeholders.push(htmlSnippet);
-    return id;
-  };
-
-  // 0. 预处理 <br> 标签为占位符
-  let working = text.replace(/<br\s*\/?>/gi, () => pushPlaceholder("<br>"));
-
-  // 0.5 优先提取平衡括号超链接 [text](url)
-  const balancedLinks = parseBalancedLinksAndImages(working, 0);
-  if (balancedLinks.length > 0) {
-    let rebuilt = "";
-    let lastIdx = 0;
-    for (const lnk of balancedLinks) {
-      if (lnk.isImage) continue;
-      rebuilt += working.slice(lastIdx, lnk.start);
-      const safeUrl = sanitizeSafeHref(lnk.url);
-      const safeLabel = lnk.label
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      rebuilt += pushPlaceholder(
-        `<a href="${safeUrl}" class="cm-link tbl-inline-link" data-href="${safeUrl}">${safeLabel}</a>`
-      );
-      lastIdx = lnk.end;
-    }
-    rebuilt += working.slice(lastIdx);
-    working = rebuilt;
-  }
-
-  // 1. 转义 HTML 特殊字符
-  working = working
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-
-  // 2. 优先提取行内代码 `code`
-  working = working.replace(/`([^`\n]+)`/g, (_m, codeContent) =>
-    pushPlaceholder(`<code>${codeContent}</code>`)
-  );
-
-  // 3. 优先提取行内数学公式 $tex$
-  working = working.replace(
-    /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g,
-    (_m, tex) => {
-      const rawTex = tex
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#039;/g, "'");
-      const safeAttr = rawTex.replace(/"/g, "&quot;");
-      try {
-        const rendered = katex.renderToString(rawTex, {
-          displayMode: false,
-          throwOnError: false,
-          output: "html",
-        });
-        return pushPlaceholder(
-          `<span class="tbl-inline-math" contenteditable="false" data-tex="${safeAttr}">${rendered}</span>`
-        );
-      } catch {
-        return pushPlaceholder(
-          `<span class="tbl-inline-math" contenteditable="false" data-tex="${safeAttr}">$${tex}$</span>`
-        );
-      }
-    }
-  );
-
-  // 4. 加粗斜体 ***text*** 或 ___text___
-  working = working.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>");
-  working = working.replace(/___([^_]+)___/g, "<strong><em>$1</em></strong>");
-
-  // 5. 加粗 **text** 或 __text__
-  working = working.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  working = working.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-
-  // 6. 单星号斜体 *text* 或 单下划线斜体 _text_
-  working = working.replace(/(?<!\*)\*([^*\s][^*]*?)\*(?!\*)/g, "<em>$1</em>");
-  working = working.replace(/(?<!_)_([^_\s][^_]*?)_(?!_)/g, "<em>$1</em>");
-
-  // 7. 删除线 ~~text~~ 与 高亮 ==text==
-  working = working.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-  working = working.replace(/==([^=]+)==/g, "<mark>$1</mark>");
-
-  // 8. 上下标
-  working = working.replace(/(?<!~)~([^~\s][^~]*?)~(?!~)/g, "<sub>$1</sub>");
-  working = working.replace(/\^([^\^\s][^\^]*?)\^/g, "<sup>$1</sup>");
-
-  // 9. 还原所有保护占位符
-  working = working.replace(/\u0000PH_(\d+)_\u0000/g, (_m, idx) => placeholders[Number(idx)] || "");
-
-  return working;
+  const ast = parseInlineAST(text);
+  return renderInlineASTSync(ast, { mode: "table-cell" });
 }
 
 /**
@@ -235,6 +139,9 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
 
       if (el.classList.contains("tbl-inline-math") && el.dataset.tex) {
         return `$${el.dataset.tex}$`;
+      }
+      if (el.classList.contains("cm-wikilink") && el.dataset.raw) {
+        return el.dataset.raw;
       }
 
       if (tagName === "BR") {

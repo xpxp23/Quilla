@@ -567,8 +567,16 @@ export function handleListEnter(view: EditorView): boolean {
     }
 
     const fallbackLine = quotePrefix ? quotePrefix.trimEnd() + " " : "";
+    const prevExpected = computeExpectedOrderedNumber(doc, line.number, quotePrefix, 0);
+    const renumberChanges = buildSubsequentRenumberChanges(
+      doc,
+      line.number + 1,
+      quotePrefix,
+      0,
+      prevExpected
+    );
     view.dispatch({
-      changes: { from: line.from, to: line.to, insert: fallbackLine },
+      changes: [{ from: line.from, to: line.to, insert: fallbackLine }, ...renumberChanges],
       selection: { anchor: line.from + fallbackLine.length },
       scrollIntoView: true,
       userEvent: "input.enter",
@@ -580,7 +588,7 @@ export function handleListEnter(view: EditorView): boolean {
   const taskMatch = restText.match(/^(\s*)([-*+]\s+\[[ xX]\]\s*)(.*)$/);
   if (taskMatch && (taskMatch[2].endsWith(" ") || taskMatch[3].trim() === "")) {
     const rawIndent = taskMatch[1].replace(/\t/g, "  ");
-    const alignedIndent = " ".repeat(rawIndent.length - (rawIndent.length % 2));
+    const alignedIndent = rawIndent;
     const prefix = taskMatch[2];
     const content = taskMatch[3];
     const prefixEndPos = line.from + quoteLen + taskMatch[1].length + prefix.length;
@@ -618,7 +626,7 @@ export function handleListEnter(view: EditorView): boolean {
   const orderedMatch = restText.match(/^(\s*)(\d+)(\.\s*)(.*)$/);
   if (orderedMatch && (orderedMatch[3].length >= 2 || orderedMatch[4].trim() === "")) {
     const rawIndent = orderedMatch[1].replace(/\t/g, "  ");
-    const alignedIndent = " ".repeat(rawIndent.length - (rawIndent.length % 2));
+    const alignedIndent = rawIndent;
     const num = parseInt(orderedMatch[2], 10);
     const dotSpace = orderedMatch[3];
     const content = orderedMatch[4];
@@ -673,7 +681,7 @@ export function handleListEnter(view: EditorView): boolean {
     (bulletMatch[3].length >= 1 || bulletMatch[4].trim() === "")
   ) {
     const rawIndent = bulletMatch[1].replace(/\t/g, "  ");
-    const alignedIndent = " ".repeat(rawIndent.length - (rawIndent.length % 2));
+    const alignedIndent = rawIndent;
     const bullet = bulletMatch[2];
     const space = bulletMatch[3];
     const content = bulletMatch[4];
@@ -745,12 +753,13 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 5. 普通段落行若意外带有行首缩进空格，拦截默认 insertNewlineAndIndent 防止将行首空格传染给后续所有段落
+  // 5. 普通段落行若意外带有行首缩进空格，拦截默认 insertNewlineAndIndent 防止将行首空格传染给后续所有段落；
+  // 若整行仅有残留缩进空格（如列表退格后残留），按回车仅清除残留空格，绝不多换一行
   if (/^[ \t]+/.test(text)) {
     if (text.trim() === "") {
       view.dispatch({
-        changes: { from: line.from, to: line.to, insert: "\n" },
-        selection: { anchor: line.from + 1 },
+        changes: { from: line.from, to: line.to, insert: "" },
+        selection: { anchor: line.from },
         scrollIntoView: true,
         userEvent: "input.enter",
       });
@@ -950,9 +959,16 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       return true;
     }
 
+    let stepSpaces = "  ";
+    if (!isShift && line.number > 1) {
+      const prevSpec = findParentListSpec(doc, line.number, quotePrefix, oldIndent.length + 1);
+      if (prevSpec.kind === "ordered" && prevSpec.indent.length === oldIndent.length) {
+        stepSpaces = "   ";
+      }
+    }
     const newIndent = isShift
       ? findParentListSpec(doc, line.number, quotePrefix, oldIndent.length).indent
-      : `${" ".repeat(oldIndent.length - (oldIndent.length % 2))}  `;
+      : `${oldIndent}${stepSpaces}`;
 
     const newNum = computeExpectedOrderedNumber(
       doc,
@@ -1017,23 +1033,34 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
   const unorderedMatch = restText.match(/^(\s*)([-*+]\s+(?:\[[ xX]\]\s+)?)/);
   if (unorderedMatch) {
     const insertPos = line.from + quoteLen;
+    const oldIndent = unorderedMatch[1].replace(/\t/g, "  ");
     const oldIndentLen = unorderedMatch[1].length;
     const markerLen = unorderedMatch[2].length;
     if (isShift) {
-      const rem = restText.startsWith("  ") ? 2 : restText.startsWith(" ") ? 1 : 0;
-      if (rem > 0) {
-        const minRightPos = insertPos + (oldIndentLen - rem) + markerLen;
+      if (oldIndentLen > 0) {
+        const parentSpec = findParentListSpec(doc, line.number, quotePrefix, oldIndent.length);
+        const newIndent = parentSpec.indent;
+        const delta = oldIndentLen - newIndent.length;
+        const minRightPos = insertPos + newIndent.length + markerLen;
         view.dispatch({
-          changes: { from: insertPos, to: insertPos + rem, insert: "" },
-          selection: { anchor: Math.max(minRightPos, selection.head - rem) },
+          changes: { from: insertPos, to: insertPos + oldIndentLen, insert: newIndent },
+          selection: { anchor: Math.max(minRightPos, selection.head - delta) },
         });
       }
       return true;
     } else {
-      const minRightPos = insertPos + oldIndentLen + 2 + markerLen;
+      let stepSpaces = "  ";
+      if (line.number > 1) {
+        const prevSpec = findParentListSpec(doc, line.number, quotePrefix, oldIndent.length + 1);
+        if (prevSpec.kind === "ordered" && prevSpec.indent.length === oldIndent.length) {
+          stepSpaces = "   ";
+        }
+      }
+      const addLen = stepSpaces.length;
+      const minRightPos = insertPos + oldIndentLen + addLen + markerLen;
       view.dispatch({
-        changes: { from: insertPos, insert: "  " },
-        selection: { anchor: Math.max(minRightPos, selection.head + 2) },
+        changes: { from: insertPos, insert: stepSpaces },
+        selection: { anchor: Math.max(minRightPos, selection.head + addLen) },
       });
       return true;
     }

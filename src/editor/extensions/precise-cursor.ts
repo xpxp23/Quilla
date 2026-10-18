@@ -71,13 +71,20 @@ export function getExactPosAtCoords(
       }
     }
 
-    if (node && contentDOM.contains(node)) {
+    if (node && node !== contentDOM && contentDOM.contains(node)) {
       const parentEl =
         node.nodeType === Node.ELEMENT_NODE
           ? (node as HTMLElement)
           : node.parentElement;
+      const hitLineEl = parentEl?.closest(".cm-line") as HTMLElement | null;
+      const lineRect = hitLineEl?.getBoundingClientRect();
+      // 校验命中行在垂直方向确实覆盖当前 y 坐标（容差 ±10px），严防行间大间距处 caretRangeFromPoint 跨行跳变
+      const isVerticallyAligned =
+        !lineRect || (y >= lineRect.top - 10 && y <= lineRect.bottom + 10);
+
       // 避免把装饰 Widget 内部的虚拟文本节点映射成行首位置导致跳闪
       if (
+        isVerticallyAligned &&
         parentEl &&
         !parentEl.closest(
           ".cm-code-header, .cm-code-expand-footer, .cm-heading-fold-badge, .cm-callout-header, .cm-hr-widget"

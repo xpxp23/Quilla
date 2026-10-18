@@ -565,12 +565,110 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
   };
 }
 
+function isStructuralLineText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (
+    t.startsWith("#") ||
+    t.startsWith(">") ||
+    t.startsWith("```") ||
+    t.startsWith("~~~") ||
+    t.startsWith("$$") ||
+    t.includes("|") ||
+    t === "---" ||
+    t === "..."
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export const docStructureField = StateField.define<DocStructure>({
   create(state) {
     return buildDocStructure(state.doc, state);
   },
   update(value, tr) {
     if (!tr.docChanged) return value;
+
+    // 增量快速路径：若行数未变且单行普通正文打字未触及任何块级结构或块级定界符，仅通过 mapPos O(K) 映射偏移量
+    if (tr.startState.doc.lines === tr.state.doc.lines) {
+      let canFastMap = true;
+      tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        if (!canFastMap) return;
+        const lineAStart = tr.startState.doc.lineAt(fromA);
+        const lineAEnd = tr.startState.doc.lineAt(toA);
+        const lineBStart = tr.state.doc.lineAt(fromB);
+        const lineBEnd = tr.state.doc.lineAt(toB);
+        if (
+          lineAStart.number !== lineAEnd.number ||
+          lineBStart.number !== lineBEnd.number ||
+          lineAStart.number !== lineBStart.number
+        ) {
+          canFastMap = false;
+          return;
+        }
+        const ln = lineAStart.number;
+        if (ln <= Math.max(3, value.frontMatterEndLine + 1)) {
+          canFastMap = false;
+          return;
+        }
+        if (
+          value.codeLineSet.has(ln) ||
+          value.headings.some((h) => h.line === ln) ||
+          value.tables.some((tb) => ln >= tb.startLine - 1 && ln <= tb.endLine + 1) ||
+          value.mathBlocks.some((mb) => ln >= mb.startLine && ln <= mb.endLine) ||
+          value.mermaidBlocks.some((mb) => ln >= mb.startLine && ln <= mb.endLine) ||
+          value.callouts.some((cb) => ln >= cb.startLine - 1 && ln <= cb.endLine + 1)
+        ) {
+          canFastMap = false;
+          return;
+        }
+        if (
+          isStructuralLineText(lineAStart.text) ||
+          isStructuralLineText(lineBStart.text)
+        ) {
+          canFastMap = false;
+        }
+      });
+
+      if (canFastMap) {
+        return {
+          ...value,
+          mermaidBlocks:
+            value.mermaidBlocks.length === 0
+              ? value.mermaidBlocks
+              : value.mermaidBlocks.map((m) => ({
+                  ...m,
+                  from: tr.changes.mapPos(m.from),
+                  to: tr.changes.mapPos(m.to),
+                })),
+          mathBlocks:
+            value.mathBlocks.length === 0
+              ? value.mathBlocks
+              : value.mathBlocks.map((m) => ({
+                  ...m,
+                  from: tr.changes.mapPos(m.from),
+                  to: tr.changes.mapPos(m.to),
+                })),
+          tables:
+            value.tables.length === 0
+              ? value.tables
+              : value.tables.map((t) => ({
+                  ...t,
+                  from: tr.changes.mapPos(t.from),
+                  to: tr.changes.mapPos(t.to),
+                })),
+          headings:
+            value.headings.length === 0
+              ? value.headings
+              : value.headings.map((h) => ({
+                  ...h,
+                  from: tr.changes.mapPos(h.from),
+                })),
+        };
+      }
+    }
+
     return buildDocStructure(tr.state.doc, tr.state);
   },
 });

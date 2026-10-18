@@ -95,6 +95,8 @@ pub fn run() {
             commands::select_save_file_path,
             commands::select_export_html_path,
             commands::select_export_word_path,
+            commands::select_export_pdf_path,
+            commands::export_pdf_document,
             commands::select_save_image_path,
             commands::select_open_file_path,
             commands::create_new_window,

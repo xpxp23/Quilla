@@ -70,6 +70,9 @@ impl SafeIO {
         }
 
         if path.exists() {
+            if let Ok(orig_meta) = fs::metadata(path) {
+                let _ = fs::set_permissions(&tmp_path, orig_meta.permissions());
+            }
             let backup_path = parent.join(format!(".{}.bak", file_name));
             let _ = fs::rename(path, &backup_path);
             if let Err(_e) = fs::rename(&tmp_path, path) {

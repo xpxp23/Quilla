@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 
 #[derive(Default)]
 pub struct AppState {
@@ -67,6 +67,20 @@ pub fn save_file_content(
         buf.set_text(&content);
         buf.mark_clean();
     }
+
+    #[derive(Serialize, Clone)]
+    struct CrossWindowSavePayload {
+        path: String,
+        #[serde(rename = "sourceWindow")]
+        source_window: String,
+    }
+    let _ = window.app_handle().emit(
+        "quilla-cross-window-file-saved",
+        CrossWindowSavePayload {
+            path,
+            source_window: window.label().to_string(),
+        },
+    );
     Ok(())
 }
 
@@ -419,7 +433,7 @@ pub fn search_backlinks(
 }
 
 #[tauri::command]
-pub fn select_workspace_folder(
+pub async fn select_workspace_folder(
     window: tauri::Window,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -447,7 +461,7 @@ pub fn select_workspace_folder(
 }
 
 #[tauri::command]
-pub fn select_save_file_path(default_name: Option<String>) -> Result<Option<String>, String> {
+pub async fn select_save_file_path(default_name: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
         .set_title("保存 Markdown 文档")
         .add_filter("Markdown 文件 (*.md)", &["md", "markdown"])
@@ -463,7 +477,7 @@ pub fn select_save_file_path(default_name: Option<String>) -> Result<Option<Stri
 }
 
 #[tauri::command]
-pub fn select_export_html_path(default_name: Option<String>) -> Result<Option<String>, String> {
+pub async fn select_export_html_path(default_name: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
         .set_title("导出 HTML 网页")
         .add_filter("HTML 网页 (*.html)", &["html", "htm"])
@@ -478,7 +492,7 @@ pub fn select_export_html_path(default_name: Option<String>) -> Result<Option<St
 }
 
 #[tauri::command]
-pub fn select_export_word_path(default_name: Option<String>) -> Result<Option<String>, String> {
+pub async fn select_export_word_path(default_name: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
         .set_title("导出为 Word 文档 (.doc)")
         .add_filter("Word 文档 (*.doc)", &["doc"])
@@ -493,7 +507,119 @@ pub fn select_export_word_path(default_name: Option<String>) -> Result<Option<St
 }
 
 #[tauri::command]
-pub fn select_save_image_path(default_name: Option<String>) -> Result<Option<String>, String> {
+pub async fn select_export_pdf_path(default_name: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("导出为出版级矢量 PDF 文档 (.pdf)")
+        .add_filter("PDF 文档 (*.pdf)", &["pdf"])
+        .add_filter("所有文件 (*.*)", &["*"]);
+
+    if let Some(name) = default_name {
+        dialog = dialog.set_file_name(&name);
+    }
+
+    let file = dialog.save_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub async fn export_pdf_document(
+    path: String,
+    html_content: String,
+    page_size: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state.workspace_watcher.mark_self_save();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let temp_html_path = std::env::temp_dir().join(format!("quilla_pdf_export_{}.html", timestamp));
+    fs::write(&temp_html_path, html_content.as_bytes())
+        .map_err(|e| format!("写入临时排版文件失败: {}", e))?;
+
+    let target_pdf = PathBuf::from(&path);
+    if let Some(parent) = target_pdf.parent() {
+        if !parent.exists() {
+            let _ = fs::create_dir_all(parent);
+        }
+    }
+
+    let mut candidate_bins: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        for p in [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ] {
+            let pb = PathBuf::from(p);
+            if pb.exists() {
+                candidate_bins.push(pb);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        for p in [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ] {
+            let pb = PathBuf::from(p);
+            if pb.exists() {
+                candidate_bins.push(pb);
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for bin_name in [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/microsoft-edge",
+        ] {
+            let pb = PathBuf::from(bin_name);
+            if pb.exists() {
+                candidate_bins.push(pb);
+            }
+        }
+    }
+
+    let _page_sz = page_size.unwrap_or_else(|| "A4".to_string());
+    let mut last_err = String::from("未检测到系统原生 Chromium/Edge 矢量渲染组件");
+
+    for bin in candidate_bins {
+        let mut cmd = std::process::Command::new(&bin);
+        cmd.arg("--headless=new")
+            .arg("--disable-gpu")
+            .arg("--no-sandbox")
+            .arg("--no-pdf-header-footer")
+            .arg("--run-all-compositor-stages-before-draw")
+            .arg(format!("--print-to-pdf={}", target_pdf.to_string_lossy()))
+            .arg(temp_html_path.to_string_lossy().to_string());
+
+        match cmd.status() {
+            Ok(status) if status.success() && target_pdf.exists() => {
+                let _ = fs::remove_file(&temp_html_path);
+                return Ok(path);
+            }
+            Ok(status) => {
+                last_err = format!("PDF 渲染进程退出码: {}", status);
+            }
+            Err(e) => {
+                last_err = format!("启动 PDF 渲染引擎失败: {}", e);
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&temp_html_path);
+    Err(last_err)
+}
+
+#[tauri::command]
+pub async fn select_save_image_path(default_name: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new()
         .set_title("选择长图卡片保存位置")
         .add_filter("PNG 高清长图 (*.png)", &["png"])
@@ -509,7 +635,7 @@ pub fn select_save_image_path(default_name: Option<String>) -> Result<Option<Str
 }
 
 #[tauri::command]
-pub fn select_open_file_path() -> Result<Option<String>, String> {
+pub async fn select_open_file_path() -> Result<Option<String>, String> {
     let file = rfd::FileDialog::new()
         .set_title("打开 Markdown 文档")
         .add_filter("Markdown 文件 (*.md)", &["md", "markdown", "txt"])
@@ -908,12 +1034,13 @@ fn encode_uri_component(input: &str) -> String {
 }
 
 #[tauri::command]
-pub fn create_new_window(
+pub async fn create_new_window(
     app: tauri::AppHandle,
     window: tauri::Window,
     state: State<'_, AppState>,
     file_path: Option<String>,
-) -> Result<(), String> {
+    transfer_id: Option<String>,
+) -> Result<String, String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -927,7 +1054,10 @@ pub fn create_new_window(
         }
     }
 
-    let url = if let Some(ref path) = file_path {
+    let url = if let Some(ref tid) = transfer_id {
+        let encoded_tid = encode_uri_component(tid);
+        tauri::WebviewUrl::App(format!("index.html?transfer={}", encoded_tid).into())
+    } else if let Some(ref path) = file_path {
         let normalized = path.replace('\\', "/");
         let encoded = encode_uri_component(&normalized);
         tauri::WebviewUrl::App(format!("index.html?open={}", encoded).into())
@@ -945,7 +1075,7 @@ pub fn create_new_window(
         .build()
         .is_ok()
     {
-        return Ok(());
+        return Ok(label);
     }
 
     if let Ok(current_exe) = std::env::current_exe() {
@@ -958,7 +1088,7 @@ pub fn create_new_window(
         cmd.spawn().map_err(|e| format!("创建新窗口失败: {}", e))?;
     }
 
-    Ok(())
+    Ok(label)
 }
 
 #[tauri::command]

@@ -9,6 +9,11 @@ import {
   isFocusModeActive,
   toggleFocusMode,
 } from "../editor";
+import {
+  TabFoldSnapshot,
+  snapshotFoldState,
+  restoreFoldState,
+} from "../editor/extensions/live-preview";
 import { initFloatingToolbars } from "../editor/extensions/floating-toolbars";
 import { initSmartPaste } from "../editor/extensions/smart-paste";
 import { showToast } from "./save-dialog";
@@ -22,6 +27,7 @@ export interface DocumentTab {
   isModified: boolean;
   editorState: EditorState;
   scrollTop: number;
+  foldSnapshot?: TabFoldSnapshot;
 }
 
 export interface TabsManagerCallbacks {
@@ -98,7 +104,7 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.6
+ * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.7
  * - 新增顶部标签右键菜单（保存、另存为/重命名、在右侧分屏打开、独立窗口打开、复制路径/文件名、定位文件夹、关闭其他/右侧/已保存标签）(Bug #2)
  * - 修复非激活脏标签关闭时的保存逻辑 (Homologous Bug #9)
  */
@@ -345,9 +351,17 @@ export class TabsManager {
   public snapshotActiveTabState() {
     const primaryView = this.callbacks.getPrimaryView();
     const activeTab = this.getActiveTab();
-    if (!primaryView || !activeTab) return;
-    activeTab.editorState = primaryView.state;
-    activeTab.scrollTop = primaryView.scrollDOM.scrollTop;
+    if (primaryView && activeTab) {
+      activeTab.editorState = primaryView.state;
+      activeTab.scrollTop = primaryView.scrollDOM.scrollTop;
+      activeTab.foldSnapshot = snapshotFoldState();
+    }
+    if (this.splitActive && this.secondaryView && this.secondaryTabId) {
+      const secTab = this.getSecondaryTab();
+      if (secTab && secTab.id !== activeTab?.id) {
+        secTab.editorState = this.secondaryView.state;
+      }
+    }
   }
 
   public notifyPrimaryDocChanged(content: string, isModified: boolean) {
@@ -471,6 +485,10 @@ export class TabsManager {
     const target = this.tabs.find((t) => t.id === tabId);
     if (!target) return;
 
+    // 激活主面板标签时始终将焦点归位至 primary，防止之前点击过右侧分屏导致保存命令误存副面板
+    this.lastFocusedPane = "primary";
+    this.splitContainerEl?.classList.remove("secondary-pane-focused");
+
     if (this.activeTabId && this.activeTabId !== tabId) {
       this.snapshotActiveTabState();
     }
@@ -488,6 +506,7 @@ export class TabsManager {
     const wasTW = isTypewriterModeActive(primaryView);
     const wasFC = isFocusModeActive(primaryView);
 
+    restoreFoldState(tab.foldSnapshot);
     primaryView.setState(tab.editorState);
 
     if (wasTW) toggleTypewriterMode(primaryView, true);
@@ -551,6 +570,85 @@ export class TabsManager {
 
     this.renderTabs();
     return true;
+  }
+
+  /**
+   * 当标签页已无损迁移至独立新窗口后，从当前窗口静默剥离该标签（不触发二次未保存弹窗）
+   */
+  public detachTabAfterTransfer(tabId: string) {
+    const currentIdx = this.tabs.findIndex((t) => t.id === tabId);
+    if (currentIdx === -1) return;
+
+    if (this.tabs.length === 1) {
+      const primaryView = this.callbacks.getPrimaryView();
+      if (!primaryView) return;
+      const tab = this.tabs[0];
+      tab.filePath = null;
+      tab.title = "未命名.md";
+      tab.savedContent = "";
+      tab.isModified = false;
+      tab.scrollTop = 0;
+      tab.foldSnapshot = undefined;
+      tab.editorState = createEditorStateForView(primaryView, "");
+      this.applyTabToPrimaryView(tab);
+      this.renderTabs();
+      this.callbacks.onActiveTabChanged(tab);
+      return;
+    }
+
+    this.tabs.splice(currentIdx, 1);
+    if (this.activeTabId === tabId) {
+      const nextTab = this.tabs[Math.min(currentIdx, this.tabs.length - 1)];
+      this.activeTabId = nextTab.id;
+      this.applyTabToPrimaryView(nextTab);
+      this.callbacks.onActiveTabChanged(nextTab);
+    }
+
+    if (this.secondaryTabId === tabId) {
+      const fallback =
+        this.tabs.find((t) => t.id !== this.activeTabId) || this.tabs[0];
+      this.setSecondaryTab(fallback.id);
+    }
+
+    this.renderTabs();
+  }
+
+  /**
+   * 跨窗口状态总线同步：当其他窗口保存了某个文件时，自动更新当前窗口内同路径标签页的基准内容
+   */
+  public syncExternalFileSaved(filePath: string, newContent: string) {
+    const primaryView = this.callbacks.getPrimaryView();
+    if (!primaryView) return;
+    const normTarget = filePath.replace(/\\/g, "/").toLowerCase();
+
+    for (const tab of this.tabs) {
+      if (!tab.filePath || tab.filePath.replace(/\\/g, "/").toLowerCase() !== normTarget) {
+        continue;
+      }
+      tab.savedContent = newContent;
+      if (!tab.isModified) {
+        tab.editorState = createEditorStateForView(primaryView, newContent);
+        if (tab.id === this.activeTabId) {
+          const prevScroll = primaryView.scrollDOM.scrollTop;
+          primaryView.setState(tab.editorState);
+          primaryView.scrollDOM.scrollTop = prevScroll;
+        }
+        if (this.splitActive && this.secondaryView && tab.id === this.secondaryTabId) {
+          const prevSecScroll = this.secondaryView.scrollDOM.scrollTop;
+          this.secondaryView.setState(
+            createEditorStateForView(this.secondaryView, newContent)
+          );
+          this.secondaryView.scrollDOM.scrollTop = prevSecScroll;
+        }
+      } else {
+        const curDoc =
+          tab.id === this.activeTabId
+            ? primaryView.state.doc.toString()
+            : tab.editorState.doc.toString();
+        tab.isModified = curDoc !== newContent;
+      }
+    }
+    this.renderTabs();
   }
 
   public async closeOtherTabs(keepTabId: string) {
@@ -883,6 +981,7 @@ export class TabsManager {
       } else if (act === "split-right") {
         this.toggleSplitView(true, tab.id);
       } else if (act === "open-new-window") {
+        this.snapshotActiveTabState();
         await this.callbacks.onOpenInNewWindowRequest?.(tab);
       } else if (act === "copy-name") {
         navigator.clipboard.writeText(tab.title).catch(() => {});

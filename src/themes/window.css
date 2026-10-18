@@ -912,16 +912,25 @@ body.auto-hide-single-tab .doc-tabs-bar.single-tab-only {
 }
 
 .doc-tab-dirty-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background-color: var(--unsaved-color, #d97706);
-  display: none;
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.16);
+  opacity: 0;
+  transform: scale(0.6);
+  width: 0;
+  margin-right: -4px;
+  pointer-events: none;
   flex-shrink: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease, width 0.15s ease, margin 0.15s ease;
 }
 
 .doc-tab-item.is-dirty .doc-tab-dirty-dot {
-  display: inline-block;
+  opacity: 1;
+  transform: scale(1);
+  width: 7px;
+  margin-right: 0;
 }
 
 .doc-tab-split-open,
@@ -3164,6 +3173,13 @@ body.theme-night .ty-recovery-banner {
     display: none !important;
   }
 
+  *,
+  html,
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
   html,
   body {
     position: static !important;
@@ -3174,6 +3190,15 @@ body.theme-night .ty-recovery-banner {
     padding: 0 !important;
     background: #ffffff !important;
     color: #1a1a1a !important;
+  }
+
+  #quilla-print-mount .exported-code-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    border: 1px solid #d0d7de !important;
+    border-radius: 6px !important;
+    background-color: #f6f8fa !important;
+    margin: 10pt 0 !important;
   }
 
   #quilla-print-mount {

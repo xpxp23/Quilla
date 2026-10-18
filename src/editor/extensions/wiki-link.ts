@@ -137,7 +137,7 @@ export function clearTransclusionCache() {
  */
 export async function fetchTransclusionSectionContent(
   targetDoc: string,
-  heading: string,
+  heading?: string,
   currentDocFallback?: string
 ): Promise<{ found: boolean; filePath: string | null; content: string }> {
   if (!workspaceProvider) {

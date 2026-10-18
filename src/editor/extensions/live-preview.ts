@@ -149,12 +149,64 @@ export function setActiveDocumentPath(path: string | null) {
   activeDocumentPath = path;
 }
 
-export function clearImageCache() {
-  imageBase64Cache.clear();
+export interface TabFoldSnapshot {
+  foldedHeadings: string[];
+  collapsedCodes: string[];
+  wrappedCodes: string[];
+  expandedMaxCodes: string[];
+}
+
+export function snapshotFoldState(): TabFoldSnapshot {
+  return {
+    foldedHeadings: Array.from(foldedHeadingKeys),
+    collapsedCodes: Array.from(collapsedCodeBlocks),
+    wrappedCodes: Array.from(wrappedCodeBlocks),
+    expandedMaxCodes: Array.from(expandedMaxHeightCodeBlocks),
+  };
+}
+
+export function restoreFoldState(snapshot?: TabFoldSnapshot | null) {
   foldedHeadingKeys.clear();
   collapsedCodeBlocks.clear();
   wrappedCodeBlocks.clear();
   expandedMaxHeightCodeBlocks.clear();
+  if (!snapshot) return;
+  snapshot.foldedHeadings.forEach((k) => foldedHeadingKeys.add(k));
+  snapshot.collapsedCodes.forEach((k) => collapsedCodeBlocks.add(k));
+  snapshot.wrappedCodes.forEach((k) => wrappedCodeBlocks.add(k));
+  snapshot.expandedMaxCodes.forEach((k) => expandedMaxHeightCodeBlocks.add(k));
+}
+
+export function getCodeBlockVisibleBounds(
+  state: EditorState,
+  codeRangeIdx: number
+): { isCollapsed: boolean; isMaxExpanded: boolean; lastVisibleCodeLine: number } {
+  const struct = getDocStructureFromState(state);
+  const cr = struct.codeRanges[codeRangeIdx];
+  if (!cr) {
+    return { isCollapsed: false, isMaxExpanded: true, lastVisibleCodeLine: 1 };
+  }
+  const keys = buildStableCodeBlockKeys(struct.codeRanges);
+  const key = keys[codeRangeIdx] || `${cr.startLine}`;
+  const isCollapsed = collapsedCodeBlocks.has(key);
+  const isMaxExpanded = expandedMaxHeightCodeBlocks.has(key);
+  const codeLinesCount = Math.max(0, cr.endLine - cr.startLine - 1);
+  const isLong = codeLinesCount > 28;
+  const lastVisibleCodeLine =
+    !isLong || isMaxExpanded
+      ? Math.max(cr.startLine + 1, cr.endLine - 1)
+      : Math.min(cr.startLine + 28, Math.max(cr.startLine + 1, cr.endLine - 1));
+  return { isCollapsed, isMaxExpanded, lastVisibleCodeLine };
+}
+
+export function clearImageCache(clearFolds: boolean = false) {
+  imageBase64Cache.clear();
+  if (clearFolds) {
+    foldedHeadingKeys.clear();
+    collapsedCodeBlocks.clear();
+    wrappedCodeBlocks.clear();
+    expandedMaxHeightCodeBlocks.clear();
+  }
 }
 
 export function getImageBase64FromCache(key: string): string | undefined {
@@ -2197,9 +2249,13 @@ function buildDecorations(view: EditorView): DecorationSet {
         const isCodeWrapped = wrappedCodeBlocks.has(stableKey);
         const codeLinesCount = Math.max(0, codeRange.endLine - codeRange.startLine - 1);
         const isLongBlock = codeLinesCount > CODE_MAX_VISIBLE_LINES;
-        const isMaxExpanded =
-          expandedMaxHeightCodeBlocks.has(stableKey) ||
-          (cursorLine > codeRange.startLine && cursorLine < codeRange.endLine);
+        if (
+          cursorLine > codeRange.startLine + CODE_MAX_VISIBLE_LINES &&
+          cursorLine < codeRange.endLine
+        ) {
+          expandedMaxHeightCodeBlocks.add(stableKey);
+        }
+        const isMaxExpanded = expandedMaxHeightCodeBlocks.has(stableKey);
 
         if (lineNum === codeRange.startLine) {
           const isEditingOpeningFence = isCaretOnly && cursorLine === codeRange.startLine;
@@ -2530,12 +2586,20 @@ function buildDecorations(view: EditorView): DecorationSet {
 
         if (tok.type === "task" || tok.type === "bullet" || tok.type === "ordered_marker") {
           const indentSpaces: number = tok.data.indentSpaces || 0;
-          const level = Math.min(4, Math.floor(indentSpaces / 2) + 1);
+          // 兼容 2 空格无序子列表与 3 空格有序子列表缩进层级计算
+          const level =
+            indentSpaces === 0
+              ? 1
+              : Math.min(4, Math.max(2, Math.round(indentSpaces / 2.5) + 1));
           const lineCls =
             tok.type === "task"
               ? `cm-list-item cm-task-list-item cm-list-level-${level}`
               : `cm-list-item cm-list-level-${level}`;
           addDeco(line.from, line.from, Decoration.line({ class: lineCls }));
+
+          // 当光标停留在列表标记末尾空格之后（即 cursorHead === e，例如刚按下回车生成新列表行时），
+          // 保持渲染圆点/有序编号/任务复选框 Widget，仅当光标真正进入标记字符内部 (s <= cursorHead < e) 时才展开源码
+          const isCursorInMarker = isCaretOnly && cursorHead >= s && cursorHead < e;
 
           if (indentSpaces > 0) {
             const indentFrom = s - indentSpaces;
@@ -2548,7 +2612,7 @@ function buildDecorations(view: EditorView): DecorationSet {
           }
 
           if (tok.type === "task") {
-            if (!isCursorInside) {
+            if (!isCursorInMarker) {
               addDeco(
                 s,
                 e,
@@ -2556,9 +2620,11 @@ function buildDecorations(view: EditorView): DecorationSet {
                   widget: new TaskWidget(tok.data.isChecked, line.from + tok.data.checkPos),
                 })
               );
+            } else {
+              addDeco(s, e, Decoration.mark({ class: "cm-md-delimiter" }));
             }
           } else if (tok.type === "bullet") {
-            if (!isCursorInside) {
+            if (!isCursorInMarker) {
               addDeco(
                 s,
                 e,
@@ -2570,7 +2636,7 @@ function buildDecorations(view: EditorView): DecorationSet {
               addDeco(s, e, Decoration.mark({ class: "cm-md-delimiter" }));
             }
           } else if (tok.type === "ordered_marker") {
-            if (!isCursorInside) {
+            if (!isCursorInMarker) {
               addDeco(
                 s,
                 e,

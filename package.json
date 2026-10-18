@@ -1,14 +1,15 @@
 {
   "name": "quilla",
   "private": true,
-  "version": "0.6.0",
-  "description": "Quilla (羽墨) v0.6 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust",
+  "version": "0.7.0",
+  "description": "Quilla (羽墨) v0.7 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.4",

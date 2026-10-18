@@ -3,7 +3,7 @@ import { findTablesInDoc } from "./table-editor";
 import { findMermaidBlocks } from "./mermaid-extension";
 import { findMathBlocks } from "./math-block-extension";
 import { getDocStructureFromState } from "./doc-structure";
-import { getFoldedSectionSpanAtLine } from "./live-preview";
+import { getFoldedSectionSpanAtLine, getCodeBlockVisibleBounds } from "./live-preview";
 
 /**
  * 根据目标表格块起始坐标精准查找对应的 DOM 表格元素
@@ -25,10 +25,42 @@ function findMatchingTableElement(
 }
 
 /**
- * 块级边界漫游扩展 (Widget Boundary Traversal v0.6):
- * 1. 当光标在已折叠标题行按 ArrowDown，或从已折叠章节下方按 ArrowUp 时，自动跨过整个被隐藏的折叠区间，杜绝光标掉入 display:none 黑洞。
- * 2. 当光标在普通正文行移动时，如果按 ArrowDown/ArrowUp 遇到块级元素 (围栏代码块、表格、Mermaid 流程图、多行公式块)，
- *    自动无缝跨过 ``` 围栏行穿透进入代码内容或下一个段落。
+ * 检测光标是否位于当前逻辑行的第一个视觉软换行行 (First Visual Row)
+ * 防止在软换行长段落的第 2/3/4 视觉行按 ArrowUp 时直接跳过整段窜入上方块
+ */
+function isOnFirstVisualLine(view: EditorView, pos: number, lineFrom: number): boolean {
+  if (pos <= lineFrom) return true;
+  try {
+    const curCoords = view.coordsAtPos(pos);
+    const startCoords = view.coordsAtPos(lineFrom);
+    if (!curCoords || !startCoords) return true;
+    return Math.abs(curCoords.top - startCoords.top) < 6;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 检测光标是否位于当前逻辑行的最后一个视觉软换行行 (Last Visual Row)
+ * 防止在软换行长段落的第 1 视觉行按 ArrowDown 时直接跳过整段窜入下方块
+ */
+function isOnLastVisualLine(view: EditorView, pos: number, lineTo: number): boolean {
+  if (pos >= lineTo) return true;
+  try {
+    const curCoords = view.coordsAtPos(pos);
+    const endCoords = view.coordsAtPos(lineTo, -1);
+    if (!curCoords || !endCoords) return true;
+    return Math.abs(curCoords.bottom - endCoords.bottom) < 6;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 块级边界漫游扩展 (Widget Boundary Traversal v0.7):
+ * 1. 感知 EditorView.lineWrapping 软换行视觉行，仅在首/末视觉行触发跨块跳转，彻底根治按上/下箭头一次跳多行的 Bug。
+ * 2. 感知代码块折叠态与 28 行自动截断态，防止光标跳入 display:none 隐藏行或引发代码块突然展开导致的视口暴跳。
+ * 3. 当光标在已折叠标题行按 ArrowDown，或从已折叠章节下方按 ArrowUp 时，自动跨过整个被隐藏的折叠区间。
  */
 export const boundaryTraversalKeymap: KeyBinding[] = [
   {
@@ -40,6 +72,11 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       const head = view.state.selection.main.head;
       const line = view.state.doc.lineAt(head);
       const totalLines = view.state.doc.lines;
+
+      // 若当前行发生了软换行且光标尚不在最后一个视觉行，交由 CodeMirror 原生逻辑在当前段落内下移一行
+      if (!isOnLastVisualLine(view, head, line.to)) {
+        return false;
+      }
 
       // 0a. 检查当前行是否是已折叠标题行（或正处于已折叠章节内部）
       const foldedSpan =
@@ -65,11 +102,31 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
 
       const struct = getDocStructureFromState(view.state);
 
-      // 0b. 检查当前行是否位于普通围栏代码块最后一行代码 (endLine - 1)，或者正要从代码块上方进入 startLine
-      for (const cr of struct.codeRanges) {
+      // 0b. 检查围栏代码块边界穿透（兼容折叠态与 28 行截断态）
+      for (let cIdx = 0; cIdx < struct.codeRanges.length; cIdx++) {
+        const cr = struct.codeRanges[cIdx];
         if (cr.unclosed) continue;
-        // 从代码块上方一行按 ArrowDown -> 直接跳入第一行代码 (startLine + 1)，跳过 ```lang 顶栏
+        const { isCollapsed, lastVisibleCodeLine } = getCodeBlockVisibleBounds(
+          view.state,
+          cIdx
+        );
+
+        // 从代码块上方一行按 ArrowDown -> 若已折叠则直接跨到 cr.endLine + 1，否则进入第一行代码 (startLine + 1)
         if (line.number === cr.startLine - 1 || line.number === cr.startLine) {
+          if (isCollapsed) {
+            if (cr.endLine < totalLines) {
+              const afterPos = view.state.doc.line(cr.endLine + 1).from;
+              view.dispatch({ selection: { anchor: afterPos }, scrollIntoView: true });
+            } else {
+              const endDoc = view.state.doc.line(cr.endLine).to;
+              view.dispatch({
+                changes: { from: endDoc, insert: "\n" },
+                selection: { anchor: endDoc + 1 },
+                scrollIntoView: true,
+              });
+            }
+            return true;
+          }
           const targetLineNum = Math.min(cr.startLine + 1, cr.endLine);
           const targetPos = view.state.doc.line(targetLineNum).from;
           view.dispatch({
@@ -78,8 +135,13 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
           });
           return true;
         }
-        // 在代码块最后一行代码 (endLine - 1) 按 ArrowDown -> 直接跨过底部 ``` 围栏跳到代码块下方一行
-        if (line.number === cr.endLine - 1 || line.number === cr.endLine) {
+
+        // 在代码块最后一行可见代码 (lastVisibleCodeLine 或 endLine - 1) 按 ArrowDown -> 跨过底部围栏跳到代码块下方一行
+        if (
+          line.number === lastVisibleCodeLine ||
+          line.number === cr.endLine - 1 ||
+          line.number === cr.endLine
+        ) {
           if (cr.endLine < totalLines) {
             const afterPos = view.state.doc.line(cr.endLine + 1).from;
             view.dispatch({
@@ -164,6 +226,11 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       const line = view.state.doc.lineAt(head);
       const struct = getDocStructureFromState(view.state);
 
+      // 若当前行发生了软换行且光标尚不在第一个视觉行，交由 CodeMirror 原生逻辑在当前段落内上移一行
+      if (!isOnFirstVisualLine(view, head, line.from)) {
+        return false;
+      }
+
       if (line.number > 1) {
         // 0a. 检查上一行是否处于已折叠的章节内部 -> 直接跳到该折叠章节的标题行
         const prevFoldedSpan = getFoldedSectionSpanAtLine(view.state, line.number - 1);
@@ -177,19 +244,31 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
         }
       }
 
-      // 0b. 检查围栏代码块边界穿透
-      for (const cr of struct.codeRanges) {
+      // 0b. 检查围栏代码块边界穿透（兼容折叠态与 28 行截断态）
+      for (let cIdx = 0; cIdx < struct.codeRanges.length; cIdx++) {
+        const cr = struct.codeRanges[cIdx];
         if (cr.unclosed) continue;
-        // 从代码块下方一行 (endLine + 1) 按 ArrowUp -> 直接跳入最后一行代码 (endLine - 1)，跳过底部 ``` 围栏
+        const { isCollapsed, lastVisibleCodeLine } = getCodeBlockVisibleBounds(
+          view.state,
+          cIdx
+        );
+
+        // 从代码块下方一行 (endLine + 1) 按 ArrowUp -> 若已折叠则跨到 startLine - 1，否则跳入最后一行可见代码 (lastVisibleCodeLine)
         if (line.number === cr.endLine + 1 || line.number === cr.endLine) {
-          const targetLineNum = Math.max(cr.startLine + 1, cr.endLine - 1);
-          const targetPos = view.state.doc.line(targetLineNum).to;
+          if (isCollapsed) {
+            const beforeLineNum = Math.max(1, cr.startLine - 1);
+            const beforePos = view.state.doc.line(beforeLineNum).to;
+            view.dispatch({ selection: { anchor: beforePos }, scrollIntoView: true });
+            return true;
+          }
+          const targetPos = view.state.doc.line(lastVisibleCodeLine).to;
           view.dispatch({
             selection: { anchor: targetPos },
             scrollIntoView: true,
           });
           return true;
         }
+
         // 在代码块第一行代码 (startLine + 1) 按 ArrowUp -> 直接跳出到代码块上方一行 (startLine - 1)
         if (line.number === cr.startLine + 1 || line.number === cr.startLine) {
           if (cr.startLine > 1) {

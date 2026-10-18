@@ -1,4 +1,4 @@
-import { EditorState, Extension } from "@codemirror/state";
+import { EditorState, Extension, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, undo, redo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -19,7 +19,8 @@ import { mermaidLiveViewField } from "./extensions/mermaid-extension";
 import { mathBlockLiveViewField } from "./extensions/math-block-extension";
 import { searchHighlightField } from "./extensions/search-highlighter";
 import { navigateToAnchor } from "./extensions/anchor-navigator";
-import { preciseCursorExtension, getExactPosAtCoords } from "./extensions/precise-cursor";
+import { preciseCursorExtension } from "./extensions/precise-cursor";
+import { quillaPluginRegistry } from "./plugin-system";
 import {
   typewriterModeExtension,
   toggleTypewriterMode,
@@ -274,7 +275,7 @@ export function createEditor(
         const flushedDeltas = pendingDeltas;
         pendingDeltas = [];
         callbacks.onChange(text, flushedDeltas);
-      }, 65);
+      }, 120);
     }
 
     if ((update.selectionSet || update.docChanged) && callbacks.onCursorLineChange) {
@@ -286,7 +287,7 @@ export function createEditor(
   const extensions: Extension[] = [
     cleanFocusTheme,
     history(),
-    markdown(),
+    markdown({ addKeymap: false }),
     docStructureField,
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     imeGuardPlugin,
@@ -301,8 +302,9 @@ export function createEditor(
     preciseCursorExtension,
     typewriterModeExtension,
     focusModeExtension,
-    boundaryTraversalExtension,
+    Prec.high(boundaryTraversalExtension),
     livePreviewPlugin,
+    ...quillaPluginRegistry.getEditorExtensions(),
     EditorView.domEventHandlers({
       mousedown: (event, view) => {
         if (
@@ -364,12 +366,16 @@ export function createEditor(
         return false;
       },
     }),
+    Prec.high(
+      keymap.of([
+        ...formattingKeymap,
+        ...tableKeymap,
+      ])
+    ),
     keymap.of([
       { key: "Mod-z", run: undo },
       { key: "Mod-y", run: redo },
       { key: "Mod-Shift-z", run: redo },
-      ...formattingKeymap,
-      ...tableKeymap,
       ...defaultKeymap,
       ...historyKeymap,
     ]),
@@ -389,21 +395,9 @@ export function createEditor(
 
   (view as any)._quillaExtensions = extensions;
 
-  const origPosAtCoords = view.posAtCoords.bind(view);
-  const origPosAndSideAtCoords = view.posAndSideAtCoords.bind(view);
-  (view as any)._origPosAndSideAtCoords = origPosAndSideAtCoords;
-
-  view.posAtCoords = (coords: { x: number; y: number }, precise?: any) => {
-    const exact = getExactPosAtCoords(view, coords.x, coords.y);
-    if (exact) return exact.pos;
-    return (origPosAtCoords as any)(coords, precise);
-  };
-
-  view.posAndSideAtCoords = (coords: { x: number; y: number }, precise?: any) => {
-    const exact = getExactPosAtCoords(view, coords.x, coords.y);
-    if (exact) return exact;
-    return (origPosAndSideAtCoords as any)(coords, precise);
-  };
+  // 保存原生 posAndSideAtCoords 引用供 preciseCursorExtension 鼠标点击选区回退使用，
+  // 绝不全局劫持 view.posAtCoords / view.posAndSideAtCoords，确保 ArrowUp/ArrowDown 垂直行移动 100% 精准
+  (view as any)._origPosAndSideAtCoords = view.posAndSideAtCoords.bind(view);
 
   // 视口滚动联动大纲 Scroll Spy (Bug #7 彻底修复)：
   // 1. 当用户刚刚点击左侧大纲跳转 (isOutlineJumpLocked()) 时，严禁 Scroll Spy 反向覆盖大纲高亮。

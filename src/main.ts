@@ -5,6 +5,7 @@ import katex from "katex";
 import mermaid from "mermaid";
 import {
   createEditor,
+  createEditorStateForView,
   resetEditorDocument,
   toggleTypewriterMode,
   isTypewriterModeActive,
@@ -45,6 +46,7 @@ import {
   setActiveDocumentPath,
   clearImageCache,
   stripInlineMarkdown,
+  restoreFoldState,
 } from "./editor/extensions/live-preview";
 import { highlightCodeBlockToHtml } from "./editor/extensions/code-highlighter";
 import { forceRefreshEffect } from "./editor/extensions/refresh-effect";
@@ -80,20 +82,23 @@ import {
   copyForWeChatOrZhihu,
   exportWordDocument,
   openSharePosterModal,
+  openPdfExportModal,
 } from "./components/publisher-export";
+import { renderMarkdownDocumentToHtml } from "./editor/markdown-ast-renderer";
+import { quillaPluginRegistry } from "./editor/plugin-system";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.6 全景工作台指南
+title: Quilla (羽墨) v0.7 全景工作台指南
 author: Quilla Studio
 tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.6.0
+version: 0.7.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.6
+# 欢迎使用 Quilla (羽墨) v0.7
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
-> [!TIP] Quilla v0.6 全景深度精进与架构升级
+> [!TIP] Quilla v0.7 全景深度精进与架构升级
 > - **第一阶段 · 块级与大纲深度操控**：左侧 6 点抓手采用真实 DOM 几何与悬停桥接锁，点击或右键唤起 **块级命令菜单（Turn Into / 克隆 / 移动 / 章节折叠）**；侧边栏大纲支持右键 **单标题升降级、带子标题整体升级/降级（思源笔记风格）、复制章节双链与整章操作**。
 > - **第二阶段 · 块级嵌入与知识图谱**：支持 \`![[文档#标题]]\` 块级/章节实时嵌入卡片、YAML Front Matter 可视化属性面板、多级 \`#父标签/子标签\` 胶囊检索，以及按 \`Ctrl+G\` 唤起 **交互式双链知识图谱**。
 > - **第三阶段 · 时间机器与多渠道发布**：按 \`Ctrl+Alt+H\` 打开 **本地版本历史（Time Machine）** 进行逐行 Diff 对比与一键无损回滚；支持 **一键复制微信公众号/知乎内联富文本**、导出 **Word (\`.doc\`)** 及 **社交长图分享卡片 (\`.png\`)**。
@@ -135,7 +140,7 @@ version: 0.6.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.6"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
+    Start["Quilla v0.7"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
     Start --> Phase2["![[块级嵌入]] & 双链知识图谱"]
     Start --> Phase3["时间机器 Diff & 公众号/长图发布"]
 \`\`\`
@@ -146,7 +151,7 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.6!");
+    println!("Hello, Quilla (羽墨) v0.7!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
@@ -333,14 +338,20 @@ class App {
       onOpenFileRequest: (filePath) => {
         this.loadFile(filePath);
       },
-      onSaveTabRequest: async () => {
-        await this.saveFile();
+      onSaveTabRequest: async (tab) => {
+        if (this.tabsManager && tab.id !== this.tabsManager.getActiveTab()?.id) {
+          this.tabsManager.activateTab(tab.id);
+        }
+        await this.saveFile(false);
       },
-      onSaveTabAsRequest: async () => {
+      onSaveTabAsRequest: async (tab) => {
+        if (this.tabsManager && tab.id !== this.tabsManager.getActiveTab()?.id) {
+          this.tabsManager.activateTab(tab.id);
+        }
         await this.saveFileAs();
       },
       onOpenInNewWindowRequest: async (tab) => {
-        await this.createNewWindow(tab.filePath);
+        await this.openTabInNewWindow(tab);
       },
       onSecondaryDocChanged: (tab, content) => {
         saveRecoverySnapshot(tab.filePath, content, tab.title);
@@ -414,6 +425,31 @@ class App {
         this.saveFile(true);
       }
     });
+
+    // 监听来自多窗口状态总线的实时保存广播 (Multi-Window State Bus)
+    listen<{ path: string; sourceWindow: string }>(
+      "quilla-cross-window-file-saved",
+      async (event) => {
+        const savedPath = event.payload?.path;
+        if (!savedPath) return;
+        try {
+          const diskContent = await invoke<string>("read_file_content", {
+            path: savedPath,
+          });
+          this.tabsManager?.syncExternalFileSaved(savedPath, diskContent);
+          if (
+            this.currentFilePath &&
+            this.currentFilePath.replace(/\\/g, "/").toLowerCase() ===
+              savedPath.replace(/\\/g, "/").toLowerCase() &&
+            !this.isModified
+          ) {
+            this.savedContent = diskContent;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    ).catch(() => {});
 
     // 监听来自 Rust WorkspaceWatcher 的工作区与当前文件外部磁盘变动事件
     listen<{ paths: string[]; kind: string }>("workspace-fs-changed", async (event) => {
@@ -677,14 +713,54 @@ class App {
     const cliFile = await invoke<string | null>("get_cli_open_file").catch(() => null);
 
     const urlParams = new URLSearchParams(window.location.search);
+    const urlTransfer = urlParams.get("transfer");
     const urlOpen = urlParams.get("open");
     const urlNew = urlParams.get("new");
 
-    if (cliFile || urlOpen) {
+    if (urlTransfer) {
+      const transferKey = `quilla_window_transfer_${decodeURIComponent(urlTransfer)}`;
+      const rawTransfer = localStorage.getItem(transferKey);
+      localStorage.removeItem(transferKey);
+      if (rawTransfer) {
+        try {
+          const payload = JSON.parse(rawTransfer);
+          const active = this.tabsManager?.getActiveTab();
+          if (active && this.editorView) {
+            active.filePath = payload.filePath || null;
+            active.title = payload.title || "未命名.md";
+            active.savedContent = payload.savedContent ?? "";
+            active.isModified = Boolean(payload.isModified);
+            active.foldSnapshot = payload.foldSnapshot;
+            restoreFoldState(active.foldSnapshot);
+            active.editorState = createEditorStateForView(
+              this.editorView,
+              payload.content ?? ""
+            );
+            this.editorView.setState(active.editorState);
+            this.tabsManager?.renderTabs();
+            this.syncFromActiveTab(active);
+          }
+        } catch (e) {
+          console.warn("解析跨窗口标签迁移数据失败:", e);
+        }
+      }
+    } else if (cliFile || urlOpen) {
       const target = cliFile || decodeURIComponent(urlOpen!);
       await this.loadFile(target);
     } else if (isNewWin || urlNew === "1") {
-      await this.newFile();
+      const active = this.tabsManager?.getActiveTab();
+      if (active && this.editorView) {
+        active.filePath = null;
+        active.title = "未命名.md";
+        active.savedContent = "";
+        active.isModified = false;
+        active.editorState = createEditorStateForView(this.editorView, "");
+        this.editorView.setState(active.editorState);
+        this.tabsManager?.renderTabs();
+        this.syncFromActiveTab(active);
+      } else {
+        await this.newFile();
+      }
     } else {
       const lastWorkspace = localStorage.getItem("typora_last_workspace");
       if (lastWorkspace) {
@@ -948,13 +1024,67 @@ class App {
     }
   }
 
-  private async createNewWindow(filePath?: string | null) {
+  private async createNewWindow(filePath?: string | null, transferId?: string | null) {
     try {
-      await invoke("create_new_window", { filePath: filePath || null });
+      await invoke("create_new_window", {
+        filePath: filePath || null,
+        transferId: transferId || null,
+      });
     } catch (err) {
       console.error("新建窗口失败:", err);
       showToast(`新建窗口失败: ${err}`, "error");
     }
+  }
+
+  private async openTabInNewWindow(tab: DocumentTab) {
+    this.tabsManager?.snapshotActiveTabState();
+    const isActive = this.tabsManager?.getActiveTab()?.id === tab.id;
+    const currentContent =
+      isActive && this.editorView
+        ? this.editorView.state.doc.toString()
+        : tab.editorState.doc.toString();
+
+    let savedContent = tab.savedContent;
+    let isModified = tab.isModified;
+
+    // 若该标签已关联磁盘文件且存在未保存改动，先自动原子落盘，确保文件状态与新窗口完全一致
+    if (tab.filePath && isModified) {
+      try {
+        await invoke("save_file_content", {
+          path: tab.filePath,
+          content: currentContent,
+        });
+        savedContent = currentContent;
+        isModified = false;
+        this.tabsManager?.updateTabSavedMetaById(
+          tab.id,
+          tab.filePath,
+          tab.title,
+          currentContent
+        );
+      } catch (e) {
+        console.warn("独立窗口打开前自动保存失败，将直接迁移内存草稿:", e);
+      }
+    }
+
+    const transferId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const transferKey = `quilla_window_transfer_${transferId}`;
+    try {
+      localStorage.setItem(
+        transferKey,
+        JSON.stringify({
+          filePath: tab.filePath,
+          title: tab.title,
+          content: currentContent,
+          savedContent,
+          isModified,
+          foldSnapshot: tab.foldSnapshot,
+        })
+      );
+    } catch {}
+
+    await this.createNewWindow(tab.filePath, transferId);
+    this.tabsManager?.detachTabAfterTransfer(tab.id);
   }
 
   private initSidebarResizer() {
@@ -1156,6 +1286,7 @@ class App {
         saveStatus.textContent = silent ? "已自动保存" : "已保存";
         saveStatus.classList.remove("is-dirty");
       }
+      quillaPluginRegistry.notifyDocumentSaved(this.currentFilePath, content);
       this.backlinksCtrl?.refresh();
       this.refreshSidebarTags();
       return true;
@@ -1359,19 +1490,6 @@ class App {
    * ![[文档#标题]] 块级嵌入卡片、#多级标签、标准 W3C 嵌套列表树、Mermaid 矢量 SVG、KaTeX 公式及内联 Base64 图片。
    */
   private async renderMarkdownToHtmlBody(md: string): Promise<string> {
-    const rawLines = md.replace(/\r\n/g, "\n").split("\n");
-    let startIdx = 0;
-
-    // 跳过顶部 YAML Front Matter
-    if (rawLines.length >= 3 && rawLines[0].trim() === "---") {
-      for (let k = 1; k < Math.min(rawLines.length, 35); k++) {
-        if (rawLines[k].trim() === "---" || rawLines[k].trim() === "...") {
-          startIdx = k + 1;
-          break;
-        }
-      }
-    }
-
     const resolveImgSrc = async (rawSrc: string): Promise<string> => {
       if (
         rawSrc.startsWith("http://") ||
@@ -1390,578 +1508,68 @@ class App {
       }
     };
 
-    const renderInline = async (raw: string): Promise<string> => {
-      const placeholders: string[] = [];
-      const pushPh = (html: string) => {
-        const token = `\u0000EXP_PH_${placeholders.length}_\u0000`;
-        placeholders.push(html);
-        return token;
-      };
-
-      let working = raw;
-
-      // 0. 保护换行 <br> 与 HTML <img ...> 标签
-      working = working.replace(/<br\s*\/?>/gi, () => pushPh("<br />"));
-
-      const htmlImgMatches = Array.from(
-        working.matchAll(/<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)\/?>/gi)
-      );
-      for (const m of htmlImgMatches) {
-        const fullTag = m[0];
-        const fullAttrs = `${m[1]} ${m[3]}`;
-        const rawSrc = m[2];
-        const resolvedSrc = await resolveImgSrc(rawSrc);
-        const altMatch = fullAttrs.match(/alt=["']([^"']*)["']/i);
-        const widthMatch = fullAttrs.match(/width=["']([^"']*)["']/i);
-        const alignMatch = fullAttrs.match(/align=["']([^"']*)["']/i);
-        const alt = this.escapeHtml(altMatch ? altMatch[1] : "");
-        const widthStyle = widthMatch ? `width:${this.escapeHtml(widthMatch[1])};` : "";
-        const align = alignMatch ? alignMatch[1] : "left";
-        const wrapStyle =
-          align === "center"
-            ? "text-align:center;"
-            : align === "right"
-            ? "text-align:right;"
-            : "text-align:left;";
-        const imgHtml = `<figure class="md-image-card" style="${wrapStyle}"><img src="${this.escapeHtml(resolvedSrc)}" alt="${alt}" style="${widthStyle}max-width:100%;" /></figure>`;
-        working = working.replace(fullTag, () => pushPh(imgHtml));
-      }
-
-      // 1. 提取 Markdown 图片 ![alt](src)
-      const mdImgMatches = Array.from(working.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g));
-      for (const m of mdImgMatches) {
-        const fullMatch = m[0];
-        const alt = this.escapeHtml(m[1]);
-        const resolvedSrc = await resolveImgSrc(m[2]);
-        const imgHtml = `<img alt="${alt}" src="${this.escapeHtml(resolvedSrc)}" style="max-width:100%;" />`;
-        working = working.replace(fullMatch, () => pushPh(imgHtml));
-      }
-
-      // 1.5 提取 [[Wiki Links]] 双向链接
-      const wikiLinks = parseWikiLinksInLine(working);
-      if (wikiLinks.length > 0) {
-        for (let wIdx = wikiLinks.length - 1; wIdx >= 0; wIdx--) {
-          const wl = wikiLinks[wIdx];
-          const displayLabel = wl.alias
-            ? wl.alias
-            : wl.heading && wl.target
-            ? `${wl.target} › ${wl.heading}`
-            : wl.heading
-            ? `#${wl.heading}`
-            : wl.target;
-          const pillHtml = `<span class="cm-wikilink">${this.escapeHtml(displayLabel)}</span>`;
-          working =
-            working.slice(0, wl.fromOffset) +
-            pushPh(pillHtml) +
-            working.slice(wl.toOffset);
-        }
-      }
-
-      // 2. 转义普通文本中的 HTML 特殊字符
-      working = this.escapeHtml(working);
-
-      // 3. 提取行内代码 `code`
-      working = working.replace(/`([^`\n]+)`/g, (_m, code) => pushPh(`<code>${code}</code>`));
-
-      // 4. 提取行内公式 $...$
-      working = working.replace(
-        /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g,
-        (_m, tex) => {
-          const unescapedTex = tex
-            .replace(/&amp;/g, "&")
-            .replace(/&lt;/g, "<")
-            .replace(/&gt;/g, ">")
-            .replace(/&quot;/g, '"')
-            .replace(/&#039;/g, "'");
-          try {
-            return pushPh(
-              katex.renderToString(unescapedTex, {
-                displayMode: false,
-                throwOnError: false,
-                output: "html",
-              })
-            );
-          } catch {
-            return pushPh(`<code>$${tex}$</code>`);
-          }
-        }
-      );
-
-      // 5. 超链接与脚注角标（附带双向锚点与安全协议过滤）
-      working = working.replace(/\[\^([^\]\n]+)\]/g, (_m, fn) => {
-        const safeFnId = fn.replace(/[^\w\-]/g, "_");
-        return pushPh(
-          `<sup class="cm-footnote-ref" id="fn-ref-${safeFnId}"><a href="#fn-def-${safeFnId}">[${fn}]</a></sup>`
-        );
-      });
-      working = working.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_m, text, url) => {
-        const safeHref = sanitizeHref(url);
-        return pushPh(`<a href="${safeHref}" target="_blank" rel="noopener">${text}</a>`);
-      });
-
-      // 5.5 提取内联 #标签 胶囊
-      working = working.replace(
-        /(^|[\s,，。；;（(])(#([\u4e00-\u9fa5a-zA-Z0-9_\-]+(?:\/[\u4e00-\u9fa5a-zA-Z0-9_\-]+)*))/g,
-        (full, prefix, rawTag, tagBody) => {
-          if (/^\d+$/.test(tagBody) || /^[0-9a-fA-F]{3,8}$/.test(tagBody)) return full;
-          return `${prefix}${pushPh(`<span class="cm-hashtag">${rawTag}</span>`)}`;
-        }
-      );
-
-      // 6. 加粗斜体 / 加粗 / 斜体 / 删除线 / 高亮 / 上下标
-      working = working.replace(/(\*{3}|_{3})([^*_\n]+?)\1/g, "<strong><em>$2</em></strong>");
-      working = working.replace(/(\*{2}|_{2})([^*_\n]+?)\1/g, "<strong>$2</strong>");
-      working = working.replace(
-        /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<!_)_([^_\s\n][^_\n]*?)_(?!_)/g,
-        "<em>$1$2</em>"
-      );
-      working = working.replace(/~~([^~\n]+)~~/g, "<s style=\"text-decoration:line-through;\">$1</s>");
-      working = working.replace(/==([^=\n]+)==/g, "<mark>$1</mark>");
-      working = working.replace(/(?<!~)~([^~\s\n][^~\n]*?)~(?!~)/g, "<sub>$1</sub>");
-      working = working.replace(/\^([^\^\s\n][^\^\n]*?)\^/g, "<sup>$1</sup>");
-
-      // 7. 还原占位符
-      working = working.replace(
-        /\u0000EXP_PH_(\d+)_\u0000/g,
-        (_m, idx) => placeholders[Number(idx)] || ""
-      );
-      return working;
-    };
-
-    // 预先收集全文标题供 [TOC] 渲染
-    const allDocHeadings: Array<{ level: number; text: string; id: string }> = [];
-    {
-      let inF = false;
-      let fChar = "";
-      let fLen = 0;
-      for (let k = startIdx; k < rawLines.length; k++) {
-        const t = rawLines[k].replace(/^\s*(?:>\s*)*/, "").trim();
-        const fm = t.match(/^(`{3,}|~{3,})/);
-        if (fm) {
-          const mChar = fm[1][0];
-          const mLen = fm[1].length;
-          if (!inF) {
-            inF = true;
-            fChar = mChar;
-            fLen = mLen;
-          } else if (mChar === fChar && mLen >= fLen && /^(`{3,}|~{3,})\s*$/.test(t)) {
-            inF = false;
-          }
-          continue;
-        }
-        if (inF) continue;
-        const hm = rawLines[k].match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
-        if (hm) {
-          const clean = stripInlineMarkdown(hm[2]);
-          const id = `heading-${k}-${clean.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-")}`;
-          allDocHeadings.push({ level: hm[1].length, text: clean, id });
-        }
-      }
-    }
-
-    let headingCursor = 0;
     const showLineNumbers = getPreferences().showCodeLineNumbers;
     const isDarkTheme = document.body.classList.contains("theme-night");
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: isDarkTheme ? "dark" : "default",
-      securityLevel: "loose",
+
+    return renderMarkdownDocumentToHtml(md, {
+      fullMarkdown: md,
+      showLineNumbers,
+      isDarkTheme,
+      resolveImageSrc: resolveImgSrc,
+      highlightCodeBlockToHtml,
+      fetchTransclusionContent: fetchTransclusionSectionContent,
     });
-
-    const isBlockBoundary = (lines: string[], idx: number): boolean => {
-      if (idx >= lines.length) return true;
-      const line = lines[idx];
-      const trimmed = line.trim();
-      if (!trimmed) return true;
-      if (/^(`{3,}|~{3,})/.test(trimmed)) return true;
-      if (trimmed === "$$" || /^\$\$\s*(.+?)\s*\$\$$/.test(trimmed)) return true;
-      if (/^\[TOC\]$/i.test(trimmed)) return true;
-      if (/^!\[\[([^\[\]\n]+)\]\]$/.test(trimmed)) return true;
-      if (trimmed.includes("|") && idx + 1 < lines.length && isTableDelimiter(lines[idx + 1])) {
-        return true;
-      }
-      if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) return true;
-      if (/^(#{1,6})\s+/.test(line)) return true;
-      if (trimmed.startsWith(">")) return true;
-      if (/^\s*([-*+]|\d+\.)\s+/.test(line)) return true;
-      if (/^\[\^([^\]\n]+)\]:\s*/.test(line)) return true;
-      return false;
-    };
-
-    const CALLOUT_LABELS: Record<string, string> = {
-      note: "笔记 (Note)",
-      tip: "提示 (Tip)",
-      important: "重要 (Important)",
-      warning: "警告 (Warning)",
-      caution: "危险 (Caution)",
-    };
-
-    // 递归块级解析器
-    const renderBlocks = async (lines: string[], _isTopLevel: boolean): Promise<string> => {
-      const out: string[] = [];
-      let i = 0;
-
-      while (i < lines.length) {
-        const line = lines[i];
-        const trimmed = line.trim();
-
-        if (!trimmed) {
-          i++;
-          continue;
-        }
-
-        // 0.5 块级/章节嵌入引用 ![[文档#标题]]
-        const embedMatch = trimmed.match(/^!\[\[([^\[\]\n]+)\]\]$/);
-        if (embedMatch) {
-          const parsedLinks = parseWikiLinksInLine(trimmed);
-          if (parsedLinks.length === 1 && parsedLinks[0].isEmbed) {
-            const wl = parsedLinks[0];
-            const res = await fetchTransclusionSectionContent(
-              wl.target,
-              wl.heading,
-              rawLines.join("\n")
-            );
-            const titleLabel = wl.alias
-              ? wl.alias
-              : wl.target && wl.heading
-              ? `${wl.target} › #${wl.heading}`
-              : wl.heading
-              ? `本篇 › #${wl.heading}`
-              : wl.target;
-            out.push(
-              `<blockquote><strong>🔗 嵌入引用 · ${this.escapeHtml(
-                titleLabel
-              )}</strong><pre style="white-space:pre-wrap;margin-top:6px;">${this.escapeHtml(
-                res.content
-              )}</pre></blockquote>`
-            );
-            i++;
-            continue;
-          }
-        }
-
-        // 1. 围栏代码块与 Mermaid 矢量图渲染 (支持 4 反引号嵌套)
-        const fenceMatch = trimmed.match(/^(`{3,}|~{3,})\s*([^\s`~]*).*$/);
-        if (fenceMatch) {
-          const fenceChar = fenceMatch[1][0];
-          const fenceLen = fenceMatch[1].length;
-          const lang = (fenceMatch[2] || "").toLowerCase();
-          const codeLines: string[] = [];
-          i++;
-          while (i < lines.length) {
-            const t = lines[i].trim();
-            const closeM = t.match(/^(`{3,}|~{3,})\s*$/);
-            if (closeM && closeM[1][0] === fenceChar && closeM[1].length >= fenceLen) {
-              i++;
-              break;
-            }
-            codeLines.push(lines[i]);
-            i++;
-          }
-          const rawCode = codeLines.join("\n");
-          if (lang === "mermaid") {
-            try {
-              const id = "mmd-exp-" + Math.random().toString(36).substring(2, 9);
-              const { svg } = await mermaid.render(id, rawCode.trim());
-              out.push(
-                `<figure class="md-mermaid-card"><div class="mermaid-chart-box">${svg}</div></figure>`
-              );
-            } catch {
-              out.push(`<pre><code class="language-mermaid">${this.escapeHtml(rawCode)}</code></pre>`);
-            }
-          } else {
-            const highlightedHtml = highlightCodeBlockToHtml(rawCode, lang, showLineNumbers);
-            out.push(
-              `<pre class="exported-code-block"><code class="language-${this.escapeHtml(lang)}">${highlightedHtml}</code></pre>`
-            );
-          }
-          continue;
-        }
-
-        // 2. 多行公式块 $$
-        if (trimmed === "$$") {
-          const mathLines: string[] = [];
-          i++;
-          while (i < lines.length && lines[i].trim() !== "$$") {
-            mathLines.push(lines[i]);
-            i++;
-          }
-          i++;
-          try {
-            const rendered = katex.renderToString(mathLines.join("\n"), {
-              displayMode: true,
-              throwOnError: false,
-              output: "html",
-            });
-            out.push(`<div class="md-math-block-preview">${rendered}</div>`);
-          } catch {
-            out.push(`<pre>${this.escapeHtml(mathLines.join("\n"))}</pre>`);
-          }
-          continue;
-        }
-
-        // 3. 单行公式块 $$ ... $$
-        const singleMath = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
-        if (singleMath) {
-          try {
-            const rendered = katex.renderToString(singleMath[1], {
-              displayMode: true,
-              throwOnError: false,
-              output: "html",
-            });
-            out.push(`<div class="md-math-block-preview">${rendered}</div>`);
-          } catch {
-            out.push(`<pre>${this.escapeHtml(singleMath[1])}</pre>`);
-          }
-          i++;
-          continue;
-        }
-
-        // 3.5 [TOC] 目录块
-        if (/^\[TOC\]$/i.test(trimmed)) {
-          const tocItems = allDocHeadings
-            .map(
-              (h) =>
-                `<li style="padding-left:${(h.level - 1) * 16}px"><a href="#${h.id}">${this.escapeHtml(h.text)}</a></li>`
-            )
-            .join("");
-          out.push(
-            `<nav class="cm-toc-card"><div class="cm-toc-title">目录</div><ul class="cm-toc-list">${tocItems}</ul></nav>`
-          );
-          i++;
-          continue;
-        }
-
-        // 4. 表格块
-        if (trimmed.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
-          const parseCells = (rowStr: string) => {
-            let t = rowStr.trim();
-            if (t.startsWith("|")) t = t.slice(1);
-            if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
-            return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
-          };
-          const headers = parseCells(lines[i]);
-          const delimParts = parseCells(lines[i + 1]);
-          const aligns = headers.map((_h, idx) => {
-            const d = delimParts[idx] || "";
-            if (d.startsWith(":") && d.endsWith(":")) return "center";
-            if (d.endsWith(":")) return "right";
-            return "left";
-          });
-          i += 2;
-          const bodyRows: string[][] = [];
-          while (i < lines.length && lines[i].trim().includes("|")) {
-            bodyRows.push(parseCells(lines[i]));
-            i++;
-          }
-          const thRendered = await Promise.all(
-            headers.map(
-              async (h, idx) =>
-                `<th style="text-align:${aligns[idx]}">${await renderInline(h)}</th>`
-            )
-          );
-          const tbodyRowsRendered: string[] = [];
-          for (const r of bodyRows) {
-            const tds = await Promise.all(
-              headers.map(
-                async (_h, idx) =>
-                  `<td style="text-align:${aligns[idx]}">${await renderInline(r[idx] || "")}</td>`
-              )
-            );
-            tbodyRowsRendered.push(`<tr>${tds.join("")}</tr>`);
-          }
-          out.push(
-            `<table class="md-table"><thead><tr>${thRendered.join("")}</tr></thead><tbody>${tbodyRowsRendered.join("")}</tbody></table>`
-          );
-          continue;
-        }
-
-        // 5. 水平分割线
-        if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-          out.push("<hr />");
-          i++;
-          continue;
-        }
-
-        // 6. 标题
-        const hMatch = line.match(/^(#{1,6})\s+(.*)$/);
-        if (hMatch) {
-          const lvl = hMatch[1].length;
-          const hMeta = allDocHeadings[headingCursor++];
-          const idAttr = hMeta ? ` id="${hMeta.id}"` : "";
-          const cleanHeading = hMatch[2].trim().replace(/\s+#+\s*$/, "");
-          out.push(`<h${lvl}${idAttr}>${await renderInline(cleanHeading)}</h${lvl}>`);
-          i++;
-          continue;
-        }
-
-        // 6.5 脚注定义行 ([^label]: content)
-        const fnDefMatch = line.match(/^\[\^([^\]\n]+)\]:\s*(.*)$/);
-        if (fnDefMatch) {
-          const fnLabel = this.escapeHtml(fnDefMatch[1]);
-          const safeFnId = fnLabel.replace(/[^\w\-]/g, "_");
-          const fnBody = await renderInline(fnDefMatch[2]);
-          out.push(
-            `<div class="cm-footnote-def" id="fn-def-${safeFnId}"><strong>[${fnLabel}]:</strong> ${fnBody} <a href="#fn-ref-${safeFnId}" class="fn-backref" title="返回正文引用处">↩</a></div>`
-          );
-          i++;
-          continue;
-        }
-
-        // 7. 引用块 & GitHub 风格 Callout / Admonition 卡片
-        if (trimmed.startsWith(">")) {
-          const innerQuoteLines: string[] = [];
-          while (i < lines.length && lines[i].trim().startsWith(">")) {
-            innerQuoteLines.push(lines[i].replace(/^\s*> ?/, ""));
-            i++;
-          }
-          const calloutMatch = innerQuoteLines[0]?.match(
-            /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i
-          );
-          if (calloutMatch) {
-            const cType = calloutMatch[1].toLowerCase();
-            const customTitle = calloutMatch[2].trim() || CALLOUT_LABELS[cType] || cType.toUpperCase();
-            const bodyHtml = await renderBlocks(innerQuoteLines.slice(1), false);
-            out.push(
-              `<div class="cm-callout-export cm-callout-${cType}"><div class="cm-callout-header-widget cm-callout-header-${cType}"><span class="cm-callout-title">${this.escapeHtml(customTitle)}</span></div><div class="cm-callout-body">${bodyHtml}</div></div>`
-            );
-          } else {
-            const innerHtml = await renderBlocks(innerQuoteLines, false);
-            out.push(`<blockquote>${innerHtml}</blockquote>`);
-          }
-          continue;
-        }
-
-        // 8. 多级无序/有序/任务列表 (生成严格符合 W3C 标准的嵌套 <ul>/<ol><li>...<ul>...</ul></li> 结构)
-        if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-          interface ParsedListItem {
-            indent: number;
-            ordered: boolean;
-            isTask: boolean;
-            bodyHtml: string;
-          }
-          const listItems: ParsedListItem[] = [];
-          while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
-            const cur = lines[i];
-            const indent = (cur.match(/^\s*/)?.[0] || "").replace(/\t/g, "  ").length;
-            const taskM = cur.match(/^\s*[-*+]\s+\[([ xX])\]\s*(.*)$/);
-            const ordM = cur.match(/^\s*\d+\.\s+(.*)$/);
-            if (taskM) {
-              const checked = taskM[1].toLowerCase() === "x" ? " checked disabled" : " disabled";
-              listItems.push({
-                indent,
-                ordered: false,
-                isTask: true,
-                bodyHtml: `<input type="checkbox"${checked} /> ${await renderInline(taskM[2])}`,
-              });
-            } else if (ordM) {
-              listItems.push({
-                indent,
-                ordered: true,
-                isTask: false,
-                bodyHtml: await renderInline(ordM[1]),
-              });
-            } else {
-              const itemTxt = cur.replace(/^\s*[-*+]\s+/, "");
-              listItems.push({
-                indent,
-                ordered: false,
-                isTask: false,
-                bodyHtml: await renderInline(itemTxt),
-              });
-            }
-            i++;
-          }
-
-          const buildNestedListHtml = (startIdxInList: number, minIndent: number): { html: string; nextIdx: number } => {
-            if (startIdxInList >= listItems.length) return { html: "", nextIdx: startIdxInList };
-            const firstItem = listItems[startIdxInList];
-            const listTag = firstItem.ordered ? "ol" : "ul";
-            let html = `<${listTag}>`;
-            let k = startIdxInList;
-
-            while (k < listItems.length) {
-              const item = listItems[k];
-              if (item.indent < minIndent) break;
-
-              const itemTag = item.ordered ? "ol" : "ul";
-              if (item.indent === minIndent && itemTag !== listTag) {
-                break;
-              }
-
-              const liClass = item.isTask ? ` class="task-list-item"` : "";
-              html += `<li${liClass}>${item.bodyHtml}`;
-              k++;
-
-              while (k < listItems.length && listItems[k].indent > item.indent) {
-                const sub = buildNestedListHtml(k, listItems[k].indent);
-                html += sub.html;
-                k = sub.nextIdx;
-              }
-              html += `</li>`;
-            }
-
-            html += `</${listTag}>`;
-            return { html, nextIdx: k };
-          };
-
-          let listCursor = 0;
-          while (listCursor < listItems.length) {
-            const built = buildNestedListHtml(listCursor, listItems[listCursor].indent);
-            out.push(built.html);
-            listCursor = built.nextIdx;
-          }
-          continue;
-        }
-
-        // 9. 普通段落（合并相邻非空普通文本行，支持行尾双空格软换行）
-        const paraParts: string[] = [];
-        while (i < lines.length && !isBlockBoundary(lines, i)) {
-          const rawLine = lines[i];
-          const hasHardBreak = /\s{2,}$/.test(rawLine);
-          const renderedLine = await renderInline(rawLine.trim());
-          paraParts.push(hasHardBreak ? `${renderedLine}<br />` : renderedLine);
-          i++;
-        }
-        if (paraParts.length > 0) {
-          out.push(`<p>${paraParts.join("\n")}</p>`);
-        } else {
-          out.push(`<p>${await renderInline(line)}</p>`);
-          i++;
-        }
-      }
-
-      return out.join("\n");
-    };
-
-    return renderBlocks(rawLines.slice(startIdx), true);
   }
 
   /**
    * 全量无损打印 / 导出 PDF
    */
   private async printDocument() {
-    if (!this.editorView) return;
-    const docText = this.editorView.state.doc.toString();
-    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    if (!targetView) return;
+    const docText = targetView.state.doc.toString();
+    const title = this.currentFilePath
+      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : this.tabsManager?.getActiveTab()?.title.replace(/\.(md|markdown|txt)$/i, "") ||
+        "document-export";
+    const rawBodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const bodyHtml = quillaPluginRegistry.runExportHtmlTransformers(rawBodyHtml, "pdf");
+    const themeMeta = themeLoader.getThemeMeta();
 
-    let printMount = document.getElementById("quilla-print-mount");
-    if (!printMount) {
-      printMount = document.createElement("div");
-      printMount.id = "quilla-print-mount";
-      document.body.appendChild(printMount);
-    }
-    printMount.innerHTML = bodyHtml;
+    openPdfExportModal({
+      title,
+      bodyHtml,
+      wordCount: countMixedWords(docText),
+      themeCss: themeMeta.css,
+      isDark: themeMeta.id === "night",
+      onSystemPrintFallback: (compiledBodyHtml, pageCss) => {
+        let printStyle = document.getElementById("quilla-print-page-style") as HTMLStyleElement | null;
+        if (!printStyle) {
+          printStyle = document.createElement("style");
+          printStyle.id = "quilla-print-page-style";
+          document.head.appendChild(printStyle);
+        }
+        printStyle.textContent = pageCss;
 
-    const cleanup = () => {
-      if (printMount) printMount.innerHTML = "";
-      window.removeEventListener("afterprint", cleanup);
-    };
-    window.addEventListener("afterprint", cleanup);
+        let printMount = document.getElementById("quilla-print-mount");
+        if (!printMount) {
+          printMount = document.createElement("div");
+          printMount.id = "quilla-print-mount";
+          document.body.appendChild(printMount);
+        }
+        printMount.innerHTML = compiledBodyHtml;
 
-    setTimeout(() => {
-      window.print();
-    }, 60);
+        const cleanup = () => {
+          if (printMount) printMount.innerHTML = "";
+          window.removeEventListener("afterprint", cleanup);
+        };
+        window.addEventListener("afterprint", cleanup);
+
+        setTimeout(() => {
+          window.print();
+        }, 60);
+      },
+    });
   }
 
   private async exportHtml() {
@@ -1988,7 +1596,18 @@ class App {
     table.md-table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; }
     table.md-table th, table.md-table td { border: 1px solid var(--border-color, #dfe2e5); padding: 8px 14px; }
     table.md-table th { background-color: rgba(127, 127, 127, 0.06); font-weight: 600; }
-    pre { padding: 14px 16px; border-radius: 8px; background: rgba(127, 127, 127, 0.06); border: 1px solid var(--border-color, #dfe2e5); overflow-x: auto; font-family: Consolas, monospace; }
+    .exported-code-card { margin: 1.2rem 0; border-radius: 8px; background: rgba(127, 127, 127, 0.06); border: 1px solid var(--border-color, #dfe2e5); overflow: hidden; }
+    .exported-code-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; background: rgba(127, 127, 127, 0.08); border-bottom: 1px solid var(--border-color, #dfe2e5); font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif; font-size: 12px; color: var(--control-text-color, #57606a); }
+    .exported-code-dots { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; }
+    .exported-code-dots i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+    .exported-code-dots i.dot-red { background: #ff5f56; }
+    .exported-code-dots i.dot-amber { background: #ffbd2e; }
+    .exported-code-dots i.dot-green { background: #27c93f; }
+    .exported-code-lang { font-weight: 700; letter-spacing: 0.05em; color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.1); padding: 1px 7px; border-radius: 999px; font-size: 11px; }
+    .exported-code-meta { margin-left: auto; font-size: 11px; opacity: 0.72; }
+    pre { margin: 0; padding: 12px 16px; background: transparent; border: none; overflow-x: auto; font-family: Consolas, "JetBrains Mono", monospace; font-size: 13px; line-height: 1.65; }
+    pre > code { background: transparent !important; border: none !important; padding: 0 !important; font-size: inherit !important; }
+    :not(pre) > code { font-family: Consolas, "JetBrains Mono", monospace; font-size: 87%; background-color: rgba(127, 127, 127, 0.1); padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border-color, #dfe2e5); }
     .exported-code-line[data-code-line]::before {
       content: attr(data-code-line);
       display: inline-block;

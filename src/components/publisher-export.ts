@@ -75,7 +75,9 @@ function materializeCodeBlockLines(
             options.isDark ? "#30363d" : "#e1e4e8"
           }; user-select: none; font-size: 12px;`
         );
-        lnSpan.textContent = lnAttr;
+        lnSpan.textContent = options.preserveSpacesWithNbsp
+          ? `${lnAttr.padStart(2, "\u00A0")}\u00A0│\u00A0`
+          : lnAttr;
         lineDiv.appendChild(lnSpan);
       }
 
@@ -228,10 +230,50 @@ export function buildWeChatInlineHtml(bodyHtml: string, title: string): string {
     );
   });
 
-  root.querySelectorAll("pre").forEach((el) => {
+  root.querySelectorAll(".exported-code-card").forEach((el) => {
     el.setAttribute(
       "style",
-      "margin: 14px 0; padding: 14px 16px; background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-family: Consolas, 'JetBrains Mono', Menlo, monospace; font-size: 13px; line-height: 1.6; color: #24292f;"
+      "margin: 14px 0; background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden;"
+    );
+  });
+
+  root.querySelectorAll(".exported-code-header").forEach((el) => {
+    el.setAttribute(
+      "style",
+      "display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; background-color: #eef1f5; border-bottom: 1px solid #d0d7de; font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif; font-size: 11.5px; color: #57606a;"
+    );
+  });
+
+  root.querySelectorAll(".exported-code-dots").forEach((el) => {
+    el.setAttribute("style", "display: inline-flex; align-items: center; gap: 5px; margin-right: 8px;");
+    const dots = el.querySelectorAll("i");
+    const colors = ["#ff5f56", "#ffbd2e", "#27c93f"];
+    dots.forEach((d, idx) => {
+      d.setAttribute(
+        "style",
+        `display: inline-block; width: 9px; height: 9px; border-radius: 50%; background-color: ${colors[idx % 3]};`
+      );
+    });
+  });
+
+  root.querySelectorAll(".exported-code-lang").forEach((el) => {
+    el.setAttribute(
+      "style",
+      "font-weight: 700; letter-spacing: 0.05em; color: #0969da; background-color: rgba(9, 105, 218, 0.1); padding: 1px 7px; border-radius: 999px; font-size: 11px;"
+    );
+  });
+
+  root.querySelectorAll(".exported-code-meta").forEach((el) => {
+    el.setAttribute("style", "margin-left: auto; font-size: 11px; color: #8c959f;");
+  });
+
+  root.querySelectorAll("pre").forEach((el) => {
+    const inCard = Boolean(el.closest(".exported-code-card"));
+    el.setAttribute(
+      "style",
+      inCard
+        ? "margin: 0; padding: 12px 16px; background-color: #f6f8fa; border: none; border-radius: 0; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-family: Consolas, 'JetBrains Mono', Menlo, monospace; font-size: 13px; line-height: 1.6; color: #24292f;"
+        : "margin: 14px 0; padding: 14px 16px; background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-family: Consolas, 'JetBrains Mono', Menlo, monospace; font-size: 13px; line-height: 1.6; color: #24292f;"
     );
   });
 
@@ -303,7 +345,7 @@ export function buildWeChatInlineHtml(bodyHtml: string, title: string): string {
     "style",
     "margin-top: 24px; padding-top: 10px; border-top: 1px dashed #d0d7de; font-size: 12px; color: #8c959f; text-align: right;"
   );
-  footer.textContent = `由 Quilla (羽墨) v0.6 排版生成 · ${title}`;
+  footer.textContent = `由 Quilla (羽墨) v0.7 排版生成 · ${title}`;
   root.appendChild(footer);
 
   return root.outerHTML;
@@ -426,7 +468,23 @@ async function buildWordCompatibleHtml(bodyHtml: string, title: string): Promise
     showLineNumbers: true,
   });
 
+  // 先对所有非代码块内的行内 <code> 写入 MSO 兼容底色样式（确保表格、引用块、Callout 内的行内代码同样生效）
+  root.querySelectorAll("code").forEach((el) => {
+    if (!el.closest("pre") && !el.closest(".exported-code-card")) {
+      el.setAttribute(
+        "style",
+        "font-family: Consolas, 'Courier New', monospace; font-size: 9.5pt; background-color: #eff1f3; color: #cf222e; padding: 1pt 3pt; border: 1pt solid #d0d7de;"
+      );
+    }
+  });
+
   root.querySelectorAll("pre").forEach((pre) => {
+    const cardWrap = pre.closest(".exported-code-card");
+    const langText =
+      cardWrap?.querySelector(".exported-code-lang")?.textContent?.trim() || "CODE";
+    const metaText =
+      cardWrap?.querySelector(".exported-code-meta")?.textContent?.trim() || "";
+
     const codeTable = doc.createElement("table");
     codeTable.setAttribute("width", "100%");
     codeTable.setAttribute("cellspacing", "0");
@@ -435,25 +493,34 @@ async function buildWordCompatibleHtml(bodyHtml: string, title: string): Promise
       "style",
       "width: 100%; border-collapse: collapse; margin: 10pt 0; background-color: #f6f8fa; border: 1pt solid #d0d7de;"
     );
+
+    const headerTr = doc.createElement("tr");
+    const headerTd = doc.createElement("td");
+    headerTd.setAttribute(
+      "style",
+      "padding: 4pt 10pt; background-color: #eef1f5; border-bottom: 1pt solid #d0d7de; font-family: Consolas, Arial, sans-serif; font-size: 8.5pt; color: #57606a;"
+    );
+    headerTd.innerHTML = `<span style="color:#ff5f56;">●</span> <span style="color:#ffbd2e;">●</span> <span style="color:#27c93f;">●</span>&nbsp;&nbsp;<strong style="color:#0969da;">${langText}</strong>${
+      metaText ? `&nbsp;·&nbsp;<span>${metaText}</span>` : ""
+    }`;
+    headerTr.appendChild(headerTd);
+    codeTable.appendChild(headerTr);
+
     const tr = doc.createElement("tr");
     const td = doc.createElement("td");
     td.setAttribute(
       "style",
       "padding: 9pt 12pt; background-color: #f6f8fa; border: 1pt solid #d0d7de; font-family: Consolas, 'Courier New', monospace; font-size: 9.5pt; line-height: 1.55; color: #24292f;"
     );
-    td.innerHTML = pre.innerHTML;
+    const innerCode = pre.querySelector("code");
+    td.innerHTML = innerCode ? innerCode.innerHTML : pre.innerHTML;
     tr.appendChild(td);
     codeTable.appendChild(tr);
-    pre.replaceWith(codeTable);
-  });
 
-  // 6. 行内代码、标题、引用块、Callout、表格全部写入纯 Hex MSO 兼容样式
-  root.querySelectorAll("code").forEach((el) => {
-    if (!el.closest("table")) {
-      el.setAttribute(
-        "style",
-        "font-family: Consolas, 'Courier New', monospace; font-size: 9.5pt; background-color: #eff1f3; color: #cf222e; padding: 1pt 3pt;"
-      );
+    if (cardWrap) {
+      cardWrap.replaceWith(codeTable);
+    } else {
+      pre.replaceWith(codeTable);
     }
   });
 
@@ -569,7 +636,7 @@ async function buildWordCompatibleHtml(bodyHtml: string, title: string): Promise
     "style",
     "margin-top: 18pt; padding-top: 8pt; border-top: 1pt dashed #d0d7de; font-size: 9pt; color: #8c959f; text-align: right;"
   );
-  footer.textContent = `由 Quilla (羽墨) v0.6 导出 · ${title}`;
+  footer.textContent = `由 Quilla (羽墨) v0.7 导出 · ${title}`;
   root.appendChild(footer);
 
   return root.innerHTML;
@@ -735,7 +802,7 @@ export function openSharePosterModal(options: {
               ${preparedBody}
             </div>
             <div class="poster-card-footer">
-              <span>Written with Quilla (羽墨) v0.6</span>
+              <span>Written with Quilla (羽墨) v0.7</span>
               <span>Markdown Knowledge Studio</span>
             </div>
           </div>
@@ -789,6 +856,8 @@ export function openSharePosterModal(options: {
  */
 function inlineComputedStylesRecursive(origEl: Element, cloneEl: Element) {
   if (origEl instanceof HTMLElement && cloneEl instanceof HTMLElement) {
+    const tag = origEl.tagName;
+    const isCodeInsidePre = tag === "CODE" && origEl.parentElement?.tagName === "PRE";
     const cs = window.getComputedStyle(origEl);
     const props = [
       "font-family",
@@ -799,17 +868,8 @@ function inlineComputedStylesRecursive(origEl: Element, cloneEl: Element) {
       "letter-spacing",
       "color",
       "background-color",
-      "background",
       "padding",
-      "padding-top",
-      "padding-right",
-      "padding-bottom",
-      "padding-left",
       "margin",
-      "margin-top",
-      "margin-right",
-      "margin-bottom",
-      "margin-left",
       "border-top",
       "border-right",
       "border-bottom",
@@ -831,14 +891,19 @@ function inlineComputedStylesRecursive(origEl: Element, cloneEl: Element) {
     ];
     let inlineStr = "";
     for (const p of props) {
+      if (isCodeInsidePre && (p.startsWith("border") || p.startsWith("background") || p === "padding")) {
+        continue;
+      }
       const val = cs.getPropertyValue(p);
       if (val && val !== "none" && val !== "normal" && val !== "0px" && val !== "rgba(0, 0, 0, 0)") {
         inlineStr += `${p}:${val};`;
       }
     }
-    // 强制代码块自动折行，绝不横向截断
-    if (origEl.tagName === "PRE" || origEl.tagName === "CODE") {
+    if (tag === "PRE" || tag === "CODE") {
       inlineStr += "white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;overflow:visible;";
+      if (isCodeInsidePre) {
+        inlineStr += "background:transparent;border:none;padding:0;border-radius:0;display:block;";
+      }
     }
     const existing = cloneEl.getAttribute("style") || "";
     cloneEl.setAttribute("style", `${inlineStr}${existing}`);
@@ -851,6 +916,7 @@ function inlineComputedStylesRecursive(origEl: Element, cloneEl: Element) {
     inlineComputedStylesRecursive(origChildren[i], cloneChildren[i]);
   }
 }
+
 
 async function exportDomStageToPng(
   stage: HTMLElement,
@@ -921,8 +987,18 @@ async function exportDomStageToPng(
     .poster-card-body h2 { font-size: 18px; font-weight: 700; margin: 18px 0 10px; padding-left: 10px; border-left: 4px solid #0969da; color: ${textColors[skin]}; }
     .poster-card-body h3, .poster-card-body h4 { font-size: 16px; font-weight: 700; margin: 14px 0 8px; color: ${textColors[skin]}; }
     .poster-card-body p { margin: 10px 0; line-height: 1.8; font-size: 15px; }
-    .poster-card-body pre { margin: 14px 0; padding: 14px 16px; border-radius: 8px; background: ${codeBgColors[skin]}; border: 1px solid ${borderColors[skin]}; white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: anywhere !important; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.65; }
-    .poster-card-body code { font-family: Consolas, 'JetBrains Mono', monospace; font-size: 13px; }
+    .poster-card-body .exported-code-card { margin: 14px 0; border-radius: 8px; background: ${codeBgColors[skin]}; border: 1px solid ${borderColors[skin]}; overflow: hidden; }
+    .poster-card-body .exported-code-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-bottom: 1px solid ${borderColors[skin]}; font-size: 11.5px; opacity: 0.85; }
+    .poster-card-body .exported-code-dots { display: inline-flex; gap: 5px; margin-right: 8px; }
+    .poster-card-body .exported-code-dots i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+    .poster-card-body .exported-code-dots i.dot-red { background: #ff5f56; }
+    .poster-card-body .exported-code-dots i.dot-amber { background: #ffbd2e; }
+    .poster-card-body .exported-code-dots i.dot-green { background: #27c93f; }
+    .poster-card-body .exported-code-lang { font-weight: 700; color: #0969da; font-size: 11px; }
+    .poster-card-body .exported-code-meta { margin-left: auto; font-size: 11px; opacity: 0.7; }
+    .poster-card-body pre { margin: 0; padding: 12px 16px; background: ${codeBgColors[skin]}; border: none; white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: anywhere !important; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.65; }
+    .poster-card-body :not(pre) > code { font-family: Consolas, 'JetBrains Mono', monospace; font-size: 13px; background: rgba(127, 127, 127, 0.12); padding: 2px 5px; border-radius: 4px; border: 1px solid ${borderColors[skin]}; }
+    .poster-card-body pre > code { font-family: Consolas, 'JetBrains Mono', monospace; font-size: 13px; background: transparent !important; border: none !important; padding: 0 !important; }
     .poster-card-body blockquote, .poster-card-body .cm-callout-export { margin: 14px 0; padding: 12px 16px; border-left: 4px solid #0969da; background: ${codeBgColors[skin]}; border-radius: 6px; }
     .poster-card-body table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
     .poster-card-body th, .poster-card-body td { border: 1px solid ${borderColors[skin]}; padding: 7px 10px; }
@@ -1014,4 +1090,468 @@ async function exportDomStageToPng(
   };
 
   img.src = svgDataUrl;
+}
+
+
+export interface PdfExportOptions {
+  title: string;
+  bodyHtml: string;
+  wordCount: number;
+  themeCss: string;
+  isDark: boolean;
+  onSystemPrintFallback?: (compiledBodyHtml: string, pageCss: string) => void;
+}
+
+let pdfModalEl: HTMLElement | null = null;
+
+/**
+ * 构建出版级独立矢量 PDF 完整 HTML 文档（内置精确分页保护、色彩保持、代码块卡片与公式样式）
+ */
+export function buildStandalonePdfDocumentHtml(
+  title: string,
+  bodyHtml: string,
+  themeCss: string,
+  config: {
+    pageSize: "A4" | "Letter" | "A5";
+    marginPreset: "standard" | "compact" | "academic";
+    includeHeaderFooter: boolean;
+    wordCount: number;
+  }
+): string {
+  const marginMap = {
+    standard: "16mm 18mm",
+    compact: "10mm 12mm",
+    academic: "24mm 26mm",
+  };
+  const dateStr = new Date().toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const headerHtml = config.includeHeaderFooter
+    ? `<header class="pdf-doc-banner">
+        <div class="pdf-banner-meta">
+          <span class="pdf-brand">QUILLA · 羽墨出版级文档</span>
+          <span>${dateStr} · ${config.wordCount} 词</span>
+        </div>
+        <h1 class="pdf-banner-title">${escapeHtml(title)}</h1>
+      </header>`
+    : "";
+
+  const footerHtml = config.includeHeaderFooter
+    ? `<footer class="pdf-doc-footer">
+        <span>由 Quilla (羽墨) v0.7 矢量排版引擎生成</span>
+        <span>${escapeHtml(title)}</span>
+      </footer>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    ${themeCss}
+    @page {
+      size: ${config.pageSize} portrait;
+      margin: ${marginMap[config.marginPreset]};
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff !important;
+      color: #1f2328 !important;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", serif;
+      font-size: 10.5pt;
+      line-height: 1.75;
+    }
+    .pdf-container {
+      max-width: 100%;
+      margin: 0 auto;
+    }
+    .pdf-doc-banner {
+      margin-bottom: 18pt;
+      padding-bottom: 10pt;
+      border-bottom: 1.5pt solid #0969da;
+    }
+    .pdf-banner-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 8.5pt;
+      color: #57606a;
+      margin-bottom: 6pt;
+    }
+    .pdf-brand {
+      font-weight: 700;
+      color: #0969da;
+      letter-spacing: 0.05em;
+    }
+    .pdf-banner-title {
+      font-size: 20pt;
+      font-weight: 800;
+      margin: 0;
+      color: #1f2328;
+      border: none;
+      padding: 0;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      page-break-after: avoid !important;
+      break-after: avoid !important;
+      color: #1f2328;
+    }
+    h1 { font-size: 17pt; border-bottom: 1pt solid #d0d7de; padding-bottom: 4pt; margin-top: 18pt; }
+    h2 { font-size: 14pt; border-left: 3pt solid #0969da; padding-left: 8pt; margin-top: 15pt; }
+    h3 { font-size: 12pt; margin-top: 12pt; }
+    table.md-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10pt 0;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    table.md-table th, table.md-table td {
+      border: 1px solid #d0d7de;
+      padding: 6pt 10pt;
+      font-size: 9.5pt;
+    }
+    table.md-table th {
+      background-color: #f6f8fa !important;
+      font-weight: 600;
+    }
+    .exported-code-card {
+      margin: 10pt 0;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background-color: #f6f8fa !important;
+      overflow: hidden;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    .exported-code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4pt 10pt;
+      background-color: #eef1f5 !important;
+      border-bottom: 1px solid #d0d7de;
+      font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif;
+      font-size: 8pt;
+      color: #57606a;
+    }
+    .exported-code-dots {
+      display: inline-flex;
+      gap: 4px;
+      margin-right: 8px;
+    }
+    .exported-code-dots i {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .exported-code-dots i.dot-red { background-color: #ff5f56 !important; }
+    .exported-code-dots i.dot-amber { background-color: #ffbd2e !important; }
+    .exported-code-dots i.dot-green { background-color: #27c93f !important; }
+    .exported-code-lang {
+      font-weight: 700;
+      color: #0969da;
+      background: rgba(9, 105, 218, 0.1) !important;
+      padding: 1px 6px;
+      border-radius: 999px;
+    }
+    .exported-code-meta {
+      margin-left: auto;
+      color: #8c959f;
+    }
+    pre.exported-code-block {
+      margin: 0 !important;
+      padding: 8pt 12pt !important;
+      background-color: #f6f8fa !important;
+      border: none !important;
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+      font-family: Consolas, "JetBrains Mono", "Courier New", monospace;
+      font-size: 9pt;
+      line-height: 1.55;
+    }
+    pre > code {
+      background: transparent !important;
+      border: none !important;
+      padding: 0 !important;
+      font-size: inherit !important;
+    }
+    :not(pre) > code {
+      font-family: Consolas, "JetBrains Mono", monospace;
+      font-size: 9pt;
+      background-color: #eff1f3 !important;
+      color: #cf222e;
+      padding: 1pt 4pt;
+      border-radius: 3px;
+      border: 1px solid #d0d7de;
+    }
+    .exported-code-line[data-code-line]::before {
+      content: attr(data-code-line);
+      display: inline-block;
+      width: 24px;
+      margin-right: 10px;
+      padding-right: 8px;
+      text-align: right;
+      color: #8c959f;
+      border-right: 1px solid #d0d7de;
+      user-select: none;
+    }
+    blockquote, .cm-callout-export, .md-math-block-preview, .md-mermaid-card, figure, img {
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    blockquote {
+      border-left: 3pt solid #0969da;
+      margin: 8pt 0;
+      padding: 4pt 12pt;
+      background-color: #f6f8fa !important;
+      color: #57606a;
+    }
+    .cm-callout-export {
+      border: 1px solid rgba(9, 105, 218, 0.25);
+      border-left: 3.5pt solid #0969da;
+      border-radius: 5px;
+      padding: 8pt 12pt;
+      margin: 8pt 0;
+      background-color: #f0f7ff !important;
+    }
+    .cm-wikilink, .cm-hashtag {
+      color: #0969da;
+      background-color: #eef6ff !important;
+      padding: 1pt 5pt;
+      border-radius: 8px;
+      font-size: 9pt;
+    }
+    .katex-mathml { display: none !important; }
+    .pdf-doc-footer {
+      margin-top: 20pt;
+      padding-top: 8pt;
+      border-top: 1px dashed #d0d7de;
+      display: flex;
+      justify-content: space-between;
+      font-size: 8pt;
+      color: #8c959f;
+    }
+  </style>
+</head>
+<body>
+  <div class="pdf-container">
+    ${headerHtml}
+    ${bodyHtml}
+    ${footerHtml}
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * 打开出版级矢量 PDF 导出工作台 (支持纸张规格、页边距预设、页眉页脚开关、Rust 原生无头矢量导出与系统打印双引擎)
+ */
+export function openPdfExportModal(options: PdfExportOptions) {
+  if (!pdfModalEl) {
+    pdfModalEl = document.createElement("div");
+    pdfModalEl.id = "ty-pdf-export-modal";
+    pdfModalEl.className = "ty-modal-overlay hidden";
+    document.body.appendChild(pdfModalEl);
+  }
+
+  let pageSize: "A4" | "Letter" | "A5" = "A4";
+  let marginPreset: "standard" | "compact" | "academic" = "standard";
+  let includeHeaderFooter = true;
+
+  const preparePreviewHtml = (): string => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div id="pdf-root">${options.bodyHtml}</div>`, "text/html");
+    const root = doc.getElementById("pdf-root")!;
+    if (includeHeaderFooter) {
+      const firstChild = root.firstElementChild;
+      if (
+        firstChild &&
+        firstChild.tagName.toLowerCase() === "h1" &&
+        (firstChild.textContent || "").trim() === options.title.trim()
+      ) {
+        firstChild.remove();
+      }
+    }
+    inlineCodeSyntaxColors(root, false);
+    return root.innerHTML;
+  };
+
+  pdfModalEl.classList.remove("hidden");
+
+  const renderModal = () => {
+    if (!pdfModalEl) return;
+    const previewBody = preparePreviewHtml();
+    const widthPx = pageSize === "A5" ? 520 : 680;
+    const paddingMap = {
+      standard: "36px 42px",
+      compact: "22px 26px",
+      academic: "50px 56px",
+    };
+    const dateStr = new Date().toLocaleDateString("zh-CN", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+
+    pdfModalEl.innerHTML = `
+      <div class="ty-modal-card poster-modal-card" role="dialog" aria-modal="true">
+        <div class="ty-modal-header">
+          <div class="modal-title">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+            <span>导出出版级矢量 PDF 文档</span>
+          </div>
+          <div class="graph-toolbar-controls">
+            <div class="graph-scope-Segment" title="纸张规格">
+              <button type="button" class="graph-scope-btn ${pageSize === "A4" ? "active" : ""}" data-pdf-size="A4">A4 标准</button>
+              <button type="button" class="graph-scope-btn ${pageSize === "Letter" ? "active" : ""}" data-pdf-size="Letter">Letter</button>
+              <button type="button" class="graph-scope-btn ${pageSize === "A5" ? "active" : ""}" data-pdf-size="A5">A5 电子书</button>
+            </div>
+            <div class="graph-scope-Segment" title="页边距预设">
+              <button type="button" class="graph-scope-btn ${marginPreset === "standard" ? "active" : ""}" data-pdf-margin="standard">标准边距</button>
+              <button type="button" class="graph-scope-btn ${marginPreset === "compact" ? "active" : ""}" data-pdf-margin="compact">紧凑</button>
+              <button type="button" class="graph-scope-btn ${marginPreset === "academic" ? "active" : ""}" data-pdf-margin="academic">学术宽距</button>
+            </div>
+            <button type="button" class="graph-scope-btn ${includeHeaderFooter ? "active" : ""}" id="pdf-toggle-hf-btn" title="切换文档抬头与页脚水印">页眉页脚</button>
+            <button type="button" class="modal-close-btn" id="pdf-close-btn" title="关闭 (Esc)">✕</button>
+          </div>
+        </div>
+
+        <div class="poster-preview-scroller">
+          <div class="poster-card-stage skin-ivory" style="width: ${widthPx}px; padding: ${paddingMap[marginPreset]}; background: #ffffff; color: #1f2328;">
+            ${
+              includeHeaderFooter
+                ? `<div class="poster-card-header" style="border-bottom: 2px solid #0969da;">
+                    <div class="poster-header-top">
+                      <div class="poster-brand-pill">QUILLA · 羽墨出版级 PDF</div>
+                      <div class="poster-meta-line">${dateStr} · ${options.wordCount} 词 · ${pageSize}</div>
+                    </div>
+                    <h1 class="poster-doc-main-title" style="color:#1f2328;">${escapeHtml(options.title)}</h1>
+                  </div>`
+                : ""
+            }
+            <div class="poster-card-body">
+              ${previewBody}
+            </div>
+            ${
+              includeHeaderFooter
+                ? `<div class="poster-card-footer">
+                    <span>由 Quilla (羽墨) v0.7 矢量排版引擎生成</span>
+                    <span>${escapeHtml(options.title)}</span>
+                  </div>`
+                : ""
+            }
+          </div>
+        </div>
+
+        <div class="ty-modal-footer">
+          <span class="footer-tip">自动保留代码块卡片底色、语法高亮、矢量公式与防截断分页 (break-inside: avoid)</span>
+          <div class="tm-footer-btns">
+            <button type="button" class="save-dialog-btn btn-discard" id="pdf-sys-print-btn">系统打印预览</button>
+            <button type="button" class="modal-confirm-btn" id="pdf-native-export-btn">直接导出矢量 PDF (.pdf)...</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const close = () => pdfModalEl?.classList.add("hidden");
+    pdfModalEl.querySelector("#pdf-close-btn")?.addEventListener("click", close);
+
+    pdfModalEl.querySelectorAll<HTMLElement>("[data-pdf-size]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        pageSize = (btn.dataset.pdfSize as any) || "A4";
+        renderModal();
+      });
+    });
+
+    pdfModalEl.querySelectorAll<HTMLElement>("[data-pdf-margin]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        marginPreset = (btn.dataset.pdfMargin as any) || "standard";
+        renderModal();
+      });
+    });
+
+    pdfModalEl.querySelector("#pdf-toggle-hf-btn")?.addEventListener("click", () => {
+      includeHeaderFooter = !includeHeaderFooter;
+      renderModal();
+    });
+
+    pdfModalEl.querySelector("#pdf-sys-print-btn")?.addEventListener("click", () => {
+      close();
+      const marginMap = {
+        standard: "16mm 18mm",
+        compact: "10mm 12mm",
+        academic: "24mm 26mm",
+      };
+      const pageCss = `@page { size: ${pageSize} portrait; margin: ${marginMap[marginPreset]}; }`;
+      options.onSystemPrintFallback?.(previewBody, pageCss);
+    });
+
+    pdfModalEl.querySelector("#pdf-native-export-btn")?.addEventListener("click", async () => {
+      const exportBtn = pdfModalEl?.querySelector("#pdf-native-export-btn") as HTMLButtonElement | null;
+      try {
+        const savePath = await invoke<string | null>("select_export_pdf_path", {
+          defaultName: `${options.title}.pdf`,
+        });
+        if (!savePath || !savePath.trim()) return;
+
+        if (exportBtn) {
+          exportBtn.disabled = true;
+          exportBtn.textContent = "正在生成矢量 PDF...";
+        }
+
+        const fullHtml = buildStandalonePdfDocumentHtml(
+          options.title,
+          previewBody,
+          options.themeCss,
+          {
+            pageSize,
+            marginPreset,
+            includeHeaderFooter,
+            wordCount: options.wordCount,
+          }
+        );
+
+        await invoke("export_pdf_document", {
+          path: savePath.trim(),
+          htmlContent: fullHtml,
+          pageSize,
+        });
+
+        close();
+        showToast(`PDF 导出成功：${savePath.trim().split(/[\\/]/).pop()}`, "success");
+      } catch (err) {
+        console.warn("原生无头 PDF 引擎回退至系统打印预览:", err);
+        close();
+        const marginMap = {
+          standard: "16mm 18mm",
+          compact: "10mm 12mm",
+          academic: "24mm 26mm",
+        };
+        const pageCss = `@page { size: ${pageSize} portrait; margin: ${marginMap[marginPreset]}; }`;
+        options.onSystemPrintFallback?.(previewBody, pageCss);
+      } finally {
+        if (exportBtn) {
+          exportBtn.disabled = false;
+          exportBtn.textContent = "直接导出矢量 PDF (.pdf)...";
+        }
+      }
+    });
+  };
+
+  pdfModalEl.onclick = (e) => {
+    if (e.target === pdfModalEl) pdfModalEl?.classList.add("hidden");
+  };
+
+  renderModal();
 }
