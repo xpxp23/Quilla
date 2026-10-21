@@ -1,7 +1,8 @@
 import { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
-import { isInsideCodeContextAST } from "./doc-structure";
+import { getDocStructure, isInsideCodeContextAST } from "./doc-structure";
+import { showToast } from "../../components/save-dialog";
 
 export interface WikiLinkMatch {
   start: number;
@@ -46,6 +47,18 @@ function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function highlightKeywordInSnippet(text: string, keyword: string): string {
+  if (!keyword) return escapeHtml(text);
+  const escapedText = escapeHtml(text);
+  const escapedKw = escapeHtml(keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  try {
+    const re = new RegExp(`(\\[\\[${escapedKw}(?:[#|][^\\]]*)?\\]\\]|${escapedKw})`, "gi");
+    return escapedText.replace(re, `<span class="backlink-hit">$1</span>`);
+  } catch {
+    return escapedText;
+  }
 }
 
 /**
@@ -133,7 +146,7 @@ export function clearTransclusionCache() {
 }
 
 /**
- * 异步读取 ![[文档#标题]] 嵌入块的目标章节文本（带内存缓存）
+ * 异步读取 ![[文档#标题]] 或 ![[文档#^block-id]] 嵌入块的目标章节/段落文本（带内存缓存）
  */
 export async function fetchTransclusionSectionContent(
   targetDoc: string,
@@ -186,24 +199,29 @@ export async function fetchTransclusionSectionContent(
 }
 
 /**
- * 触发双向链接跳转或自动新建目标笔记（供 live-preview WikiLinkWidget 与事件委托调用）
+ * 触发双向链接跳转或自动新建目标笔记（支持 [[文档#标题]] 与 [[文档#^block-id]] 精准定位）
  */
 export async function handleWikiLinkTrigger(
-  _view: EditorView,
+  view: EditorView,
   targetDoc: string,
   heading?: string | null
 ) {
-  if (!workspaceProvider) return;
   const targetName = (targetDoc || "").trim();
   const headingName = (heading || "").trim() || null;
 
-  if (!targetName) {
-    const activePath = workspaceProvider.getActiveFilePath();
-    if (activePath && headingName) {
+  if (!targetName && headingName) {
+    const activePath = workspaceProvider?.getActiveFilePath();
+    if (activePath && workspaceProvider) {
       workspaceProvider.onOpenWikiTarget(activePath, headingName);
+    } else {
+      import("./anchor-navigator").then(({ navigateToAnchor }) => {
+        navigateToAnchor(view, headingName);
+      });
     }
     return;
   }
+
+  if (!workspaceProvider) return;
 
   const files = await workspaceProvider.getWorkspaceMarkdownFiles();
   const matched = files.find(
@@ -239,7 +257,9 @@ export function handleTagClickTrigger(tagName: string) {
 }
 
 /**
- * CodeMirror 6 自动补全源：输入 `[[` 或 `![[` 时检索工作区文件名，输入 `[[文件名#` 时检索该文件的全部 H1~H6 标题
+ * CodeMirror 6 自动补全源：
+ * - 输入 `[[` 或 `![[` 时检索工作区文件名
+ * - 输入 `[[文件名#` 或 `[[#` 时实时补全目标文档内的全部 H1~H6 标题与 `^block-id` 块级引用锚点
  */
 export async function wikiLinkCompletionSource(
   context: CompletionContext
@@ -254,24 +274,27 @@ export async function wikiLinkCompletionSource(
   if (openIdx === -1) return null;
 
   const afterOpen = before.slice(openIdx + 2);
-  if (afterOpen.includes("]]")) return null;
+  if (afterOpen.includes("]]") || afterOpen.includes("|")) return null;
 
   const afterCursor = line.text.slice(context.pos - line.from);
   const hasClosingBrackets = afterCursor.startsWith("]]");
 
-  if (!workspaceProvider) return null;
-  const files = await workspaceProvider.getWorkspaceMarkdownFiles();
+  const files = workspaceProvider ? await workspaceProvider.getWorkspaceMarkdownFiles() : [];
 
-  // 情况 1：包含 `#`，补全指定文档（或当前文档）内的标题
+  // 情况 1：包含 `#`，补全指定文档（或当前文档）内的 H1~H6 标题与 ^block-id 块引用锚点
   const hashIdx = afterOpen.indexOf("#");
   if (hashIdx !== -1) {
     const docStem = afterOpen.slice(0, hashIdx).trim();
     const headingQuery = afterOpen.slice(hashIdx + 1).toLowerCase();
     const fromPos = line.from + openIdx + 2 + hashIdx + 1;
 
+    const activeFilePath = workspaceProvider?.getActiveFilePath() || null;
     let targetFilePath: string | null = null;
+    let isCurrentActiveDoc = false;
+
     if (!docStem) {
-      targetFilePath = workspaceProvider.getActiveFilePath();
+      targetFilePath = activeFilePath;
+      isCurrentActiveDoc = true;
     } else {
       const matchedFile = files.find(
         (f) =>
@@ -279,28 +302,71 @@ export async function wikiLinkCompletionSource(
           f.name.toLowerCase() === docStem.toLowerCase()
       );
       targetFilePath = matchedFile ? matchedFile.path : null;
+      if (
+        targetFilePath &&
+        activeFilePath &&
+        targetFilePath.replace(/\\/g, "/").toLowerCase() ===
+          activeFilePath.replace(/\\/g, "/").toLowerCase()
+      ) {
+        isCurrentActiveDoc = true;
+      }
     }
 
-    if (!targetFilePath) return null;
-
     try {
-      const headings = await invoke<Array<{ level: number; text: string; line: number }>>(
-        "extract_file_headings",
-        { path: targetFilePath }
-      );
+      let headings: Array<{ level: number; text: string; line: number; insertValue?: string }> = [];
+
+      if (isCurrentActiveDoc) {
+        // 优先从当前编辑器实时 DocStructure AST 读取（支持尚未落盘保存的最新标题与 ^block-id）
+        const struct = getDocStructure(context.state);
+        for (const h of struct.headings) {
+          headings.push({
+            level: h.level,
+            text: h.text,
+            line: h.line,
+            insertValue: h.text,
+          });
+        }
+        for (const b of struct.blockAnchors) {
+          headings.push({
+            level: 0,
+            text: `^${b.id} (${b.preview})`,
+            line: b.line,
+            insertValue: `^${b.id}`,
+          });
+        }
+      } else if (targetFilePath) {
+        const rawHeadings = await invoke<Array<{ level: number; text: string; line: number }>>(
+          "extract_file_headings",
+          { path: targetFilePath }
+        );
+        headings = rawHeadings.map((h) => {
+          const isBlockId = h.level === 0 || h.text.startsWith("^");
+          const cleanInsert = isBlockId ? h.text.replace(/\s+\(.*\)$/, "").trim() : h.text;
+          return {
+            level: h.level,
+            text: h.text,
+            line: h.line,
+            insertValue: cleanInsert,
+          };
+        });
+      }
+
       const options = headings
         .filter((h) => !headingQuery || h.text.toLowerCase().includes(headingQuery))
-        .map((h) => ({
-          label: h.text,
-          detail: `H${h.level} · L${h.line}`,
-          apply: (view: EditorView, _completion: any, from: number, to: number) => {
-            const insertText = hasClosingBrackets ? h.text : `${h.text}]]`;
-            view.dispatch({
-              changes: { from, to, insert: insertText },
-              selection: { anchor: from + insertText.length + (hasClosingBrackets ? 2 : 0) },
-            });
-          },
-        }));
+        .map((h) => {
+          const targetInsert = h.insertValue || h.text;
+          return {
+            label: h.text,
+            detail: h.level === 0 ? `块引用 · L${h.line}` : `H${h.level} · L${h.line}`,
+            apply: (view: EditorView, _completion: any, from: number, to: number) => {
+              const insertText = hasClosingBrackets ? targetInsert : `${targetInsert}]]`;
+              view.dispatch({
+                changes: { from, to, insert: insertText },
+                selection: { anchor: from + insertText.length + (hasClosingBrackets ? 2 : 0) },
+              });
+            },
+          };
+        });
 
       if (options.length === 0) return null;
       return {
@@ -324,10 +390,10 @@ export async function wikiLinkCompletionSource(
         f.stem.toLowerCase().includes(fileQuery) ||
         f.name.toLowerCase().includes(fileQuery)
     )
-    .slice(0, 30)
+    .slice(0, 35)
     .map((f) => ({
       label: f.stem,
-      detail: f.name,
+      detail: `${f.name} · 可输入 # 跳转标题`,
       apply: (view: EditorView, _completion: any, from: number, to: number) => {
         const insertText = hasClosingBrackets ? f.stem : `${f.stem}]]`;
         view.dispatch({
@@ -371,17 +437,23 @@ export function setupWikiLinkInteractions(view: EditorView) {
       const targetName = wikiEl.dataset.wikiDoc || wikiEl.dataset.target || "";
       const headingName = wikiEl.dataset.wikiHeading || wikiEl.dataset.heading || "";
       const files = await workspaceProvider.getWorkspaceMarkdownFiles();
-      const matched = files.find(
-        (f) =>
-          f.stem.toLowerCase() === targetName.toLowerCase() ||
-          f.name.toLowerCase() === targetName.toLowerCase()
-      );
+      const matched = targetName
+        ? files.find(
+            (f) =>
+              f.stem.toLowerCase() === targetName.toLowerCase() ||
+              f.name.toLowerCase() === targetName.toLowerCase()
+          )
+        : {
+            path: workspaceProvider.getActiveFilePath() || "",
+            name: "当前文档",
+            stem: "当前文档",
+          };
 
       const rect = wikiEl.getBoundingClientRect();
       previewCard.style.left = `${Math.min(rect.left, window.innerWidth - 340)}px`;
       previewCard.style.top = `${Math.min(rect.bottom + 8, window.innerHeight - 200)}px`;
 
-      if (!matched) {
+      if (!matched || !matched.path) {
         previewCard.innerHTML = `
           <div class="wiki-preview-header">
             <span class="wiki-preview-title">${escapeHtml(targetName || "当前文档")}</span>
@@ -406,7 +478,9 @@ export function setupWikiLinkInteractions(view: EditorView) {
             <span class="wiki-preview-title">${escapeHtml(matched.name)}${
           headingName ? ` › #${escapeHtml(headingName)}` : ""
         }</span>
-            <span class="wiki-preview-badge">双链预览</span>
+            <span class="wiki-preview-badge">${
+              headingName.startsWith("^") ? "块级引用" : "双链预览"
+            }</span>
           </div>
           <div class="wiki-preview-body">${escapeHtml(excerpt || "(空白文档)")}${
           sectionText.length > 280 ? "..." : ""
@@ -434,14 +508,31 @@ export function setupWikiLinkInteractions(view: EditorView) {
   });
 }
 
+interface BacklinkHitItem {
+  file: string;
+  file_name: string;
+  line: number;
+  text: string;
+}
+
 /**
- * 文档底部可折叠反向链接（Backlinks）控制器 + 局部知识图谱入口
+ * 文档底部与大纲面板下方联动的反向链接（Backlinks: Linked & Unlinked Mentions）控制器
  */
 export class BacklinksController {
   private panelEl: HTMLElement;
   private listEl: HTMLElement;
   private countBadgeEl: HTMLElement;
+  private linkedTabBtn: HTMLElement;
+  private unlinkedTabBtn: HTMLElement;
+  private outlineSectionEl: HTMLElement | null = null;
+  private outlineListEl: HTMLElement | null = null;
+  private outlineBadgeEl: HTMLElement | null = null;
   private isCollapsed: boolean = true;
+  private isOutlineCollapsed: boolean = false;
+  private activeTab: "linked" | "unlinked" = "linked";
+  private lastLinkedItems: BacklinkHitItem[] = [];
+  private lastUnlinkedItems: BacklinkHitItem[] = [];
+  private lastTargetStem: string = "";
   private onNavigate: (filePath: string, line: number, targetName: string) => void;
 
   constructor(
@@ -453,7 +544,7 @@ export class BacklinksController {
     this.panelEl.id = "ty-backlinks-panel";
     this.panelEl.className = "ty-backlinks-panel collapsed hidden";
     this.panelEl.innerHTML = `
-      <div class="backlinks-header" id="backlinks-toggle-header" title="展开/收起当前文档的双向链接反向引用列表">
+      <div class="backlinks-header" id="backlinks-toggle-header" title="展开/收起提及当前文档的反向链接 (Linked & Unlinked Mentions)">
         <div class="backlinks-title-box">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
@@ -463,6 +554,10 @@ export class BacklinksController {
           <span class="backlinks-badge" id="backlinks-count-badge">0</span>
         </div>
         <div class="backlinks-header-right">
+          <div class="backlinks-tabs" id="backlinks-mode-tabs">
+            <button type="button" class="backlinks-tab-btn active" data-tab="linked" title="显式通过 [[双链]] 引用当前文档的位置">已链接引用 (0)</button>
+            <button type="button" class="backlinks-tab-btn" data-tab="unlinked" title="提及了当前文档名但尚未添加 [[]] 的位置（支持一键转为双链）">未链接提及 (0)</button>
+          </div>
           <button type="button" class="backlinks-graph-btn" id="backlinks-open-graph-btn" title="打开双链知识关系图谱 (Knowledge Graph)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="6" cy="6" r="3"></circle>
@@ -485,11 +580,27 @@ export class BacklinksController {
 
     this.listEl = this.panelEl.querySelector("#backlinks-list") as HTMLElement;
     this.countBadgeEl = this.panelEl.querySelector("#backlinks-count-badge") as HTMLElement;
+    this.linkedTabBtn = this.panelEl.querySelector('[data-tab="linked"]') as HTMLElement;
+    this.unlinkedTabBtn = this.panelEl.querySelector('[data-tab="unlinked"]') as HTMLElement;
 
     this.panelEl.querySelector("#backlinks-toggle-header")?.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).closest("#backlinks-open-graph-btn")) return;
+      const target = e.target as HTMLElement;
+      if (target.closest("#backlinks-open-graph-btn") || target.closest(".backlinks-tab-btn")) {
+        return;
+      }
       this.isCollapsed = !this.isCollapsed;
       this.panelEl.classList.toggle("collapsed", this.isCollapsed);
+    });
+
+    this.panelEl.querySelectorAll<HTMLElement>(".backlinks-tab-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const tab = (btn.dataset.tab as "linked" | "unlinked") || "linked";
+        this.activeTab = tab;
+        this.isCollapsed = false;
+        this.panelEl.classList.remove("collapsed");
+        this.renderCurrentItems();
+      });
     });
 
     this.panelEl.querySelector("#backlinks-open-graph-btn")?.addEventListener("click", (e) => {
@@ -500,18 +611,173 @@ export class BacklinksController {
         window.dispatchEvent(new CustomEvent("quilla-open-graph-view"));
       }
     });
+
+    // 在侧边栏「大纲」面板下方挂载联动反向链接折叠区
+    this.mountOutlineBacklinksSection();
+  }
+
+  private mountOutlineBacklinksSection() {
+    const panelOutline = document.getElementById("panel-outline");
+    if (!panelOutline || document.getElementById("outline-backlinks-section")) return;
+
+    const section = document.createElement("div");
+    section.id = "outline-backlinks-section";
+    section.className = "outline-backlinks-section hidden";
+    section.innerHTML = `
+      <div class="outline-backlinks-header" id="outline-backlinks-toggle">
+        <div class="outline-backlinks-title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          <span>提及此文档 (Mentions)</span>
+          <span class="backlinks-badge" id="outline-backlinks-badge">0</span>
+        </div>
+        <svg class="backlinks-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </div>
+      <div class="outline-backlinks-list" id="outline-backlinks-list"></div>
+    `;
+    panelOutline.appendChild(section);
+
+    this.outlineSectionEl = section;
+    this.outlineListEl = section.querySelector("#outline-backlinks-list") as HTMLElement;
+    this.outlineBadgeEl = section.querySelector("#outline-backlinks-badge") as HTMLElement;
+
+    section.querySelector("#outline-backlinks-toggle")?.addEventListener("click", () => {
+      this.isOutlineCollapsed = !this.isOutlineCollapsed;
+      section.classList.toggle("collapsed", this.isOutlineCollapsed);
+    });
+  }
+
+  private buildBacklinkRow(
+    item: BacklinkHitItem,
+    targetStem: string,
+    isUnlinked: boolean
+  ): HTMLElement {
+    const row = document.createElement("div");
+    row.className = `backlink-item${isUnlinked ? " is-unlinked" : ""}`;
+    row.innerHTML = `
+      <div class="backlink-item-meta">
+        <span class="backlink-file">${escapeHtml(item.file_name)}</span>
+        <span class="backlink-line">L${item.line}</span>
+      </div>
+      <div class="backlink-snippet">${highlightKeywordInSnippet(item.text, targetStem)}</div>
+      ${
+        isUnlinked
+          ? `<button type="button" class="backlink-linkify-btn" title="将该行中的「${escapeHtml(
+              targetStem
+            )}」自动转换为 [[${escapeHtml(targetStem)}]] 双链">转为 [[双链]]</button>`
+          : ""
+      }
+    `;
+
+    row.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest(".backlink-linkify-btn")) return;
+      this.onNavigate(item.file, item.line, targetStem);
+    });
+
+    if (isUnlinked) {
+      row.querySelector(".backlink-linkify-btn")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await invoke("convert_unlinked_mention_to_wikilink", {
+            filePath: item.file,
+            lineNumber: item.line,
+            targetName: targetStem,
+          });
+          showToast(`已将 ${item.file_name} (L${item.line}) 转为 [[${targetStem}]] 双链`, "success");
+          await this.refresh();
+        } catch (err) {
+          showToast(`转换双链失败: ${err}`, "error");
+        }
+      });
+    }
+
+    return row;
+  }
+
+  private renderCurrentItems() {
+    const totalCount = this.lastLinkedItems.length + this.lastUnlinkedItems.length;
+    this.countBadgeEl.textContent = String(totalCount);
+    if (this.outlineBadgeEl) {
+      this.outlineBadgeEl.textContent = String(totalCount);
+    }
+
+    this.linkedTabBtn.textContent = `已链接引用 (${this.lastLinkedItems.length})`;
+    this.unlinkedTabBtn.textContent = `未链接提及 (${this.lastUnlinkedItems.length})`;
+    this.linkedTabBtn.classList.toggle("active", this.activeTab === "linked");
+    this.unlinkedTabBtn.classList.toggle("active", this.activeTab === "unlinked");
+
+    const activeItems =
+      this.activeTab === "linked" ? this.lastLinkedItems : this.lastUnlinkedItems;
+    const isUnlinked = this.activeTab === "unlinked";
+
+    const frag = document.createDocumentFragment();
+    if (activeItems.length === 0) {
+      const emptyHint = document.createElement("div");
+      emptyHint.className = "backlinks-empty-hint";
+      emptyHint.textContent =
+        this.activeTab === "linked"
+          ? this.lastUnlinkedItems.length > 0
+            ? `暂无显式 [[${this.lastTargetStem}]] 双链引用 · 发现 ${this.lastUnlinkedItems.length} 处未链接提及，可切换至「未链接提及」一键转为双链`
+            : "暂无其他笔记引用此文档 · 点击右上角“知识图谱”可总览工作区连接网络"
+          : "工作区其他笔记中暂无未加 [[]] 的同名提及";
+      frag.appendChild(emptyHint);
+    } else {
+      activeItems.forEach((item) => {
+        frag.appendChild(this.buildBacklinkRow(item, this.lastTargetStem, isUnlinked));
+      });
+    }
+
+    // 原子替换子节点，彻底消除异步刷新期间先清空 innerHTML 导致的编辑区高度跳动 (Bug #4)
+    this.listEl.replaceChildren(frag);
+
+    // 同步渲染大纲面板底部的联动反向链接区（合并展示已链接引用与未链接提及）
+    if (this.outlineListEl && this.outlineSectionEl) {
+      const outlineFrag = document.createDocumentFragment();
+      if (this.lastLinkedItems.length === 0 && this.lastUnlinkedItems.length === 0) {
+        const hint = document.createElement("div");
+        hint.className = "backlinks-empty-hint";
+        hint.textContent = "暂无其他笔记提及当前文档";
+        outlineFrag.appendChild(hint);
+      } else {
+        if (this.lastLinkedItems.length > 0) {
+          const groupTitle = document.createElement("div");
+          groupTitle.className = "outline-backlinks-group-label";
+          groupTitle.textContent = `已链接引用 (${this.lastLinkedItems.length})`;
+          outlineFrag.appendChild(groupTitle);
+          this.lastLinkedItems.forEach((item) => {
+            outlineFrag.appendChild(this.buildBacklinkRow(item, this.lastTargetStem, false));
+          });
+        }
+        if (this.lastUnlinkedItems.length > 0) {
+          const groupTitle = document.createElement("div");
+          groupTitle.className = "outline-backlinks-group-label";
+          groupTitle.textContent = `未链接提及 (${this.lastUnlinkedItems.length})`;
+          outlineFrag.appendChild(groupTitle);
+          this.lastUnlinkedItems.forEach((item) => {
+            outlineFrag.appendChild(this.buildBacklinkRow(item, this.lastTargetStem, true));
+          });
+        }
+      }
+      this.outlineListEl.replaceChildren(outlineFrag);
+    }
   }
 
   public async refresh() {
     clearTransclusionCache();
     if (!workspaceProvider) {
       this.panelEl.classList.add("hidden");
+      this.outlineSectionEl?.classList.add("hidden");
       return;
     }
     const wsRoot = workspaceProvider.getWorkspaceRoot();
     const activePath = workspaceProvider.getActiveFilePath();
     if (!wsRoot || !activePath) {
       this.panelEl.classList.add("hidden");
+      this.outlineSectionEl?.classList.add("hidden");
       return;
     }
 
@@ -519,49 +785,41 @@ export class BacklinksController {
     const targetStem = fileName.replace(/\.(md|markdown|txt)$/i, "");
     if (!targetStem) {
       this.panelEl.classList.add("hidden");
+      this.outlineSectionEl?.classList.add("hidden");
       return;
     }
 
+    this.lastTargetStem = targetStem;
+
     try {
-      const results = await invoke<
-        Array<{ file: string; file_name: string; line: number; text: string }>
-      >("search_backlinks", {
+      const overview = await invoke<{
+        linked: BacklinkHitItem[];
+        unlinked: BacklinkHitItem[];
+      }>("search_backlinks_overview", {
         targetName: targetStem,
         currentFilePath: activePath,
+      }).catch(async () => {
+        const linkedOnly = await invoke<BacklinkHitItem[]>("search_backlinks", {
+          targetName: targetStem,
+          currentFilePath: activePath,
+        });
+        return { linked: linkedOnly || [], unlinked: [] };
       });
 
-      this.countBadgeEl.textContent = String(results.length);
-      this.panelEl.classList.remove("hidden");
-
-      const frag = document.createDocumentFragment();
-      if (results.length === 0) {
-        const emptyHint = document.createElement("div");
-        emptyHint.className = "backlinks-empty-hint";
-        emptyHint.textContent =
-          "暂无其他笔记引用此文档 · 点击右上角“知识图谱”可总览工作区连接网络";
-        frag.appendChild(emptyHint);
-      } else {
-        results.forEach((item) => {
-          const row = document.createElement("div");
-          row.className = "backlink-item";
-          row.innerHTML = `
-            <div class="backlink-item-meta">
-              <span class="backlink-file">${escapeHtml(item.file_name)}</span>
-              <span class="backlink-line">L${item.line}</span>
-            </div>
-            <div class="backlink-snippet">${escapeHtml(item.text)}</div>
-          `;
-          row.addEventListener("click", () => {
-            this.onNavigate(item.file, item.line, targetStem);
-          });
-          frag.appendChild(row);
-        });
+      this.lastLinkedItems = overview.linked || [];
+      this.lastUnlinkedItems = overview.unlinked || [];
+      if (this.lastLinkedItems.length === 0 && this.lastUnlinkedItems.length > 0) {
+        this.activeTab = "unlinked";
+      } else if (this.lastLinkedItems.length > 0 && this.activeTab === "unlinked" && this.lastUnlinkedItems.length === 0) {
+        this.activeTab = "linked";
       }
 
-      // 原子替换子节点，彻底消除异步刷新期间先清空 innerHTML 导致的编辑区高度跳动 (Bug #4)
-      this.listEl.replaceChildren(frag);
+      this.panelEl.classList.remove("hidden");
+      this.outlineSectionEl?.classList.remove("hidden");
+      this.renderCurrentItems();
     } catch {
       this.panelEl.classList.add("hidden");
+      this.outlineSectionEl?.classList.add("hidden");
     }
   }
 }

@@ -2,7 +2,7 @@ import { Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
 /**
- * Quilla v0.8 轻量级插件化扩展内核 (Plugin & Extension System)
+ * Quilla v0.9 轻量级插件化扩展内核 (Plugin & Extension System)
  * 允许内置模块与用户扩展按生命周期注册：
  * - 自定义 CodeMirror 6 编辑器扩展 (editorExtensions)
  * - 导出 HTML 后处理钩子 (exportHtmlTransformers)

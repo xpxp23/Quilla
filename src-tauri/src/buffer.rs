@@ -30,6 +30,17 @@ impl Default for DocumentBuffer {
 
 pub fn strip_inline_markdown(raw: &str) -> String {
     let mut out = raw.trim().to_string();
+    // 剥离行尾块级引用锚点 ` ^block-id`
+    if let Some(caret_idx) = out.rfind(" ^") {
+        let suffix = &out[caret_idx + 2..];
+        if !suffix.is_empty()
+            && suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            out = out[..caret_idx].trim().to_string();
+        }
+    }
     // 剥离 ATX 标题尾部可选的 ` ###`
     if let Some(stripped) = out.trim_end_matches('#').strip_suffix(' ') {
         out = stripped.trim().to_string();
@@ -64,6 +75,25 @@ pub fn strip_inline_markdown(raw: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+/// 提取行尾的块级引用 ID（如 `段落内容 ^block-id` -> Some(("block-id", "段落内容"))）
+pub fn extract_trailing_block_id(raw_line: &str) -> Option<(String, String)> {
+    let trimmed = raw_line.trim_end();
+    if let Some(caret_pos) = trimmed.rfind('^') {
+        let before = &trimmed[..caret_pos];
+        let id_part = &trimmed[caret_pos + 1..];
+        if (before.is_empty() || before.ends_with(char::is_whitespace))
+            && !id_part.is_empty()
+            && id_part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            let clean_preview = strip_inline_markdown(before);
+            return Some((id_part.to_string(), clean_preview));
+        }
+    }
+    None
 }
 
 impl DocumentBuffer {
@@ -123,7 +153,8 @@ impl DocumentBuffer {
         self.is_dirty
     }
 
-    /// 高性能提取 Markdown 大纲 (# Headings)，自动跳过顶部 YAML Front Matter 与围栏代码块（含引用块内围栏代码块）
+    /// 高性能提取 Markdown 大纲 (# Headings) 与块级引用锚点 (^block-id)
+    /// 自动跳过顶部 YAML Front Matter 与围栏代码块（含引用块内围栏代码块）
     pub fn extract_headings(&self) -> Vec<HeadingItem> {
         let mut headings = Vec::new();
         let mut in_fence = false;
@@ -199,7 +230,52 @@ impl DocumentBuffer {
         headings
     }
 
-    /// 提取指定标题章节（含其下属子标题闭包）的 Markdown 文本，供 ![[文档#标题]] 块级嵌入使用
+    /// 提取包含 H1~H6 标题以及 `^block-id` 块级锚点的完整列表（供 `[[文档#` 与 `[[文档#^` 自动补全使用）
+    pub fn extract_headings_and_blocks(&self) -> Vec<HeadingItem> {
+        let mut items = self.extract_headings();
+        let total_lines = self.rope.len_lines();
+        let mut in_fence = false;
+        let mut prev_line_preview = String::new();
+
+        for (idx, line_slice) in self.rope.lines().enumerate() {
+            let line_str = line_slice.to_string();
+            let trimmed = line_str.trim();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            if let Some((block_id, inline_preview)) = extract_trailing_block_id(&line_str) {
+                let preview = if !inline_preview.is_empty() {
+                    inline_preview
+                } else {
+                    prev_line_preview.clone()
+                };
+                let short_preview: String = preview.chars().take(36).collect();
+                let label = if short_preview.is_empty() {
+                    format!("^{}", block_id)
+                } else {
+                    format!("^{} ({})", block_id, short_preview)
+                };
+                items.push(HeadingItem {
+                    level: 0,
+                    text: label,
+                    line: idx + 1,
+                });
+            }
+            if !trimmed.is_empty() && !trimmed.starts_with('^') {
+                prev_line_preview = strip_inline_markdown(trimmed);
+            }
+            if idx >= total_lines {
+                break;
+            }
+        }
+        items
+    }
+
+    /// 提取指定标题章节（含其下属子标题闭包）或 `^block-id` 块引用的 Markdown 文本，供 ![[文档#标题]] / ![[文档#^block]] 嵌入使用
     pub fn extract_section_by_heading(&self, heading_query: Option<&str>) -> String {
         let total_lines = self.rope.len_lines();
         let mut start_line_idx = 0;
@@ -226,6 +302,44 @@ impl DocumentBuffer {
                 out.push_str(&self.rope.line(idx).to_string());
             }
             return out.trim().to_string();
+        }
+
+        // 支持 ^block-id 块级精准引用提取
+        if let Some(target_block_id) = query_clean.strip_prefix('^') {
+            let target_id_clean = target_block_id
+                .split_whitespace()
+                .next()
+                .unwrap_or(target_block_id)
+                .trim();
+            for idx in start_line_idx..total_lines {
+                let line_str = self.rope.line(idx).to_string();
+                if let Some((bid, preview_text)) = extract_trailing_block_id(&line_str) {
+                    if bid.to_lowercase() == target_id_clean {
+                        if !preview_text.is_empty() {
+                            let stripped = line_str
+                                .trim_end()
+                                .trim_end_matches(&format!("^{}", bid))
+                                .trim_end();
+                            return stripped.to_string();
+                        } else if idx > start_line_idx {
+                            // 独立行 ^block-id：向上收集紧邻的非空段落/引用块/列表块
+                            let mut blk_start = idx - 1;
+                            while blk_start > start_line_idx {
+                                let prev = self.rope.line(blk_start - 1).to_string();
+                                if prev.trim().is_empty() {
+                                    break;
+                                }
+                                blk_start -= 1;
+                            }
+                            let mut out = String::new();
+                            for k in blk_start..idx {
+                                out.push_str(&self.rope.line(k).to_string());
+                            }
+                            return out.trim().to_string();
+                        }
+                    }
+                }
+            }
         }
 
         let headings = self.extract_headings();

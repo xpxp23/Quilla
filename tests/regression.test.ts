@@ -11,7 +11,7 @@ import {
 } from "../src/editor/extensions/inline-boundary-guard";
 
 /**
- * Quilla v0.8 自动化防回归测试套件 (Regression Test Suite)
+ * Quilla v0.9 自动化防回归测试套件 (Regression Test Suite)
  * 覆盖：
  * 1. Bug #4 & 同源表格 Bug：超链接、行内代码、数学公式、双链、#标签、带下划线变量与带括号 Wikipedia URL 导出绝不出现 EXP*PH*0_ 或 PH*0*
  * 2. 代码块导出结构：生成带 .exported-code-card 与 .exported-code-header 的完整卡片结构，支持 4 反引号与 ~~~ 波浪线嵌套围栏

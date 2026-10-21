@@ -1,6 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { showToast } from "./save-dialog";
 
+export interface ImageBedPreferences {
+  provider: "none" | "picgo" | "github" | "custom";
+  picgoUrl: string;
+  githubRepo: string;
+  githubBranch: string;
+  githubToken: string;
+  githubPathPrefix: string;
+  githubCustomDomain: string;
+  customUploadUrl: string;
+  customAuthHeader: string;
+}
+
 export interface AppPreferences {
   fontSize: number;
   lineHeight: number;
@@ -11,11 +23,29 @@ export interface AppPreferences {
   autoHideSingleTab: boolean;
   autoSaveMode: "off" | "onBlur" | "interval";
   autoSaveIntervalSec: number;
-  imageFolderMode: "assets" | "filename.assets";
+  imageFolderMode: "assets" | "filename.assets" | "current_dir" | "custom";
+  customImageFolder: string;
+  imageNamingMode: "timestamp" | "original";
+  autoUploadImageToBed: boolean;
+  imageBedConfig: ImageBedPreferences;
   inlineExportImages: boolean;
+  fileAssociationExtensions: string[];
+  registerContextMenu: boolean;
 }
 
 const PREF_STORAGE_KEY = "quilla_preferences_v1";
+
+const DEFAULT_IMAGE_BED_CONFIG: ImageBedPreferences = {
+  provider: "none",
+  picgoUrl: "http://127.0.0.1:36677/upload",
+  githubRepo: "",
+  githubBranch: "main",
+  githubToken: "",
+  githubPathPrefix: "assets",
+  githubCustomDomain: "",
+  customUploadUrl: "",
+  customAuthHeader: "",
+};
 
 const DEFAULT_PREFERENCES: AppPreferences = {
   fontSize: 15,
@@ -28,7 +58,13 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   autoSaveMode: "off",
   autoSaveIntervalSec: 30,
   imageFolderMode: "assets",
+  customImageFolder: "./assets",
+  imageNamingMode: "timestamp",
+  autoUploadImageToBed: false,
+  imageBedConfig: { ...DEFAULT_IMAGE_BED_CONFIG },
   inlineExportImages: true,
+  fileAssociationExtensions: [".md", ".markdown", ".mdown"],
+  registerContextMenu: true,
 };
 
 let currentPrefs: AppPreferences = loadPreferencesFromStorage();
@@ -37,14 +73,18 @@ const listeners: Array<(prefs: AppPreferences) => void> = [];
 function loadPreferencesFromStorage(): AppPreferences {
   try {
     const raw = localStorage.getItem(PREF_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_PREFERENCES };
+    if (!raw) return { ...DEFAULT_PREFERENCES, imageBedConfig: { ...DEFAULT_IMAGE_BED_CONFIG } };
     const parsed = JSON.parse(raw);
     return {
       ...DEFAULT_PREFERENCES,
       ...parsed,
+      imageBedConfig: {
+        ...DEFAULT_IMAGE_BED_CONFIG,
+        ...(parsed.imageBedConfig || {}),
+      },
     };
   } catch {
-    return { ...DEFAULT_PREFERENCES };
+    return { ...DEFAULT_PREFERENCES, imageBedConfig: { ...DEFAULT_IMAGE_BED_CONFIG } };
   }
 }
 
@@ -53,7 +93,13 @@ export function getPreferences(): AppPreferences {
 }
 
 export function updatePreferences(partial: Partial<AppPreferences>) {
-  currentPrefs = { ...currentPrefs, ...partial };
+  currentPrefs = {
+    ...currentPrefs,
+    ...partial,
+    imageBedConfig: partial.imageBedConfig
+      ? { ...currentPrefs.imageBedConfig, ...partial.imageBedConfig }
+      : currentPrefs.imageBedConfig,
+  };
   try {
     localStorage.setItem(PREF_STORAGE_KEY, JSON.stringify(currentPrefs));
   } catch (e) {
@@ -80,9 +126,49 @@ export function applyPreferencesToDOM(prefs: AppPreferences = currentPrefs) {
 
 let prefModalEl: HTMLElement | null = null;
 
+async function refreshFileAssociationStatus(modal: HTMLElement) {
+  const badgeEl = modal.querySelector("#pref-assoc-status-badge") as HTMLElement | null;
+  const contextCheck = modal.querySelector("#pref-context-menu-check") as HTMLInputElement | null;
+  if (!badgeEl) return;
+
+  try {
+    const status = await invoke<{
+      isRegistered: boolean;
+      hasContextMenu: boolean;
+      userChoiceProgId: string;
+      platform: string;
+    }>("get_file_association_status");
+
+    if (contextCheck && typeof status.hasContextMenu === "boolean") {
+      contextCheck.checked = status.hasContextMenu;
+    }
+
+    if (status.isRegistered) {
+      if (
+        status.userChoiceProgId &&
+        !status.userChoiceProgId.toLowerCase().includes("quilla") &&
+        status.platform === "windows"
+      ) {
+        badgeEl.className = "pref-status-pill warn";
+        badgeEl.textContent = `已注册 ProgID · 需在系统弹窗勾选“始终使用” (当前: ${status.userChoiceProgId})`;
+      } else {
+        badgeEl.className = "pref-status-pill ok";
+        badgeEl.textContent = "已关联为系统默认 Markdown 程序";
+      }
+    } else {
+      badgeEl.className = "pref-status-pill idle";
+      badgeEl.textContent = "尚未关联为系统默认程序";
+    }
+  } catch {
+    badgeEl.className = "pref-status-pill idle";
+    badgeEl.textContent = "桌面环境就绪";
+  }
+}
+
 export function openPreferencesModal() {
   if (prefModalEl) {
     syncFormWithPreferences(prefModalEl, currentPrefs);
+    refreshFileAssociationStatus(prefModalEl);
     prefModalEl.classList.remove("hidden");
     return;
   }
@@ -186,11 +272,20 @@ export function openPreferencesModal() {
         </div>
 
         <div class="pref-section">
-          <div class="pref-section-title">系统集成、自动保存与图片资产</div>
+          <div class="pref-section-title">系统文件接管与自动保存 (单实例秒开架构)</div>
           <div class="pref-row">
             <div class="pref-label-group">
-              <span class="pref-label">默认打开 Markdown (.md) 文件</span>
-              <span class="pref-desc">将 Quilla (羽墨) 注册为系统默认的 .md / .markdown 文档打开程序</span>
+              <span class="pref-label">
+                默认打开 Markdown 文件
+                <span class="pref-status-pill idle" id="pref-assoc-status-badge">检测中...</span>
+              </span>
+              <span class="pref-desc">写入系统 ProgID / OpenWithProgids 注册表并唤起 OpenWith.exe 原生打开方式弹窗；双击任意 .md 自动由当前运行实例单窗口秒开</span>
+              <div class="pref-ext-checks" id="pref-ext-checks">
+                <label class="pref-ext-chip"><input type="checkbox" value=".md" checked /> .md</label>
+                <label class="pref-ext-chip"><input type="checkbox" value=".markdown" checked /> .markdown</label>
+                <label class="pref-ext-chip"><input type="checkbox" value=".mdown" checked /> .mdown</label>
+                <label class="pref-ext-chip"><input type="checkbox" value=".txt" /> .txt</label>
+              </div>
             </div>
             <div class="pref-control">
               <button type="button" class="pref-action-btn" id="pref-set-default-md-btn">设为默认打开程序</button>
@@ -199,8 +294,18 @@ export function openPreferencesModal() {
 
           <div class="pref-row">
             <div class="pref-label-group">
+              <span class="pref-label">资源管理器右键菜单集成</span>
+              <span class="pref-desc">在 Windows 文件资源管理器右键菜单中添加「用 Quilla (羽墨) 打开」快捷入口</span>
+            </div>
+            <div class="pref-control">
+              <input type="checkbox" id="pref-context-menu-check" class="pref-checkbox" />
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-label-group">
               <span class="pref-label">自动保存策略</span>
-              <span class="pref-desc">对已命名本地文档自动执行原子写入落盘（配合时间机器历史快照）</span>
+              <span class="pref-desc">对已命名本地文档自动执行原子写入落盘（配合时间机器历史快照与符号链接保护）</span>
             </div>
             <div class="pref-control">
               <select id="pref-autosave-mode" class="pref-select">
@@ -210,17 +315,98 @@ export function openPreferencesModal() {
               </select>
             </div>
           </div>
+        </div>
 
+        <div class="pref-section">
+          <div class="pref-section-title">图片资产管家与云端图床服务</div>
           <div class="pref-row">
             <div class="pref-label-group">
-              <span class="pref-label">粘贴/拖入图片存储目录</span>
-              <span class="pref-desc">设置本地图片相对路径的文件夹命名规则（重命名/删除文档时自动同步迁移或清理）</span>
+              <span class="pref-label">粘贴/拖入图片本地存储目录</span>
+              <span class="pref-desc">完全兼容 Typora 习惯，重命名或删除文档时自动同步迁移或清理专属资源目录</span>
             </div>
             <div class="pref-control">
               <select id="pref-img-folder" class="pref-select">
                 <option value="assets">统一存放至 ./assets/</option>
-                <option value="filename.assets">按文档名存放至 ./\${filename}.assets/</option>
+                <option value="filename.assets">按文档名存放至 ./\${filename}.assets/ (Typora 习惯)</option>
+                <option value="current_dir">存放至当前文档同级目录 ./</option>
+                <option value="custom">自定义相对路径文件夹...</option>
               </select>
+            </div>
+          </div>
+
+          <div class="pref-row hidden" id="pref-custom-img-folder-row">
+            <div class="pref-label-group">
+              <span class="pref-label">自定义图片相对目录模板</span>
+              <span class="pref-desc">支持使用 \${filename} 占位符（例如：./images/\${filename}）</span>
+            </div>
+            <div class="pref-control">
+              <input type="text" id="pref-custom-img-folder" class="pref-text-input" placeholder="./images/\${filename}" />
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">图床服务通道 (PicGo / GitHub / S3 Webhook)</span>
+              <span class="pref-desc">配置后可通过图片悬浮工具栏「上传图床」一键转换，或开启粘贴时自动上传</span>
+            </div>
+            <div class="pref-control">
+              <select id="pref-img-bed-provider" class="pref-select">
+                <option value="none">仅本地相对路径存储 (不启用图床)</option>
+                <option value="picgo">PicGo 本地服务 (127.0.0.1:36677)</option>
+                <option value="github">GitHub 仓库图床 (API + jsDelivr)</option>
+                <option value="custom">自定义 S3 / HTTP Webhook 图床</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="pref-bed-config-box hidden" id="pref-bed-picgo-box">
+            <div class="pref-bed-field">
+              <label>PicGo Server 接口地址</label>
+              <input type="text" id="pref-bed-picgo-url" class="pref-text-input" placeholder="http://127.0.0.1:36677/upload" />
+            </div>
+          </div>
+
+          <div class="pref-bed-config-box hidden" id="pref-bed-github-box">
+            <div class="pref-bed-grid">
+              <div class="pref-bed-field">
+                <label>GitHub 仓库 (owner/repo)</label>
+                <input type="text" id="pref-bed-gh-repo" class="pref-text-input" placeholder="username/blog-images" />
+              </div>
+              <div class="pref-bed-field">
+                <label>分支名 (Branch)</label>
+                <input type="text" id="pref-bed-gh-branch" class="pref-text-input" placeholder="main" />
+              </div>
+              <div class="pref-bed-field">
+                <label>Personal Access Token</label>
+                <input type="password" id="pref-bed-gh-token" class="pref-text-input" placeholder="ghp_xxxxxxxxxxxx" />
+              </div>
+              <div class="pref-bed-field">
+                <label>自定义 CDN 域名 (可选，默认 jsDelivr)</label>
+                <input type="text" id="pref-bed-gh-domain" class="pref-text-input" placeholder="https://cdn.jsdelivr.net/gh/user/repo@main" />
+              </div>
+            </div>
+          </div>
+
+          <div class="pref-bed-config-box hidden" id="pref-bed-custom-box">
+            <div class="pref-bed-grid">
+              <div class="pref-bed-field">
+                <label>Webhook / S3 签名上传接口 URL (POST JSON)</label>
+                <input type="text" id="pref-bed-custom-url" class="pref-text-input" placeholder="https://img.example.com/api/upload" />
+              </div>
+              <div class="pref-bed-field">
+                <label>Authorization 请求头 (可选)</label>
+                <input type="password" id="pref-bed-custom-auth" class="pref-text-input" placeholder="Bearer xxxxx" />
+              </div>
+            </div>
+          </div>
+
+          <div class="pref-row" id="pref-auto-upload-row">
+            <div class="pref-label-group">
+              <span class="pref-label">粘贴或拖入图片时自动上传图床</span>
+              <span class="pref-desc">开启后粘贴/拖入图片自动上传至所选图床并插入远程链接（失败时自动降级存为本地相对路径）</span>
+            </div>
+            <div class="pref-control">
+              <input type="checkbox" id="pref-auto-upload-bed" class="pref-checkbox" />
             </div>
           </div>
 
@@ -255,6 +441,7 @@ export function openPreferencesModal() {
 
   document.body.appendChild(prefModalEl);
   syncFormWithPreferences(prefModalEl, currentPrefs);
+  refreshFileAssociationStatus(prefModalEl);
 
   const close = () => prefModalEl?.classList.add("hidden");
   prefModalEl.querySelector("#pref-close-btn")?.addEventListener("click", close);
@@ -310,10 +497,59 @@ export function openPreferencesModal() {
   });
 
   const imgFolderSelect = prefModalEl.querySelector("#pref-img-folder") as HTMLSelectElement;
+  const customFolderRow = prefModalEl.querySelector("#pref-custom-img-folder-row") as HTMLElement;
+  const customFolderInput = prefModalEl.querySelector("#pref-custom-img-folder") as HTMLInputElement;
+
   imgFolderSelect.addEventListener("change", () => {
+    const mode = imgFolderSelect.value as AppPreferences["imageFolderMode"];
+    customFolderRow?.classList.toggle("hidden", mode !== "custom");
+    updatePreferences({ imageFolderMode: mode });
+  });
+
+  customFolderInput?.addEventListener("change", () => {
+    updatePreferences({ customImageFolder: customFolderInput.value.trim() || "./assets" });
+  });
+
+  const bedProviderSelect = prefModalEl.querySelector("#pref-img-bed-provider") as HTMLSelectElement;
+  const syncBedBoxes = (provider: string) => {
+    prefModalEl?.querySelector("#pref-bed-picgo-box")?.classList.toggle("hidden", provider !== "picgo");
+    prefModalEl?.querySelector("#pref-bed-github-box")?.classList.toggle("hidden", provider !== "github");
+    prefModalEl?.querySelector("#pref-bed-custom-box")?.classList.toggle("hidden", provider !== "custom");
+  };
+
+  bedProviderSelect?.addEventListener("change", () => {
+    const provider = bedProviderSelect.value as ImageBedPreferences["provider"];
+    syncBedBoxes(provider);
     updatePreferences({
-      imageFolderMode: imgFolderSelect.value as AppPreferences["imageFolderMode"],
+      imageBedConfig: {
+        ...currentPrefs.imageBedConfig,
+        provider,
+      },
     });
+  });
+
+  const bindBedInput = (selector: string, key: keyof ImageBedPreferences) => {
+    const inp = prefModalEl?.querySelector(selector) as HTMLInputElement | null;
+    inp?.addEventListener("change", () => {
+      updatePreferences({
+        imageBedConfig: {
+          ...currentPrefs.imageBedConfig,
+          [key]: inp.value.trim(),
+        },
+      });
+    });
+  };
+  bindBedInput("#pref-bed-picgo-url", "picgoUrl");
+  bindBedInput("#pref-bed-gh-repo", "githubRepo");
+  bindBedInput("#pref-bed-gh-branch", "githubBranch");
+  bindBedInput("#pref-bed-gh-token", "githubToken");
+  bindBedInput("#pref-bed-gh-domain", "githubCustomDomain");
+  bindBedInput("#pref-bed-custom-url", "customUploadUrl");
+  bindBedInput("#pref-bed-custom-auth", "customAuthHeader");
+
+  const autoUploadCheck = prefModalEl.querySelector("#pref-auto-upload-bed") as HTMLInputElement;
+  autoUploadCheck?.addEventListener("change", () => {
+    updatePreferences({ autoUploadImageToBed: autoUploadCheck.checked });
   });
 
   const inlineExportImgCheck = prefModalEl.querySelector(
@@ -321,6 +557,32 @@ export function openPreferencesModal() {
   ) as HTMLInputElement;
   inlineExportImgCheck?.addEventListener("change", () => {
     updatePreferences({ inlineExportImages: inlineExportImgCheck.checked });
+  });
+
+  prefModalEl.querySelectorAll<HTMLInputElement>("#pref-ext-checks input[type='checkbox']").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const checkedExts = Array.from(
+        prefModalEl!.querySelectorAll<HTMLInputElement>("#pref-ext-checks input[type='checkbox']:checked")
+      ).map((el) => el.value);
+      updatePreferences({
+        fileAssociationExtensions: checkedExts.length > 0 ? checkedExts : [".md"],
+      });
+    });
+  });
+
+  const contextMenuCheck = prefModalEl.querySelector("#pref-context-menu-check") as HTMLInputElement | null;
+  contextMenuCheck?.addEventListener("change", async () => {
+    const enabled = contextMenuCheck.checked;
+    updatePreferences({ registerContextMenu: enabled });
+    try {
+      const msg = await invoke<string>("toggle_explorer_context_menu", {
+        enable: enabled,
+        extensions: currentPrefs.fileAssociationExtensions,
+      });
+      showToast(msg, "success");
+    } catch (err) {
+      showToast(`更新右键菜单失败: ${err}`, "error");
+    }
   });
 
   const setDefaultMdBtn = prefModalEl.querySelector(
@@ -332,9 +594,12 @@ export function openPreferencesModal() {
       setDefaultMdBtn.textContent = "正在注册关联...";
       const msg = await invoke<string>("register_default_markdown_app", {
         openSystemSettings: true,
+        extensions: currentPrefs.fileAssociationExtensions,
+        registerContextMenu: currentPrefs.registerContextMenu,
       });
       showToast(msg || "已注册 .md 文件关联", "success");
-      setDefaultMdBtn.textContent = "已注册为默认关联";
+      setDefaultMdBtn.textContent = "重新唤起系统打开方式";
+      if (prefModalEl) refreshFileAssociationStatus(prefModalEl);
     } catch (err) {
       showToast(`设置默认程序失败: ${err}`, "error");
       setDefaultMdBtn.textContent = "设为默认打开程序";
@@ -374,7 +639,10 @@ export function openPreferencesModal() {
   });
 
   prefModalEl.querySelector("#pref-reset-btn")?.addEventListener("click", () => {
-    updatePreferences({ ...DEFAULT_PREFERENCES });
+    updatePreferences({
+      ...DEFAULT_PREFERENCES,
+      imageBedConfig: { ...DEFAULT_IMAGE_BED_CONFIG },
+    });
     if (prefModalEl) syncFormWithPreferences(prefModalEl, currentPrefs);
   });
 }
@@ -415,12 +683,50 @@ function syncFormWithPreferences(modal: HTMLElement, prefs: AppPreferences) {
   const imgFolderSelect = modal.querySelector("#pref-img-folder") as HTMLSelectElement;
   if (imgFolderSelect) imgFolderSelect.value = prefs.imageFolderMode;
 
+  const customFolderRow = modal.querySelector("#pref-custom-img-folder-row") as HTMLElement;
+  if (customFolderRow) {
+    customFolderRow.classList.toggle("hidden", prefs.imageFolderMode !== "custom");
+  }
+  const customFolderInput = modal.querySelector("#pref-custom-img-folder") as HTMLInputElement;
+  if (customFolderInput) customFolderInput.value = prefs.customImageFolder || "./assets";
+
+  const bedCfg = prefs.imageBedConfig || DEFAULT_IMAGE_BED_CONFIG;
+  const bedProviderSelect = modal.querySelector("#pref-img-bed-provider") as HTMLSelectElement;
+  if (bedProviderSelect) bedProviderSelect.value = bedCfg.provider;
+
+  modal.querySelector("#pref-bed-picgo-box")?.classList.toggle("hidden", bedCfg.provider !== "picgo");
+  modal.querySelector("#pref-bed-github-box")?.classList.toggle("hidden", bedCfg.provider !== "github");
+  modal.querySelector("#pref-bed-custom-box")?.classList.toggle("hidden", bedCfg.provider !== "custom");
+
+  const setVal = (sel: string, val: string) => {
+    const el = modal.querySelector(sel) as HTMLInputElement | null;
+    if (el) el.value = val || "";
+  };
+  setVal("#pref-bed-picgo-url", bedCfg.picgoUrl);
+  setVal("#pref-bed-gh-repo", bedCfg.githubRepo);
+  setVal("#pref-bed-gh-branch", bedCfg.githubBranch);
+  setVal("#pref-bed-gh-token", bedCfg.githubToken);
+  setVal("#pref-bed-gh-domain", bedCfg.githubCustomDomain);
+  setVal("#pref-bed-custom-url", bedCfg.customUploadUrl);
+  setVal("#pref-bed-custom-auth", bedCfg.customAuthHeader);
+
+  const autoUploadCheck = modal.querySelector("#pref-auto-upload-bed") as HTMLInputElement;
+  if (autoUploadCheck) autoUploadCheck.checked = Boolean(prefs.autoUploadImageToBed);
+
   const inlineExportImgCheck = modal.querySelector(
     "#pref-inline-export-img"
   ) as HTMLInputElement;
   if (inlineExportImgCheck) {
     inlineExportImgCheck.checked = prefs.inlineExportImages !== false;
   }
+
+  const exts = prefs.fileAssociationExtensions || [".md", ".markdown", ".mdown"];
+  modal.querySelectorAll<HTMLInputElement>("#pref-ext-checks input[type='checkbox']").forEach((cb) => {
+    cb.checked = exts.includes(cb.value);
+  });
+
+  const contextMenuCheck = modal.querySelector("#pref-context-menu-check") as HTMLInputElement;
+  if (contextMenuCheck) contextMenuCheck.checked = prefs.registerContextMenu !== false;
 }
 
 window.addEventListener("keydown", (e) => {

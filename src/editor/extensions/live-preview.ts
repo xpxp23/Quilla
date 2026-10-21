@@ -7,6 +7,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { EditorState, Range } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
 import { imeState } from "./ime-guard";
 import { tokenizeCodeLine, CodeTokenSpan } from "./code-highlighter";
 import { getPreferences } from "../../components/preferences";
@@ -189,7 +190,12 @@ export function getCodeBlockVisibleBounds(
   const keys = buildStableCodeBlockKeys(struct.codeRanges);
   const key = keys[codeRangeIdx] || `${cr.startLine}`;
   const isCollapsed = collapsedCodeBlocks.has(key);
-  const isMaxExpanded = expandedMaxHeightCodeBlocks.has(key);
+  const cursorLine = state.doc.lineAt(state.selection.main.head).number;
+  const isCursorInBlock = cursorLine >= cr.startLine && cursorLine <= cr.endLine;
+  if (isCursorInBlock && cursorLine >= cr.startLine + 26) {
+    expandedMaxHeightCodeBlocks.add(key);
+  }
+  const isMaxExpanded = expandedMaxHeightCodeBlocks.has(key) || isCursorInBlock;
   const codeLinesCount = Math.max(0, cr.endLine - cr.startLine - 1);
   const isLong = codeLinesCount > 28;
   const lastVisibleCodeLine =
@@ -2482,19 +2488,35 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
       }
 
-      // 2.5 引用块 (> Quote)
+      // 2.5 引用块 (> Quote) — 支持跨空白行桥接连续竖线 (blockquoteRanges)
+      const quoteSpan = getDocStructureFromState(view.state).blockquoteRanges.find(
+        (bq) => lineNum >= bq.startLine && lineNum <= bq.endLine
+      );
       const quoteMatch = text.match(/^(\s*(?:> ?)+)/);
+      if (quoteSpan && !quoteMatch && !activeCallout && trimmed === "") {
+        addDeco(
+          line.from,
+          line.from,
+          Decoration.line({
+            class: "cm-blockquote cm-blockquote-level-1 cm-blockquote-bridged-empty",
+          })
+        );
+      }
       if (quoteMatch) {
         const quotePrefixLen = quoteMatch[0].length;
         const quoteLevel = (quoteMatch[0].match(/>/g) || []).length;
         if (!activeCallout) {
-          const isPrevQuote = lineNum > 1 && /^\s*>/.test(doc.line(lineNum - 1).text);
-          const isNextQuote = lineNum < doc.lines && /^\s*>/.test(doc.line(lineNum + 1).text);
+          const isFirstQuote = quoteSpan
+            ? lineNum === quoteSpan.startLine
+            : !(lineNum > 1 && /^\s*>/.test(doc.line(lineNum - 1).text));
+          const isLastQuote = quoteSpan
+            ? lineNum === quoteSpan.endLine
+            : !(lineNum < doc.lines && /^\s*>/.test(doc.line(lineNum + 1).text));
           const posClasses = [
             `cm-blockquote`,
             `cm-blockquote-level-${Math.min(3, quoteLevel)}`,
-            !isPrevQuote ? "cm-blockquote-first" : "",
-            !isNextQuote ? "cm-blockquote-last" : "",
+            isFirstQuote ? "cm-blockquote-first" : "",
+            isLastQuote ? "cm-blockquote-last" : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -2699,7 +2721,14 @@ function buildDecorations(view: EditorView): DecorationSet {
             })
           );
         } else if (tok.type === "image") {
-          if (!isCursorInside) {
+          const isStandaloneImageLine =
+            tok.start === prefixEnd && tok.end === text.trimEnd().length;
+          // 零跳变图片预览：当方向键上下经过独立图片行（光标位于行首 s 或行尾 e）时，保持 ImageWidget 渲染不卸载，
+          // 仅当用户点击浮动工具栏“源码”按钮或用左右键进入标记内部 (s < cursorHead < e) 时才展开源码，彻底消除 200px 视口剧烈抖动！
+          const shouldExpandImageRaw = isStandaloneImageLine
+            ? isCaretOnly && cursorHead > s && cursorHead < e
+            : isCursorInside;
+          if (!shouldExpandImageRaw) {
             addDeco(
               s,
               e,

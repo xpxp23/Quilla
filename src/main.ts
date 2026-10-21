@@ -88,17 +88,17 @@ import { renderMarkdownDocumentToHtml } from "./editor/markdown-ast-renderer";
 import { quillaPluginRegistry } from "./editor/plugin-system";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.8 全景工作台指南
+title: Quilla (羽墨) v0.9 全景工作台指南
 author: Quilla Studio
 tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.8.0
+version: 0.9.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.8
+# 欢迎使用 Quilla (羽墨) v0.9
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
-> [!TIP] Quilla v0.8 全景深度精进与架构升级
+> [!TIP] Quilla v0.9 全景深度精进与架构升级
 > - **第一阶段 · 块级与大纲深度操控**：左侧 6 点抓手采用真实 DOM 几何与悬停桥接锁，点击或右键唤起 **块级命令菜单（Turn Into / 克隆 / 移动 / 章节折叠）**；侧边栏大纲支持右键 **单标题升降级、带子标题整体升级/降级（思源笔记风格）、复制章节双链与整章操作**。
 > - **第二阶段 · 块级嵌入与知识图谱**：支持 \`![[文档#标题]]\` 块级/章节实时嵌入卡片、YAML Front Matter 可视化属性面板、多级 \`#父标签/子标签\` 胶囊检索，以及按 \`Ctrl+G\` 唤起 **交互式双链知识图谱**。
 > - **第三阶段 · 时间机器与多渠道发布**：按 \`Ctrl+Alt+H\` 打开 **本地版本历史（Time Machine）** 进行逐行 Diff 对比与一键无损回滚；支持 **一键复制微信公众号/知乎内联富文本**、导出 **Word (\`.doc\`)** 及 **社交长图分享卡片 (\`.png\`)**。
@@ -140,7 +140,7 @@ version: 0.8.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.8"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
+    Start["Quilla v0.9"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
     Start --> Phase2["![[块级嵌入]] & 双链知识图谱"]
     Start --> Phase3["时间机器 Diff & 公众号/长图发布"]
 \`\`\`
@@ -151,7 +151,7 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.8!");
+    println!("Hello, Quilla (羽墨) v0.9!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
@@ -429,11 +429,18 @@ class App {
       }
     });
 
-    // 监听系统双击 .md 文件热唤起事件 (macOS RunEvent::Opened / 外部文件唤起)
+    // 监听系统双击 .md 文件热唤起与单实例转发事件 (Single-Instance IPC / macOS RunEvent::Opened)
     listen<string>("quilla-open-external-file", async (event) => {
       const extPath = event.payload;
       if (extPath && typeof extPath === "string" && extPath.trim()) {
-        await this.loadFile(extPath.trim());
+        const cleanPath = extPath.trim();
+        await this.loadFile(cleanPath);
+        if (!this.currentWorkspaceRoot) {
+          const parentDir = cleanPath.replace(/[\\/][^\\/]+$/, "");
+          if (parentDir && parentDir !== cleanPath) {
+            await this.loadWorkspace(parentDir, true).catch(() => {});
+          }
+        }
       }
     }).catch(() => {});
 
@@ -778,7 +785,17 @@ class App {
       }
     } else if (cliFile || urlOpen) {
       const target = cliFile || decodeURIComponent(urlOpen!);
+      const lastWorkspace = localStorage.getItem("typora_last_workspace");
+      if (lastWorkspace) {
+        await this.loadWorkspace(lastWorkspace, true).catch(() => {});
+      }
       await this.loadFile(target);
+      if (!this.currentWorkspaceRoot) {
+        const parentDir = target.replace(/[\\/][^\\/]+$/, "");
+        if (parentDir && parentDir !== target) {
+          await this.loadWorkspace(parentDir, true).catch(() => {});
+        }
+      }
     } else if (isNewWin || urlNew === "1") {
       const active = this.tabsManager?.getActiveTab();
       if (active && this.editorView) {
@@ -1310,6 +1327,12 @@ class App {
       return this.saveFileAs();
     }
     const content = this.editorView ? this.editorView.state.doc.toString() : this.savedContent;
+    if (content.includes("[Quilla 大文件安全保护：文件超过 10MB，已截断后续内容以保障流畅预览]")) {
+      if (!silent) {
+        showToast("当前为超 10MB 大文件截断预览模式，为防止数据丢失已阻止覆盖原文件，请使用「另存为」", "info");
+      }
+      return false;
+    }
     const saveStatus = document.getElementById("footer-save-status");
     if (saveStatus) saveStatus.textContent = "保存中...";
 

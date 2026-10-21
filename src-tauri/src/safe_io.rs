@@ -34,22 +34,19 @@ const MAX_HISTORY_SNAPSHOTS_PER_FILE: usize = 25;
 pub struct SafeIO;
 
 impl SafeIO {
-    /// 原子写入文件（支持可选硬件级 sync_all 落盘：正式保存开启 sync_all，高频草稿快照关闭 sync_all 防止主线程 I/O 卡顿）
+    /// 原子写入文件（支持可选硬件级 sync_all 落盘、符号链接真实目标解析与 Windows 隐藏属性安全回退）
     pub fn atomic_write_with_options<P: AsRef<Path>>(
         path: P,
         content: &str,
         force_fsync: bool,
     ) -> io::Result<()> {
-        let path = path.as_ref();
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
+        let raw_path = path.as_ref();
 
-        // 若目标为软链接 (Symlink)，直接写入目标文件以保持链接关系不断裂
-        if let Ok(meta) = fs::symlink_metadata(path) {
+        // 若目标为软链接 (Symlink)，优先通过 canonicalize 解析真实指向目标，确保软链接本身不被普通文件覆盖销毁
+        if let Ok(meta) = fs::symlink_metadata(raw_path) {
             if meta.file_type().is_symlink() {
-                let mut f = File::create(path)?;
+                let real_target = fs::canonicalize(raw_path).unwrap_or_else(|_| raw_path.to_path_buf());
+                let mut f = File::create(&real_target)?;
                 f.write_all(content.as_bytes())?;
                 if force_fsync {
                     f.sync_all()?;
@@ -58,11 +55,28 @@ impl SafeIO {
             }
         }
 
+        let path = raw_path;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let tmp_path = parent.join(format!(".{}.tmp", file_name));
+        let tmp_path = parent.join(format!(".{}.quilla.tmp", file_name));
 
         {
-            let mut tmp_file = File::create(&tmp_path)?;
+            let mut tmp_file = match File::create(&tmp_path) {
+                Ok(f) => f,
+                Err(_) => {
+                    // 若目录禁止创建点文件临时文件，直接降级写入原文件
+                    let mut direct = File::create(path)?;
+                    direct.write_all(content.as_bytes())?;
+                    if force_fsync {
+                        direct.sync_all()?;
+                    }
+                    return Ok(());
+                }
+            };
             tmp_file.write_all(content.as_bytes())?;
             if force_fsync {
                 tmp_file.sync_all()?;
@@ -73,16 +87,29 @@ impl SafeIO {
             if let Ok(orig_meta) = fs::metadata(path) {
                 let _ = fs::set_permissions(&tmp_path, orig_meta.permissions());
             }
-            let backup_path = parent.join(format!(".{}.bak", file_name));
+            let backup_path = parent.join(format!(".{}.quilla.bak", file_name));
             let _ = fs::rename(path, &backup_path);
             if let Err(_e) = fs::rename(&tmp_path, path) {
                 let _ = fs::rename(&backup_path, path);
-                fs::copy(&tmp_path, path)?;
+                // Windows 隐藏文件或跨卷锁定回退：直接流式覆盖写入目标文件并移除临时文件
+                if let Err(_copy_err) = fs::copy(&tmp_path, path) {
+                    let mut direct = File::create(path)?;
+                    direct.write_all(content.as_bytes())?;
+                    if force_fsync {
+                        let _ = direct.sync_all();
+                    }
+                }
                 let _ = fs::remove_file(&tmp_path);
             }
             let _ = fs::remove_file(backup_path);
         } else if let Err(_e) = fs::rename(&tmp_path, path) {
-            fs::copy(&tmp_path, path)?;
+            if let Err(_copy_err) = fs::copy(&tmp_path, path) {
+                let mut direct = File::create(path)?;
+                direct.write_all(content.as_bytes())?;
+                if force_fsync {
+                    let _ = direct.sync_all();
+                }
+            }
             let _ = fs::remove_file(&tmp_path);
         }
 

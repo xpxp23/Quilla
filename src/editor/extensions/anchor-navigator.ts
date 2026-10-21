@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { setSearchHighlightEffect } from "./search-highlighter";
+import { getDocStructureFromState } from "./doc-structure";
 
 /**
  * 规范化文本，用于标题与目录锚点的智能宽容度模糊比对
@@ -16,58 +17,75 @@ export function normalizeAnchor(str: string): string {
 }
 
 /**
- * 在文档中定位目标锚点标题并平滑跳转置顶（自动忽略代码块内部注释）
+ * 在文档中定位目标锚点标题或 `^block-id` 块引用并平滑跳转置顶（自动忽略代码块内部注释）
  */
 export function navigateToAnchor(view: EditorView, rawAnchor: string): boolean {
   if (!rawAnchor) return false;
-  const targetClean = normalizeAnchor(rawAnchor);
-  if (!targetClean) return false;
+  let cleanedInput = rawAnchor.trim().replace(/^#+/, "");
 
-  const doc = view.state.doc;
-  let targetLinePos: number | null = null;
-  let targetLineEnd: number | null = null;
-
-  // 1. 第一优先级：精确比对 Markdown 标题行 (# Header)，跳过代码块
-  let inFence = false;
-  let fenceChar = "";
-  for (let i = 1; i <= doc.lines; i++) {
-    const line = doc.line(i);
-    const trimmed = line.text.trim();
-    if (/^(```+|~~~+)/.test(trimmed)) {
-      const marker = trimmed.startsWith("`") ? "`" : "~";
-      if (!inFence) {
-        inFence = true;
-        fenceChar = marker;
-      } else if (marker === fenceChar) {
-        inFence = false;
-      }
-      continue;
-    }
-    if (inFence) continue;
-
-    const m = line.text.match(/^(#{1,6})\s+(.*)$/);
-    if (m) {
-      const headingClean = normalizeAnchor(m[2]);
-      if (
-        headingClean === targetClean ||
-        headingClean.endsWith(targetClean) ||
-        targetClean.endsWith(headingClean) ||
-        headingClean.includes(targetClean) ||
-        targetClean.includes(headingClean)
-      ) {
-        targetLinePos = line.from;
-        targetLineEnd = line.to;
-        break;
+  // 0. 支持 `^block-id` 块级引用精准定位（兼容 `^block-id (预览)` 格式）
+  if (cleanedInput.startsWith("^")) {
+    const blockId = cleanedInput
+      .slice(1)
+      .split(/[\s(]/)[0]
+      .trim()
+      .toLowerCase();
+    if (blockId) {
+      const struct = getDocStructureFromState(view.state);
+      const hitBlock = struct.blockAnchors.find((b) => b.id.toLowerCase() === blockId);
+      if (hitBlock) {
+        const line = view.state.doc.line(hitBlock.line);
+        view.dispatch({
+          selection: { anchor: line.from },
+          effects: [
+            EditorView.scrollIntoView(line.from, { y: "start", yMargin: 48 }),
+            setSearchHighlightEffect.of({ from: line.from, to: line.to }),
+          ],
+        });
+        view.focus();
+        setTimeout(() => {
+          view.dispatch({ effects: [setSearchHighlightEffect.of(null)] });
+        }, 1800);
+        return true;
       }
     }
   }
 
-  // 2. 第二优先级：若未匹配到标准标题，检索全文档任意出现该关键词的行
+  const targetClean = normalizeAnchor(cleanedInput);
+  if (!targetClean) return false;
+
+  const doc = view.state.doc;
+  const struct = getDocStructureFromState(view.state);
+  let targetLinePos: number | null = null;
+  let targetLineEnd: number | null = null;
+
+  // 1. 第一优先级：O(1) 从缓存的 DocStructure.headings 中比对标题行（天然跳过代码块与 YAML）
+  for (const h of struct.headings) {
+    const headingClean = normalizeAnchor(h.text);
+    if (
+      headingClean === targetClean ||
+      headingClean.endsWith(targetClean) ||
+      targetClean.endsWith(headingClean) ||
+      headingClean.includes(targetClean) ||
+      targetClean.includes(headingClean)
+    ) {
+      const line = doc.line(h.line);
+      targetLinePos = line.from;
+      targetLineEnd = line.to;
+      break;
+    }
+  }
+
+  // 2. 第二优先级：若未匹配到标准标题，检索全文档任意出现该关键词的非代码块行
   if (targetLinePos === null) {
     for (let i = 1; i <= doc.lines; i++) {
+      if (struct.codeLineSet.has(i)) continue;
       const line = doc.line(i);
       const textClean = normalizeAnchor(line.text);
-      if (textClean.length >= 3 && (textClean.includes(targetClean) || targetClean.includes(textClean))) {
+      if (
+        textClean.length >= 2 &&
+        (textClean.includes(targetClean) || targetClean.includes(textClean))
+      ) {
         targetLinePos = line.from;
         targetLineEnd = line.to;
         break;

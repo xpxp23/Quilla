@@ -271,7 +271,7 @@ export function resolveSafeInlineEnterPosition(
 }
 
 /**
- * 统一行内原子装饰器边界守卫 (Inline Atomic Cursor Guard v0.8)
+ * 统一行内原子装饰器边界守卫 (Inline Atomic Cursor Guard v0.9)
  * 基于 EditorState.transactionFilter 统一拦截：
  * 1. 鼠标点击落在折叠态超链接/行内语法的右边缘夹缝 (innerTo) 时，自动吸附到闭合括号右侧 (sp.to)。
  * 2. 在超链接 `[text](url)` 的右半区 `[innerTo, to)` 或左边界 `(from, innerFrom]` 直接插入换行符 `\n` 时，

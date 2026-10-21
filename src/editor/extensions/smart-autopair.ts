@@ -1,18 +1,32 @@
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { Extension, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
+import { markdownLanguage } from "@codemirror/lang-markdown";
 import { isInsideCodeContextAST } from "./doc-structure";
 
 /**
- * Typora 风格成对标点与选区自动包裹扩展 (v0.6)
- * 修复行首输入 *** 水平分割线或列表符号时被误扩展为 **** 的逻辑异常
+ * 配置 Markdown 语言在中文汉字与全角标点前的自动配对白名单
+ * 彻底解决光标右侧紧邻中文汉字或中文标点（，。；！？）】》）时输入 (、[、"、` 无法自动配对的 Bug
+ */
+const markdownCloseBracketsConfig = markdownLanguage.data.of({
+  closeBrackets: {
+    brackets: ["(", "[", "{", "'", '"', "`"],
+    before: ")]}:;>.,!?，。；：！？、）】》”’\u4e00-\u9fa5",
+  },
+});
+
+/**
+ * Typora 风格成对标点与选区自动包裹扩展 (v0.9 增强版)
+ * - 支持英文与中文全角成对符号（（）、【】、《》、""、''）选区包裹
+ * - 支持光标紧邻中文字符时的 ( / [ / { / " / ** / ~~ / == 自动配对
+ * - 修复行首输入 *** 水平分割线或列表符号时被误扩展为 **** 的逻辑异常
  */
 const markdownSurroundHandler = EditorView.domEventHandlers({
   keydown: (event: KeyboardEvent, view: EditorView) => {
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
     const { from, to } = view.state.selection.main;
 
-    // 1. 选区包裹逻辑
+    // 1. 选区包裹逻辑（兼容中英文成对括号与引号）
     if (from !== to) {
       const key = event.key;
       let openStr = "";
@@ -21,9 +35,18 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
       if (key === "(" || key === ")") {
         openStr = "(";
         closeStr = ")";
+      } else if (key === "（" || key === "）") {
+        openStr = "（";
+        closeStr = "）";
       } else if (key === "[" || key === "]") {
         openStr = "[";
         closeStr = "]";
+      } else if (key === "【" || key === "】") {
+        openStr = "【";
+        closeStr = "】";
+      } else if (key === "《" || key === "》") {
+        openStr = "《";
+        closeStr = "》";
       } else if (key === "{") {
         openStr = "{";
         closeStr = "}";
@@ -75,9 +98,36 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
       return false;
     }
 
+    const nextChar = view.state.sliceDoc(pos, pos + 1);
+    const isNextCjkOrPunct =
+      !nextChar || /[\s\)\]\}>.,;:!?，。；：！？、）】》”’\u4e00-\u9fa5]/.test(nextChar);
+
+    // 2.0 当光标右侧是中文汉字或中文标点时，确保 ( / [ / { / " 也能顺畅自动配对
+    if (
+      isNextCjkOrPunct &&
+      nextChar &&
+      /[\u4e00-\u9fa5，。；：！？、）】》”’]/.test(nextChar)
+    ) {
+      const pairMap: Record<string, string> = {
+        "(": "()",
+        "[": "[]",
+        "{": "{}",
+        '"': '""',
+        "`": "``",
+      };
+      const pair = pairMap[event.key];
+      if (pair) {
+        event.preventDefault();
+        view.dispatch({
+          changes: { from: pos, to: pos, insert: pair },
+          selection: { anchor: pos + 1 },
+        });
+        return true;
+      }
+    }
+
     // 2.1 LaTeX 数学公式美元符成对自动补全与跳过
     if (event.key === "$") {
-      const nextChar = view.state.sliceDoc(pos, pos + 1);
       if (nextChar === "$") {
         event.preventDefault();
         view.dispatch({ selection: { anchor: pos + 1 } });
@@ -109,7 +159,7 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
         view.dispatch({ selection: { anchor: pos + 1 } });
         return true;
       }
-      if (prevChar === ch && view.state.sliceDoc(pos, pos + 1) !== ch) {
+      if (prevChar === ch && nextChar !== ch && isNextCjkOrPunct) {
         event.preventDefault();
         view.dispatch({
           changes: { from: pos, to: pos, insert: ch + ch + ch },
@@ -119,12 +169,16 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
       }
     }
 
-    // 3. 退格对称删除成对的 $$ / **** / ~~~~ / ==== / [[]]
+    // 3. 退格对称删除成对的 $$ / **** / ~~~~ / ==== / [[]] / （） / 【】 / 《》
     if (event.key === "Backspace") {
       if (pos > 0 && pos < view.state.doc.length) {
         const prevChar = view.state.sliceDoc(pos - 1, pos);
-        const nextChar = view.state.sliceDoc(pos, pos + 1);
-        if (prevChar === "$" && nextChar === "$") {
+        if (
+          (prevChar === "$" && nextChar === "$") ||
+          (prevChar === "（" && nextChar === "）") ||
+          (prevChar === "【" && nextChar === "】") ||
+          (prevChar === "《" && nextChar === "》")
+        ) {
           event.preventDefault();
           view.dispatch({
             changes: { from: pos - 1, to: pos + 1, insert: "" },
@@ -156,6 +210,7 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
 
 export function smartAutopairExtension(): Extension[] {
   return [
+    markdownCloseBracketsConfig,
     closeBrackets(),
     markdownSurroundHandler,
     Prec.high(keymap.of(closeBracketsKeymap)),

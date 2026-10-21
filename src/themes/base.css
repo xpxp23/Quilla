@@ -435,18 +435,49 @@ body.theme-night .cm-callout-header-caution { color: #f85149; }
   ) !important;
 }
 
-/* 引用块内部嵌套列表分级缩进 */
+/* 引用块桥接空白行（保持连续左侧引用竖线不断裂） */
+.cm-line.cm-blockquote.cm-blockquote-bridged-empty {
+  min-height: 1.45em;
+}
+
+/* 引用块内部嵌套列表分级缩进（完美叠加多层引用块竖线与多级列表缩进，修复复合嵌套重叠） */
 .cm-line.cm-blockquote.cm-list-level-1 {
-  padding-left: 16px !important;
+  padding-left: 18px !important;
 }
 .cm-line.cm-blockquote.cm-list-level-2 {
-  padding-left: 36px !important;
+  padding-left: 38px !important;
 }
 .cm-line.cm-blockquote.cm-list-level-3 {
-  padding-left: 56px !important;
+  padding-left: 58px !important;
 }
 .cm-line.cm-blockquote.cm-list-level-4 {
-  padding-left: 76px !important;
+  padding-left: 78px !important;
+}
+
+.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-1 {
+  padding-left: 30px !important;
+}
+.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-2 {
+  padding-left: 50px !important;
+}
+.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-3 {
+  padding-left: 70px !important;
+}
+.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-4 {
+  padding-left: 90px !important;
+}
+
+.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-1 {
+  padding-left: 42px !important;
+}
+.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-2 {
+  padding-left: 62px !important;
+}
+.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-3 {
+  padding-left: 82px !important;
+}
+.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-4 {
+  padding-left: 102px !important;
 }
 
 /* 水平分割线 (--- / *** / ___) */

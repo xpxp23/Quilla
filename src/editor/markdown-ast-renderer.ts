@@ -3,7 +3,7 @@ import mermaid from "mermaid";
 import { parseWikiLinksInLine } from "./extensions/wiki-link";
 
 /**
- * Quilla v0.8 统一 Markdown AST 解析与渲染内核 (Unified Markdown AST Kernel)
+ * Quilla v0.9 统一 Markdown AST 解析与渲染内核 (Unified Markdown AST Kernel)
  * - 彻底取代分散在 main.ts 与 table-editor.ts 中的多套手写正则+占位符替换管线
  * - 采用单遍词法扫描 + 递归 AST 节点构建，从根源上杜绝 `\u0000EXP_PH_0_\u0000` / `\u0000PH_0_\u0000` 被斜体 `_..._` 正则腐蚀的 Bug
  * - 严格实现 CommonMark 词内下划线边界规则（snake_case_variable 绝不会误触发斜体）

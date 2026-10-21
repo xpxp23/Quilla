@@ -360,7 +360,7 @@ export function buildWeChatInlineHtml(bodyHtml: string, title: string): string {
     "style",
     "margin-top: 24px; padding-top: 10px; border-top: 1px dashed #d0d7de; font-size: 12px; color: #8c959f; text-align: right;"
   );
-  footer.textContent = `由 Quilla (羽墨) v0.8 排版生成 · ${title}`;
+  footer.textContent = `由 Quilla (羽墨) v0.9 排版生成 · ${title}`;
   root.appendChild(footer);
 
   return root.outerHTML;
@@ -673,7 +673,7 @@ async function buildWordCompatibleHtml(bodyHtml: string, title: string): Promise
     "style",
     "margin-top: 18pt; padding-top: 8pt; border-top: 1pt dashed #d0d7de; font-size: 9pt; color: #8c959f; text-align: right;"
   );
-  footer.textContent = `由 Quilla (羽墨) v0.8 导出 · ${title}`;
+  footer.textContent = `由 Quilla (羽墨) v0.9 导出 · ${title}`;
   root.appendChild(footer);
 
   return root.innerHTML;
@@ -839,7 +839,7 @@ export function openSharePosterModal(options: {
               ${preparedBody}
             </div>
             <div class="poster-card-footer">
-              <span>Written with Quilla (羽墨) v0.8</span>
+              <span>Written with Quilla (羽墨) v0.9</span>
               <span>Markdown Knowledge Studio</span>
             </div>
           </div>
@@ -1178,7 +1178,7 @@ export function buildStandalonePdfDocumentHtml(
 
   const footerHtml = config.includeHeaderFooter
     ? `<footer class="pdf-doc-footer">
-        <span>由 Quilla (羽墨) v0.8 矢量排版引擎生成</span>
+        <span>由 Quilla (羽墨) v0.9 矢量排版引擎生成</span>
         <span>${escapeHtml(title)}</span>
       </footer>`
     : "";
@@ -1422,7 +1422,9 @@ export function openPdfExportModal(options: PdfExportOptions) {
 
   let pageSize: "A4" | "Letter" | "A5" = "A4";
   let marginPreset: "standard" | "compact" | "academic" = "standard";
-  let includeHeaderFooter = true;
+  let includeHeaderFooter = false;
+  let generateOutline = true;
+  let includeToc = false;
 
   const preparePreviewHtml = (): string => {
     const parser = new DOMParser();
@@ -1438,6 +1440,37 @@ export function openPdfExportModal(options: PdfExportOptions) {
         firstChild.remove();
       }
     }
+
+    // 为所有 H1~H6 注入锚点 ID，赋能原生 PDF 书签大纲树 (Outline Tree) 与扉页目录跳转
+    const headings = Array.from(root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6"));
+    headings.forEach((h, idx) => {
+      if (!h.id) {
+        h.id = `quilla-pdf-heading-${idx + 1}`;
+      }
+    });
+
+    if (includeToc && headings.length > 0) {
+      const tocBox = doc.createElement("nav");
+      tocBox.className = "pdf-auto-toc";
+      tocBox.setAttribute(
+        "style",
+        "margin: 0 0 18pt 0; padding: 12pt 16pt; border: 1px solid #d0d7de; border-radius: 6px; background-color: #f6f8fa; page-break-inside: avoid;"
+      );
+      const tocItems = headings
+        .filter((h) => Number(h.tagName.slice(1)) <= 4)
+        .map((h) => {
+          const lvl = Number(h.tagName.slice(1));
+          const indentPt = (lvl - 1) * 14;
+          const titleTxt = escapeHtml((h.textContent || "").trim());
+          return `<div style="padding-left:${indentPt}pt; margin: 3pt 0; font-size: ${
+            lvl === 1 ? "10.5pt; font-weight:600" : "9.5pt"
+          };"><a href="#${h.id}" style="color:#0969da; text-decoration:none;">${titleTxt}</a></div>`;
+        })
+        .join("");
+      tocBox.innerHTML = `<div style="font-size:11pt; font-weight:700; margin-bottom:6pt; color:#1f2328; border-bottom:1px solid #d0d7de; padding-bottom:4pt;">目录大纲 (Table of Contents)</div>${tocItems}`;
+      root.insertBefore(tocBox, root.firstChild);
+    }
+
     inlineCodeSyntaxColors(root, false);
     return root.innerHTML;
   };
@@ -1477,7 +1510,9 @@ export function openPdfExportModal(options: PdfExportOptions) {
               <button type="button" class="graph-scope-btn ${marginPreset === "compact" ? "active" : ""}" data-pdf-margin="compact">紧凑</button>
               <button type="button" class="graph-scope-btn ${marginPreset === "academic" ? "active" : ""}" data-pdf-margin="academic">学术宽距</button>
             </div>
-            <button type="button" class="graph-scope-btn ${includeHeaderFooter ? "active" : ""}" id="pdf-toggle-hf-btn" title="切换文档抬头与页脚水印">页眉页脚</button>
+            <button type="button" class="graph-scope-btn ${generateOutline ? "active" : ""}" id="pdf-toggle-outline-btn" title="生成原生 PDF 书签目录树 (PDF Outline Bookmarks)">PDF 书签树</button>
+            <button type="button" class="graph-scope-btn ${includeToc ? "active" : ""}" id="pdf-toggle-toc-btn" title="在文档顶部插入可点击跳转的章节目录">内嵌目录</button>
+            <button type="button" class="graph-scope-btn ${includeHeaderFooter ? "active" : ""}" id="pdf-toggle-hf-btn" title="切换文档抬头与页脚水印（默认关闭以保持纯净无页眉页脚排版）">装饰页眉</button>
             <button type="button" class="modal-close-btn" id="pdf-close-btn" title="关闭 (Esc)">✕</button>
           </div>
         </div>
@@ -1501,7 +1536,7 @@ export function openPdfExportModal(options: PdfExportOptions) {
             ${
               includeHeaderFooter
                 ? `<div class="poster-card-footer">
-                    <span>由 Quilla (羽墨) v0.8 矢量排版引擎生成</span>
+                    <span>由 Quilla (羽墨) v0.9 矢量排版引擎生成</span>
                     <span>${escapeHtml(options.title)}</span>
                   </div>`
                 : ""
@@ -1534,6 +1569,16 @@ export function openPdfExportModal(options: PdfExportOptions) {
         marginPreset = (btn.dataset.pdfMargin as any) || "standard";
         renderModal();
       });
+    });
+
+    pdfModalEl.querySelector("#pdf-toggle-outline-btn")?.addEventListener("click", () => {
+      generateOutline = !generateOutline;
+      renderModal();
+    });
+
+    pdfModalEl.querySelector("#pdf-toggle-toc-btn")?.addEventListener("click", () => {
+      includeToc = !includeToc;
+      renderModal();
     });
 
     pdfModalEl.querySelector("#pdf-toggle-hf-btn")?.addEventListener("click", () => {
@@ -1581,6 +1626,7 @@ export function openPdfExportModal(options: PdfExportOptions) {
           path: savePath.trim(),
           htmlContent: fullHtml,
           pageSize,
+          generateOutline,
         });
 
         close();

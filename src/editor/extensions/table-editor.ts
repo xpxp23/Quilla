@@ -10,7 +10,7 @@ import {
   isTableDelimiter,
   TableBlock,
 } from "./doc-structure";
-import { parseInlineAST, renderInlineASTSync } from "../markdown-ast-renderer";
+import { parseInlineAST, renderInlineASTSync, parseTableRowCells } from "../markdown-ast-renderer";
 
 export { isTableDelimiter };
 export type { TableBlock };
@@ -454,12 +454,7 @@ class InteractiveTableWidget extends WidgetType {
     });
 
     const parseRowCells = (rowText: string): string[] => {
-      let trimmed = rowText.trim();
-      if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
-      if (trimmed.endsWith("|") && !trimmed.endsWith("\\|")) trimmed = trimmed.slice(0, -1);
-      return trimmed
-        .split(/(?<!\\)\|/)
-        .map((c) => c.trim().replace(/\\\|/g, "|"));
+      return parseTableRowCells(rowText);
     };
 
     this.currentHeaders = parseRowCells(this.lines[0] || "");
@@ -1477,18 +1472,66 @@ class InteractiveTableWidget extends WidgetType {
         return;
       }
 
-      // 3. 上下方向键：表内跨行移动 + 首尾行平滑跳出表格
+      // 辅助检测多行单元格（含 <br> 或软折行）内光标是否已处于首/末视觉行
+      const isAtCellVerticalEdge = (edge: "top" | "bottom"): boolean => {
+        try {
+          const sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) return true;
+          const range = sel.getRangeAt(0);
+          if (!range.collapsed) return false;
+          const caretRect = range.getBoundingClientRect();
+          const editorRect = cellEditor.getBoundingClientRect();
+          if (!caretRect || caretRect.height === 0 || editorRect.height <= 28) return true;
+          if (edge === "top") {
+            return caretRect.top - editorRect.top < caretRect.height * 0.85;
+          } else {
+            return editorRect.bottom - caretRect.bottom < caretRect.height * 0.85;
+          }
+        } catch {
+          return true;
+        }
+      };
+
+      const exitTableUpward = () => {
+        const { from } = resolveCurrentTableSpan();
+        if (from <= 0) {
+          view.dispatch({
+            changes: { from: 0, insert: "\n" },
+            selection: { anchor: 0 },
+            scrollIntoView: true,
+          });
+        } else {
+          view.dispatch({ selection: { anchor: from - 1 }, scrollIntoView: true });
+        }
+        view.focus();
+      };
+
+      const exitTableDownward = () => {
+        const { to } = resolveCurrentTableSpan();
+        if (to >= view.state.doc.length) {
+          view.dispatch({
+            changes: { from: to, insert: "\n" },
+            selection: { anchor: to + 1 },
+            scrollIntoView: true,
+          });
+        } else {
+          view.dispatch({ selection: { anchor: to + 1 }, scrollIntoView: true });
+        }
+        view.focus();
+      };
+
+      // 3. 上下方向键：多行单元格内优先上下折行移动，到达首/末视觉行时跨行或平滑跳出表格
       if (e.key === "ArrowUp") {
+        if (!isAtCellVerticalEdge("top")) {
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
         if (hasUserEdited) syncToDoc();
         clearSelection();
         if (r === -1) {
-          const { from } = resolveCurrentTableSpan();
-          const beforePos = Math.max(0, from - 1);
-          view.dispatch({ selection: { anchor: beforePos }, scrollIntoView: true });
-          view.focus();
+          exitTableUpward();
         } else {
           focusCell(r - 1, c, "end");
         }
@@ -1496,23 +1539,23 @@ class InteractiveTableWidget extends WidgetType {
       }
 
       if (e.key === "ArrowDown") {
+        if (!isAtCellVerticalEdge("bottom")) {
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
         if (hasUserEdited) syncToDoc();
         clearSelection();
         if (r === this.currentRows.length - 1) {
-          const { to } = resolveCurrentTableSpan();
-          const afterPos = Math.min(view.state.doc.length, to + 1);
-          view.dispatch({ selection: { anchor: afterPos }, scrollIntoView: true });
-          view.focus();
+          exitTableDownward();
         } else {
           focusCell(r + 1, c, "end");
         }
         return;
       }
 
-      // 3.1 左右方向键：单元格首尾边界跨格流转 + 首末格离开表格
+      // 3.1 左右方向键：单元格首尾边界跨格流转 + 首末格离开表格（支持文档首/末行自动补空行防死锁）
       if (e.key === "ArrowLeft" && !e.shiftKey) {
         const { atStart } = getCaretBoundary(cellEditor);
         if (atStart) {
@@ -1526,10 +1569,7 @@ class InteractiveTableWidget extends WidgetType {
           } else if (r > -1) {
             focusCell(r - 1, cols - 1, "end");
           } else {
-            const { from } = resolveCurrentTableSpan();
-            const beforePos = Math.max(0, from - 1);
-            view.dispatch({ selection: { anchor: beforePos }, scrollIntoView: true });
-            view.focus();
+            exitTableUpward();
           }
           return;
         }
@@ -1548,10 +1588,7 @@ class InteractiveTableWidget extends WidgetType {
           } else if (r + 1 < this.currentRows.length) {
             focusCell(r + 1, 0, "start");
           } else {
-            const { to } = resolveCurrentTableSpan();
-            const afterPos = Math.min(view.state.doc.length, to + 1);
-            view.dispatch({ selection: { anchor: afterPos }, scrollIntoView: true });
-            view.focus();
+            exitTableDownward();
           }
           return;
         }

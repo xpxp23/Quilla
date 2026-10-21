@@ -998,6 +998,7 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       const qLen = quotePrefix.length;
       const rest = text.slice(qLen);
 
+      const isListLine = /^\s*([-*+]|\d+\.)\s+/.test(rest);
       if (isShift) {
         const removeLen = rest.startsWith("   ")
           ? 3
@@ -1009,17 +1010,30 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
         if (removeLen > 0) {
           simLines[ln - 1] = `${quotePrefix}${rest.slice(removeLen)}`;
           anyHandled = true;
+        } else if (!isListLine && quotePrefix) {
+          const qDepth = (quotePrefix.match(/>/g) || []).length;
+          const reducedQp = qDepth > 1 ? "> ".repeat(qDepth - 1) : "";
+          simLines[ln - 1] = `${reducedQp}${rest}`;
+          anyHandled = true;
         }
       } else {
-        let step = "  ";
-        if (ln > 1) {
-          const prevRest = simLines[ln - 2].slice(qLen);
-          if (/^\s*\d+\.\s+/.test(prevRest)) {
-            step = "   ";
+        if (!isListLine && quotePrefix) {
+          const qDepth = (quotePrefix.match(/>/g) || []).length;
+          if (qDepth < 3) {
+            simLines[ln - 1] = `${"> ".repeat(qDepth + 1)}${rest}`;
+            anyHandled = true;
           }
+        } else {
+          let step = "  ";
+          if (ln > 1) {
+            const prevRest = simLines[ln - 2].slice(qLen);
+            if (/^\s*\d+\.\s+/.test(prevRest)) {
+              step = "   ";
+            }
+          }
+          simLines[ln - 1] = `${quotePrefix}${step}${rest}`;
+          anyHandled = true;
         }
-        simLines[ln - 1] = `${quotePrefix}${step}${rest}`;
-        anyHandled = true;
       }
     }
 
@@ -1087,7 +1101,20 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
     }
 
     if (changes.length > 0) {
-      view.dispatch({ changes, userEvent: isShift ? "delete.dedent" : "input.indent" });
+      let totalDeltaBeforeStart = 0;
+      let totalDeltaUpToEnd = 0;
+      for (let ln = 1; ln <= doc.lines; ln++) {
+        const delta = simLines[ln - 1].length - doc.line(ln).text.length;
+        if (ln < startLineNum) totalDeltaBeforeStart += delta;
+        if (ln <= endLineNum) totalDeltaUpToEnd += delta;
+      }
+      const newFrom = doc.line(startLineNum).from + totalDeltaBeforeStart;
+      const newTo = doc.line(endLineNum).to + totalDeltaUpToEnd;
+      view.dispatch({
+        changes,
+        selection: { anchor: newFrom, head: Math.max(newFrom, newTo) },
+        userEvent: isShift ? "delete.dedent" : "input.indent",
+      });
       return true;
     }
     return false;

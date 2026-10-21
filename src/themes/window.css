@@ -3314,3 +3314,238 @@ body.theme-night .ty-recovery-banner {
     gap: 4px;
   }
 }
+
+
+/* ================= v0.9 反向链接 (Linked & Unlinked Mentions) 与大纲联动区 + 图床/文件关联设置样式 ================= */
+.backlinks-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backlinks-tabs {
+  display: inline-flex;
+  align-items: center;
+  background-color: rgba(127, 127, 127, 0.09);
+  border-radius: 5px;
+  padding: 1.5px;
+  gap: 2px;
+}
+
+.backlinks-tab-btn {
+  border: none;
+  background: transparent;
+  color: var(--control-text-color);
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.backlinks-tab-btn:hover {
+  color: var(--text-color);
+}
+
+.backlinks-tab-btn.active {
+  background-color: var(--bg-color);
+  color: var(--primary-color, #0969da);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.backlink-linkify-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(9, 105, 218, 0.3);
+  background-color: var(--primary-bg-subtle);
+  color: var(--primary-color, #0969da);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.backlink-linkify-btn:hover {
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+}
+
+.backlinks-empty-hint {
+  padding: 8px 6px;
+  font-size: 11.5px;
+  color: var(--control-text-color);
+  text-align: center;
+  opacity: 0.85;
+}
+
+/* 大纲面板底部联动反向链接折叠区 */
+#panel-outline.panel-view.active {
+  display: flex;
+  flex-direction: column;
+}
+
+#panel-outline .outline-content {
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+
+.outline-backlinks-section {
+  border-top: 1px solid var(--border-color);
+  background-color: rgba(127, 127, 127, 0.03);
+  flex-shrink: 0;
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+}
+
+.outline-backlinks-section.hidden {
+  display: none !important;
+}
+
+.outline-backlinks-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  user-select: none;
+}
+
+.outline-backlinks-header:hover {
+  background-color: var(--item-hover-bg-color);
+  color: var(--text-color);
+}
+
+.outline-backlinks-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.outline-backlinks-section.collapsed .outline-backlinks-list {
+  display: none;
+}
+
+.outline-backlinks-section.collapsed .backlinks-chevron {
+  transform: rotate(-90deg);
+}
+
+.outline-backlinks-list {
+  overflow-y: auto;
+  padding: 4px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.outline-backlinks-group-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  padding: 3px 4px 1px;
+  opacity: 0.85;
+}
+
+/* 偏好设置：文件关联状态胶囊、扩展名勾选与图床配置表单 */
+.pref-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.pref-status-pill.ok {
+  background-color: rgba(26, 127, 55, 0.12);
+  color: #1a7f37;
+}
+
+.pref-status-pill.warn {
+  background-color: rgba(154, 103, 0, 0.14);
+  color: #9a6700;
+}
+
+.pref-status-pill.idle {
+  background-color: rgba(127, 127, 127, 0.12);
+  color: var(--control-text-color);
+}
+
+.pref-ext-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.pref-ext-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+  font-size: 11.5px;
+  font-family: var(--monospace);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pref-text-input {
+  width: 220px;
+  padding: 5px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  font-size: 12px;
+  outline: none;
+}
+
+.pref-text-input:focus {
+  border-color: var(--primary-color, #0969da);
+  box-shadow: 0 0 0 2px var(--primary-bg-subtle);
+}
+
+.pref-bed-config-box {
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px dashed var(--border-color);
+  background-color: rgba(127, 127, 127, 0.035);
+}
+
+.pref-bed-config-box.hidden {
+  display: none !important;
+}
+
+.pref-bed-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.pref-bed-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pref-bed-field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--control-text-color);
+}
+
+.pref-bed-field .pref-text-input {
+  width: 100%;
+  box-sizing: border-box;
+}

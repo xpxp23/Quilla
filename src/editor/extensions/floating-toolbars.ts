@@ -6,6 +6,10 @@ import {
   isLikelyUrl,
   normalizeUrlForLink,
 } from "./inline-boundary-guard";
+import { activeDocumentPath } from "./live-preview";
+import { uploadImageAssetToBed } from "./image-handler";
+import { showToast } from "../../components/save-dialog";
+import { openPreferencesModal } from "../../components/preferences";
 
 function escapeAttr(str: string): string {
   return str
@@ -23,6 +27,17 @@ function sanitizeLinkUrl(raw: string): string {
   return trimmed;
 }
 
+function resolveLocalImagePath(src: string, docPath: string | null): string | undefined {
+  if (!src || /^https?:\/\/|^data:/i.test(src)) return undefined;
+  const cleaned = src.replace(/^file:\/\/\/?/i, "");
+  if (/^[a-zA-Z]:[\\/]/.test(cleaned) || cleaned.startsWith("/")) {
+    return cleaned;
+  }
+  if (!docPath) return cleaned;
+  const parentDir = docPath.replace(/[\\/][^\\/]+$/, "");
+  return `${parentDir}/${cleaned.replace(/^\.\//, "")}`;
+}
+
 export function initFloatingToolbars(
   view: EditorView,
   onOpenFile?: (filePath: string) => void
@@ -31,7 +46,7 @@ export function initFloatingToolbars(
   if ((view as any)._quillaFloatingToolbarsBound) return;
   (view as any)._quillaFloatingToolbarsBound = true;
 
-  // 1. 创建图片微型悬浮工具栏 (Floating Image Toolbar)
+  // 1. 创建图片微型悬浮工具栏 (Floating Image Toolbar) — 新增一键上传图床按钮
   const imgToolbar = document.createElement("div");
   imgToolbar.className = "ty-image-toolbar hidden";
   imgToolbar.innerHTML = `
@@ -53,6 +68,10 @@ export function initFloatingToolbars(
       <span>右</span>
     </button>
     <div class="ty-toolbar-divider"></div>
+    <button type="button" class="ty-toolbar-btn" data-action="upload-bed" title="一键上传本地图片至图床 (PicGo / GitHub / 自定义) 并替换为远程 URL">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+      <span>上传图床</span>
+    </button>
     <button type="button" class="ty-toolbar-btn" data-action="source" title="查看并编辑 Markdown 源码">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
       <span>源码</span>
@@ -164,7 +183,7 @@ export function initFloatingToolbars(
 
   function positionToolbar(toolbar: HTMLElement, targetElem: HTMLElement) {
     const rect = targetElem.getBoundingClientRect();
-    const tbWidth = toolbar.offsetWidth || 300;
+    const tbWidth = toolbar.offsetWidth || 340;
     const tbHeight = toolbar.offsetHeight || 34;
 
     let top = rect.top - tbHeight - 8;
@@ -220,6 +239,13 @@ export function initFloatingToolbars(
     imgToolbar.querySelectorAll("[data-align]").forEach((btn: any) => {
       btn.classList.toggle("active", btn.dataset.align === activeImgTarget!.align);
     });
+    const uploadBtn = imgToolbar.querySelector<HTMLElement>('[data-action="upload-bed"]');
+    if (uploadBtn) {
+      const isRemote = /^https?:\/\//i.test(activeImgTarget.src);
+      uploadBtn.classList.toggle("active", isRemote);
+      const span = uploadBtn.querySelector("span");
+      if (span) span.textContent = isRemote ? "已上云" : "上传图床";
+    }
   }
 
   function syncSelectionToolbarActiveState() {
@@ -240,7 +266,6 @@ export function initFloatingToolbars(
       ) {
         return true;
       }
-      // 多行选区检查：若所有非空行均包裹了该标记，也视为激活态
       if (selected.includes("\n")) {
         const startLine = state.doc.lineAt(sel.from).number;
         const endLine = state.doc.lineAt(Math.max(sel.from, sel.to - 1)).number;
@@ -453,7 +478,7 @@ export function initFloatingToolbars(
   });
 
   // 图片工具栏按钮事件
-  imgToolbar.addEventListener("click", (e) => {
+  imgToolbar.addEventListener("click", async (e) => {
     e.stopPropagation();
     const btn = (e.target as HTMLElement).closest(".ty-toolbar-btn") as HTMLElement;
     if (!btn || !activeImgTarget) return;
@@ -470,6 +495,35 @@ export function initFloatingToolbars(
       width = newSize === "100%" || width === newSize ? "" : newSize;
     } else if (newAlign) {
       align = align === newAlign ? "left" : newAlign;
+    } else if (action === "upload-bed") {
+      if (/^https?:\/\//i.test(src)) {
+        showToast("当前图片已是远程图床 URL", "info");
+        return;
+      }
+      const localPath = resolveLocalImagePath(src, activeDocumentPath);
+      const filename = (src.split(/[\\/]/).pop() || "image.png").split("?")[0];
+      const span = btn.querySelector("span");
+      const prevLabel = span?.textContent || "上传图床";
+      try {
+        if (span) span.textContent = "上传中...";
+        const remoteUrl = await uploadImageAssetToBed({
+          localPath,
+          base64Data: src.startsWith("data:") ? src : undefined,
+          filename,
+        });
+        src = remoteUrl;
+        activeImgTarget.src = remoteUrl;
+        showToast(`图片已成功上传图床：${remoteUrl}`, "success");
+      } catch (err) {
+        const errStr = String(err);
+        showToast(`${errStr}`, "info");
+        if (errStr.includes("偏好设置")) {
+          hideAllToolbars();
+          openPreferencesModal();
+        }
+        if (span) span.textContent = prevLabel;
+        return;
+      }
     } else if (action === "source") {
       hideAllToolbars();
       view.dispatch({ selection: { anchor: Math.min(from + 2, view.state.doc.length) } });

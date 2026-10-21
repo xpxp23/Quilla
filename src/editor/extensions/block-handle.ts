@@ -383,7 +383,7 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * 基于 Pointer Events 的段落/块级左侧拖拽手柄 (⋮⋮ Block Handle v0.8)
+ * 基于 Pointer Events 的段落/块级左侧拖拽手柄 (⋮⋮ Block Handle v0.9)
  */
 export const blockHandlePlugin = ViewPlugin.fromClass(
   class {

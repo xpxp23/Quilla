@@ -19,6 +19,12 @@ pub struct SearchMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacklinkOverview {
+    pub linked: Vec<SearchMatch>,
+    pub unlinked: Vec<SearchMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagSummary {
     pub tag: String,
     pub count: usize,
@@ -69,6 +75,8 @@ pub struct IndexedDoc {
     pub modified_ms: u64,
     pub tags: Vec<(String, SearchMatch)>,
     pub outgoing_links: Vec<IndexedLink>,
+    /// 缓存非代码块的可见正文行 (行号, 原始文本, 小写文本)，供未链接提及 (Unlinked Mentions) O(1) 扫描
+    pub body_lines: Vec<(usize, String, String)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -77,10 +85,10 @@ pub struct WorkspaceCache {
     pub docs: HashMap<String, IndexedDoc>,
 }
 
-/// 工作区内存倒排索引 (In-Memory Workspace Index v0.8)
-/// 缓存每个 .md 文档的标题词干、#标签、[[WikiLinks]] / Markdown 内部链接及修改时间戳 mtime，
-/// 将反向链接查询、侧边栏标签云聚合与双链知识图谱构建从全盘 I/O 扫描降为亚毫秒级内存读取，
-/// 并支持单文件保存、重命名、删除及 Watcher 增量同步。
+/// 工作区内存倒排索引 (In-Memory Workspace Index v0.9)
+/// 缓存每个 .md 文档的标题词干、#标签、[[WikiLinks]] / Markdown 内部链接、正文行及修改时间戳 mtime，
+/// 将已链接反向引用 (Linked Mentions)、未链接提及 (Unlinked Mentions)、侧边栏标签云聚合与双链知识图谱构建
+/// 从全盘 I/O 扫描降为亚毫秒级内存读取，并支持单文件保存、重命名、删除及 Watcher 增量同步。
 #[derive(Default, Clone)]
 pub struct WorkspaceIndex {
     caches: Arc<Mutex<HashMap<String, WorkspaceCache>>>,
@@ -137,7 +145,7 @@ fn is_indexable_markdown(path: &Path) -> bool {
 }
 
 impl WorkspaceIndex {
-    /// 解析单个 Markdown 文档的标签与出链元数据
+    /// 解析单个 Markdown 文档的标签、出链与可见正文行元数据
     pub fn parse_doc_entry(path: &Path, content_override: Option<&str>) -> Option<IndexedDoc> {
         let stem_os = path.file_stem()?.to_str()?;
         let stem_display = stem_os.to_string();
@@ -165,6 +173,7 @@ impl WorkspaceIndex {
 
         let mut tags: Vec<(String, SearchMatch)> = Vec::new();
         let mut outgoing_links: Vec<IndexedLink> = Vec::new();
+        let mut body_lines: Vec<(usize, String, String)> = Vec::new();
 
         let lines: Vec<&str> = content.lines().collect();
         let mut in_fence = false;
@@ -213,6 +222,9 @@ impl WorkspaceIndex {
             }
 
             let preview: String = trimmed.chars().take(MAX_LINE_PREVIEW_CHARS).collect();
+            if !preview.is_empty() && body_lines.len() < 1500 {
+                body_lines.push((line_num, preview.clone(), preview.to_lowercase()));
+            }
 
             // 1. 提取该行内的 [[WikiLink]] / ![[Embed]]
             let bytes = raw_line.as_bytes();
@@ -360,6 +372,7 @@ impl WorkspaceIndex {
             modified_ms,
             tags,
             outgoing_links,
+            body_lines,
         })
     }
 
@@ -482,13 +495,24 @@ impl WorkspaceIndex {
         }
     }
 
-    /// 亚毫秒级内存反向链接检索
+    /// 亚毫秒级内存反向链接检索（已链接引用 Linked Mentions）
     pub fn search_backlinks<P: AsRef<Path>>(
         &self,
         root: P,
         target_name: &str,
         exclude_file_path: Option<&str>,
     ) -> Vec<SearchMatch> {
+        self.search_backlinks_overview(root, target_name, exclude_file_path)
+            .linked
+    }
+
+    /// 同时检索当前文档的「已链接反向引用 (Linked Mentions)」与「未链接提及 (Unlinked Mentions)」
+    pub fn search_backlinks_overview<P: AsRef<Path>>(
+        &self,
+        root: P,
+        target_name: &str,
+        exclude_file_path: Option<&str>,
+    ) -> BacklinkOverview {
         let stem = Path::new(target_name)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -496,7 +520,10 @@ impl WorkspaceIndex {
             .trim()
             .to_lowercase();
         if stem.is_empty() {
-            return Vec::new();
+            return BacklinkOverview {
+                linked: Vec::new(),
+                unlinked: Vec::new(),
+            };
         }
 
         let norm_exclude = exclude_file_path
@@ -504,32 +531,56 @@ impl WorkspaceIndex {
             .unwrap_or_default();
 
         let cache = self.get_or_build_workspace(root.as_ref());
-        let mut results = Vec::new();
+        let mut linked = Vec::new();
+        let mut unlinked = Vec::new();
+        let can_scan_unlinked = stem.chars().count() >= 2;
 
         for (doc_key, doc) in &cache.docs {
             if !norm_exclude.is_empty() && doc_key == &norm_exclude {
                 continue;
             }
+            if doc.stem_lower == stem {
+                continue;
+            }
+
+            let mut linked_lines_in_doc = HashSet::new();
             for link in &doc.outgoing_links {
                 if link.target_stem == stem {
-                    results.push(SearchMatch {
-                        file: doc.path.clone(),
-                        file_name: doc.file_name.clone(),
-                        line: link.line,
-                        text: link.preview.clone(),
-                    });
-                    if results.len() >= 200 {
-                        break;
+                    linked_lines_in_doc.insert(link.line);
+                    if linked.len() < 200 {
+                        linked.push(SearchMatch {
+                            file: doc.path.clone(),
+                            file_name: doc.file_name.clone(),
+                            line: link.line,
+                            text: link.preview.clone(),
+                        });
                     }
                 }
             }
-            if results.len() >= 200 {
-                break;
+
+            if can_scan_unlinked && unlinked.len() < 150 {
+                for (ln, orig_text, lower_text) in &doc.body_lines {
+                    if linked_lines_in_doc.contains(ln) {
+                        continue;
+                    }
+                    if lower_text.contains(&stem) {
+                        unlinked.push(SearchMatch {
+                            file: doc.path.clone(),
+                            file_name: doc.file_name.clone(),
+                            line: *ln,
+                            text: orig_text.clone(),
+                        });
+                        if unlinked.len() >= 150 {
+                            break;
+                        }
+                    }
+                }
             }
         }
 
-        results.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-        results
+        linked.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+        unlinked.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+        BacklinkOverview { linked, unlinked }
     }
 
     /// 亚毫秒级内存 #标签 云聚合
@@ -798,19 +849,5 @@ impl SearchEngine {
     ) -> Vec<SearchMatch> {
         let index = WorkspaceIndex::default();
         index.search_backlinks(root, target_name, exclude_file_path)
-    }
-
-    pub fn scan_workspace_tags<P: AsRef<Path>>(root: P) -> Vec<TagSummary> {
-        let index = WorkspaceIndex::default();
-        index.scan_workspace_tags(root)
-    }
-
-    pub fn build_knowledge_graph<P: AsRef<Path>>(
-        root: P,
-        center_file_path: Option<&str>,
-        local_depth: usize,
-    ) -> KnowledgeGraphData {
-        let index = WorkspaceIndex::default();
-        index.build_knowledge_graph(root, center_file_path, local_depth)
     }
 }

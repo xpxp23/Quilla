@@ -14,9 +14,9 @@ fs.readFileSync = function(...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.8.0 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.9.0 自动化回归与架构完整性验证 ===");
 
-// 1. 静态源码架构、历史防回归与 v0.8.0 七大核心 Bug 修复验证
+// 1. 静态源码架构、历史防回归与 v0.9.0 七大核心 Bug 修复验证
 {
   const mainTs = fs.readFileSync(path.join(rootDir, "src/main.ts"), "utf-8");
   const indexTs = fs.readFileSync(path.join(rootDir, "src/editor/index.ts"), "utf-8");
@@ -191,10 +191,68 @@ console.log("=== Quilla (羽墨) v0.8.0 自动化回归与架构完整性验证 
     "[v0.8 Core] Rust 后端必须启用 WorkspaceIndex 内存倒排索引、孤儿图片清理与图谱监听器生命周期管理"
   );
 
-  console.log("✓ [1/3] 静态源码架构、7 大用户反馈问题与 3 大核心架构升级检查全部通过");
+
+  // [v0.9 新增 8 大核心特性完整性验证]
+  const libRs = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
+  const bufferRs = fs.readFileSync(path.join(rootDir, "src-tauri/src/buffer.rs"), "utf-8");
+  const safeIoRs = fs.readFileSync(path.join(rootDir, "src-tauri/src/safe_io.rs"), "utf-8");
+  const anchorNavTs = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/anchor-navigator.ts"),
+    "utf-8"
+  );
+  const imgHandlerTs = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/image-handler.ts"),
+    "utf-8"
+  );
+
+  // 1) Lezer 增量语法树 + B-Tree iterLines() + 方向键 goalColumn 视觉行保持 + 引用块内嵌列表复合渲染
+  assert.equal(
+    docStructTs.includes("doc.iterLines()") &&
+      docStructTs.includes("syntaxTree(state)") &&
+      boundaryTs.includes("enterFromBottom") &&
+      boundaryTs.includes("goalColumn") &&
+      baseCss.includes(".cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-2"),
+    true,
+    "[v0.9 #1 & #8] 必须启用 Lezer SyntaxTree + doc.iterLines() 增量扫描、方向键视觉行 goalColumn 保持与引用块复合列表渲染"
+  );
+
+  // 2) 单实例文件接管 (Single-Instance IPC) + Windows OpenWith.exe + 资源管理器右键菜单集成
+  assert.equal(
+    libRs.includes("try_forward_to_existing_instance") &&
+      commandsRs.includes("OpenWith.exe") &&
+      commandsRs.includes("toggle_explorer_context_menu") &&
+      commandsRs.includes("get_file_association_status"),
+    true,
+    "[v0.9 #3] 必须支持单实例文件接管、Windows OpenWith.exe 原生对话框与右键菜单注册"
+  );
+
+  // 3) 反向链接面板 (Linked & Unlinked Mentions) + 一键转为 [[WikiLink]] + 块级引用 (^block-id) 补全与跳转
+  assert.equal(
+    searchRs.includes("search_backlinks_overview") &&
+      commandsRs.includes("convert_unlinked_mention_to_wikilink") &&
+      wikiLinkTs.includes("search_backlinks_overview") &&
+      wikiLinkTs.includes("outline-backlinks-section") &&
+      bufferRs.includes("extract_trailing_block_id") &&
+      anchorNavTs.includes("blockAnchors"),
+    true,
+    "[v0.9 #4 & #5] 必须支持 Linked/Unlinked Mentions 反向链接面板、大纲下方联动展示及 [[文档#标题 / ^block-id]] 补全跳转"
+  );
+
+  // 4) 原生 PDF 书签大纲树 (--generate-pdf-document-outline) + 图床管家 (PicGo / GitHub / 自定义 Webhook) + 符号链接安全原子写
+  assert.equal(
+    commandsRs.includes("--generate-pdf-document-outline") &&
+      commandsRs.includes("upload_image_to_bed") &&
+      imgHandlerTs.includes("uploadImageAssetToBed") &&
+      floatingTbTs.includes('data-action="upload-bed"') &&
+      safeIoRs.includes("fs::canonicalize"),
+    true,
+    "[v0.9 #6 & #7] 必须支持 PDF 书签大纲树导出、PicGo/GitHub/自定义图床一键上传及符号链接安全保存"
+  );
+
+  console.log("✓ [1/3] 静态源码架构、历史回归项与 v0.9 八大新增特性检查全部通过");
 }
 
-// 2. 版本号一致性验证 (0.8.0)
+// 2. 版本号一致性验证 (0.9.0)
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf-8"));
   const tauriConf = JSON.parse(
@@ -202,8 +260,8 @@ console.log("=== Quilla (羽墨) v0.8.0 自动化回归与架构完整性验证 
   );
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
 
-  assert.equal(pkg.version, "0.8.0", "package.json 版本号必须为 0.8.0");
-  assert.equal(tauriConf.version, "0.8.0", "tauri.conf.json 版本号必须为 0.8.0");
+  assert.equal(pkg.version, "0.9.0", "package.json 版本号必须为 0.8.0");
+  assert.equal(tauriConf.version, "0.9.0", "tauri.conf.json 版本号必须为 0.8.0");
   assert.equal(
     Array.isArray(tauriConf.bundle?.fileAssociations) &&
       tauriConf.bundle.fileAssociations[0].ext.includes("md"),
@@ -211,12 +269,12 @@ console.log("=== Quilla (羽墨) v0.8.0 自动化回归与架构完整性验证 
     "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
   );
   assert.equal(
-    cargoToml.includes('version = "0.8.0"'),
+    cargoToml.includes('version = "0.9.0"'),
     true,
     "Cargo.toml 版本号必须为 0.8.0"
   );
 
-  console.log("✓ [2/3] 全工程版本号 (v0.8 / 0.8.0) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/3] 全工程版本号 (v0.9 / 0.9.0) 与桌面文件关联配置验证通过");
 }
 
 // 3. 统一 AST 渲染内核与智能超链接构建器逻辑验证

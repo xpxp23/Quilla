@@ -2,10 +2,10 @@ import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 
 /**
- * 打字机模式状态管理与优雅平滑居中锁频插件 (F9 v0.6)
+ * 打字机模式状态管理与优雅平滑居中锁频插件 (F9 v0.9)
+ * - 彻底消除 keydown 与 update.selectionSet 双重调用 scheduleCenter 导致的滚动动画互搏
  * - 彻底消除模块级全局变量，所有状态挂载于编辑器实例内部，完美隔离左右分屏双实例
- * - 智能忽略代码块复制按钮、语言选择器、任务列表复选框、表格工具栏、标题折叠按钮等非光标交互控件的点击，
- *   彻底根治打字机模式下点击代码块复制按钮会导致视口跳回光标处的 Bug
+ * - 智能忽略代码块复制按钮、语言选择器、任务列表复选框、表格工具栏、标题折叠按钮等非光标交互控件的点击
  */
 
 export const setTypewriterMode = StateEffect.define<boolean>();
@@ -32,7 +32,7 @@ const activeAnimMap = new WeakMap<HTMLElement, number>();
 function smoothScrollTo(
   element: HTMLElement,
   target: number,
-  duration: number = 220,
+  duration: number = 180,
   shouldAbort?: () => boolean
 ) {
   const prevAnim = activeAnimMap.get(element);
@@ -101,11 +101,11 @@ export const typewriterPlugin = ViewPlugin.fromClass(
         }, 1200);
       };
 
+      // keydown 仅解除滚轮锁定，不提前抢跑 scheduleCenter（统一由 update(selectionSet/docChanged) 在选区更新后单次触发，避免双重动画互搏）
       this.keyHandler = (e: KeyboardEvent) => {
         if (e.shiftKey && e.key.startsWith("Arrow")) return;
         this.isUserScrolling = false;
         clearTimeout(this.scrollTimeout);
-        this.scheduleCenter();
       };
 
       this.pointerDownHandler = (e: PointerEvent) => {
@@ -179,7 +179,6 @@ export const typewriterPlugin = ViewPlugin.fromClass(
         if (update.selectionSet) {
           this.scheduleCenter();
         } else if (update.docChanged) {
-          // 仅当文档变更发生在当前光标所在行附近时才跟随居中（防止勾选远端复选框或切换远端代码语言时乱跳）
           const head = update.state.selection.main.head;
           let nearCursor = false;
           update.changes.iterChanges((_fromA, _toA, fromB, toB) => {
@@ -225,7 +224,7 @@ export const typewriterPlugin = ViewPlugin.fromClass(
               smoothScrollTo(
                 scroller,
                 Math.max(0, scroller.scrollTop + diff),
-                220,
+                180,
                 () => this.isUserScrolling || this.isPointerDragging
               );
             }
@@ -236,7 +235,7 @@ export const typewriterPlugin = ViewPlugin.fromClass(
           smoothScrollTo(
             scroller,
             Math.max(0, targetY),
-            220,
+            180,
             () => this.isUserScrolling || this.isPointerDragging
           );
         } catch {
@@ -280,7 +279,7 @@ export function isTypewriterModeActive(view: EditorView): boolean {
 export function centerElementInTypewriter(
   view: EditorView,
   elem: HTMLElement,
-  duration: number = 220
+  duration: number = 180
 ) {
   if (!isTypewriterModeActive(view)) return;
   requestAnimationFrame(() => {
