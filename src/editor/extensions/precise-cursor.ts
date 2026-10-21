@@ -1,10 +1,11 @@
 import { EditorSelection } from "@codemirror/state";
 import { EditorView, MouseSelectionStyle } from "@codemirror/view";
+import { snapClickPosAtInlineBoundary } from "./inline-boundary-guard";
 
 /**
  * 基于原生浏览器 DOM 精准坐标计算文档位置，
  * 彻底绕过 CodeMirror 虚拟 HeightMap 测量误差累积导致的长文档底部光标下偏问题，
- * 同时避免鼠标拖拽框选经过行间空白或边缘时发生选区首尾跳变闪烁 (Bug #4)。
+ * 同时避免鼠标拖拽框选经过行间空白或边缘时发生选区首尾跳变闪烁 (Bug #4 & Bug #6)。
  */
 export function getExactPosAtCoords(
   view: EditorView,
@@ -25,11 +26,13 @@ export function getExactPosAtCoords(
   if (typeof document !== "undefined") {
     // 1. 先检查鼠标所在元素是否位于某一行 (.cm-line) 的水平留白区域（行首左侧或行尾右侧）
     const el = document.elementFromPoint(x, y);
+    const clickedInsideLink = !!el?.closest(".cm-link");
+
     if (el && contentDOM.contains(el)) {
       // 如果落点在折叠占位的装饰部件或块级交互卡片内，交由原生计算
       if (
         el.closest(
-          ".cm-code-header, .cm-code-expand-footer, .md-table, .md-mermaid-card, .md-math-block-card, .cm-frontmatter-card, .cm-transclusion-card, .cm-toc-card"
+          ".cm-code-header, .cm-code-expand-footer, .code-block-expand-footer, .md-table, .md-mermaid-card, .md-math-block-card, .cm-frontmatter-card, .cm-transclusion-card, .cm-toc-card"
         )
       ) {
         return null;
@@ -87,13 +90,21 @@ export function getExactPosAtCoords(
         isVerticallyAligned &&
         parentEl &&
         !parentEl.closest(
-          ".cm-code-header, .cm-code-expand-footer, .cm-heading-fold-badge, .cm-callout-header, .cm-hr-widget"
+          ".cm-code-header, .cm-code-expand-footer, .code-block-expand-footer, .cm-heading-fold-badge, .cm-callout-header, .cm-hr-widget"
         )
       ) {
         try {
           const pos = view.posAtDOM(node, offset);
           if (typeof pos === "number" && !isNaN(pos)) {
-            const clamped = Math.max(0, Math.min(view.state.doc.length, pos));
+            let clamped = Math.max(0, Math.min(view.state.doc.length, pos));
+            // 若点击在超链接或行内语法右侧外部，将落入隐藏语法区的 innerTo 吸附到完整闭合位置 to (Bug #6)
+            const linkParent = parentEl.closest(".cm-link") as HTMLElement | null;
+            const isRightOfLink =
+              !clickedInsideLink ||
+              (linkParent !== null && x >= linkParent.getBoundingClientRect().right - 2);
+            if (isRightOfLink) {
+              clamped = snapClickPosAtInlineBoundary(view.state, clamped, false);
+            }
             return { pos: clamped, assoc: 1 };
           }
         } catch (_) {}
@@ -133,10 +144,19 @@ export function createPreciseMouseSelection(
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      "button, a, input, select, textarea, .md-table, .md-mermaid-card, .md-math-block-card, .cm-link, .cm-code-header, .cm-code-expand-footer, .cm-block-handle, .cm-frontmatter-card"
+      "button, a, input, select, textarea, .md-table, .md-mermaid-card, .md-math-block-card, .cm-code-header, .cm-code-expand-footer, .code-block-expand-footer, .cm-block-handle, .cm-frontmatter-card"
     )
   ) {
     return null;
+  }
+
+  // 若点击在 .cm-link 内部，检查是否点击在超链接的最右侧边缘 3px 内；若是则走精确边界吸附，否则交由链接自身交互
+  const linkEl = target?.closest(".cm-link") as HTMLElement | null;
+  if (linkEl) {
+    const linkRect = linkEl.getBoundingClientRect();
+    if (event.clientX < linkRect.right - 3) {
+      return null;
+    }
   }
 
   const resolvePosAt = (clientX: number, clientY: number, fallbackPos: number) => {

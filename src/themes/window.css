@@ -2379,9 +2379,29 @@ body.focus-mode-active .cm-editor .cm-line.cm-focus-active-block,
 .link-tooltip-edit-form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 240px;
-  padding: 4px;
+  gap: 7px;
+  min-width: 300px;
+  padding: 6px;
+}
+
+.link-edit-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+}
+
+.link-edit-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 44px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  flex-shrink: 0;
+  user-select: none;
 }
 
 .ty-inline-input {
@@ -3193,12 +3213,20 @@ body.theme-night .ty-recovery-banner {
   }
 
   #quilla-print-mount .exported-code-card {
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
     border: 1px solid #d0d7de !important;
     border-radius: 6px !important;
     background-color: #f6f8fa !important;
     margin: 10pt 0 !important;
+  }
+
+  #quilla-print-mount .exported-code-header {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  #quilla-print-mount .exported-code-line {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 
   #quilla-print-mount {
@@ -3221,7 +3249,6 @@ body.theme-night .ty-recovery-banner {
   }
 
   #quilla-print-mount table,
-  #quilla-print-mount pre,
   #quilla-print-mount .md-math-block-preview,
   #quilla-print-mount .md-mermaid-card,
   #quilla-print-mount blockquote,
@@ -3237,4 +3264,53 @@ body.theme-night .ty-recovery-banner {
 .editor-split-container.secondary-pane-focused .secondary-pane .split-pane-header {
   border-bottom-color: var(--primary-color, #0969da);
   background-color: var(--primary-bg-subtle);
+}
+
+/* 偏好设置系统集成与资源管理操作按钮 */
+.pref-action-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid rgba(9, 105, 218, 0.35);
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  color: var(--primary-color, #0969da);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.pref-action-btn:hover:not(:disabled) {
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+  border-color: var(--primary-color, #0969da);
+}
+
+.pref-action-btn.secondary {
+  border-color: var(--border-color);
+  background-color: var(--bg-color);
+  color: var(--text-color);
+}
+
+.pref-action-btn.secondary:hover:not(:disabled) {
+  border-color: var(--primary-color, #0969da);
+  color: var(--primary-color, #0969da);
+  background-color: var(--primary-bg-subtle);
+}
+
+.pref-action-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* 窄窗口下底部状态栏自适应收敛，防止左侧按钮与右侧字数统计挤压碰撞 */
+@media (max-width: 820px) {
+  #footer-toggle-typewriter .footer-btn-label,
+  #footer-toggle-focus .footer-btn-label,
+  #footer-open-graph .footer-btn-label,
+  #footer-open-history .footer-btn-label {
+    display: none;
+  }
+  .footer-left, .footer-right {
+    gap: 4px;
+  }
 }

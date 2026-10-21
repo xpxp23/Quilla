@@ -138,10 +138,13 @@ export function saveRecoverySnapshot(
   filePath: string | null,
   content: string,
   title: string,
-  deltas?: TextDeltaPayload[]
+  deltas?: TextDeltaPayload[],
+  tabId?: string
 ) {
   const bucketKey = filePath
     ? `file::${filePath.replace(/\\/g, "/").toLowerCase()}`
+    : tabId
+    ? `${CURRENT_SESSION_ID}::${tabId}`
     : CURRENT_SESSION_ID;
 
   // 若携带增量字符区间变更，先轻量更新内存 Ropey 缓冲区
@@ -170,7 +173,7 @@ export function saveRecoverySnapshot(
 /**
  * 当当前窗口的文件正常保存或放弃更改时，仅清除当前文件/会话对应的快照
  */
-export function clearRecoverySnapshot(filePath?: string | null) {
+export function clearRecoverySnapshot(filePath?: string | null, tabId?: string) {
   if (pendingPersistTimer) {
     clearTimeout(pendingPersistTimer);
     pendingPersistTimer = null;
@@ -181,6 +184,11 @@ export function clearRecoverySnapshot(filePath?: string | null) {
   delete map[CURRENT_SESSION_ID];
   delete map["legacy"];
   invoke("clear_draft_snapshot", { fileId: CURRENT_SESSION_ID }).catch(() => {});
+  if (tabId) {
+    const tabKey = `${CURRENT_SESSION_ID}::${tabId}`;
+    delete map[tabKey];
+    invoke("clear_draft_snapshot", { fileId: tabKey }).catch(() => {});
+  }
   if (filePath) {
     const fileKey = `file::${filePath.replace(/\\/g, "/").toLowerCase()}`;
     delete map[fileKey];

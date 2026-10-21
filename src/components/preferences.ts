@@ -1,3 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
+import { showToast } from "./save-dialog";
+
 export interface AppPreferences {
   fontSize: number;
   lineHeight: number;
@@ -9,6 +12,7 @@ export interface AppPreferences {
   autoSaveMode: "off" | "onBlur" | "interval";
   autoSaveIntervalSec: number;
   imageFolderMode: "assets" | "filename.assets";
+  inlineExportImages: boolean;
 }
 
 const PREF_STORAGE_KEY = "quilla_preferences_v1";
@@ -24,6 +28,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   autoSaveMode: "off",
   autoSaveIntervalSec: 30,
   imageFolderMode: "assets",
+  inlineExportImages: true,
 };
 
 let currentPrefs: AppPreferences = loadPreferencesFromStorage();
@@ -181,7 +186,17 @@ export function openPreferencesModal() {
         </div>
 
         <div class="pref-section">
-          <div class="pref-section-title">自动保存与图片资产</div>
+          <div class="pref-section-title">系统集成、自动保存与图片资产</div>
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">默认打开 Markdown (.md) 文件</span>
+              <span class="pref-desc">将 Quilla (羽墨) 注册为系统默认的 .md / .markdown 文档打开程序</span>
+            </div>
+            <div class="pref-control">
+              <button type="button" class="pref-action-btn" id="pref-set-default-md-btn">设为默认打开程序</button>
+            </div>
+          </div>
+
           <div class="pref-row">
             <div class="pref-label-group">
               <span class="pref-label">自动保存策略</span>
@@ -199,13 +214,33 @@ export function openPreferencesModal() {
           <div class="pref-row">
             <div class="pref-label-group">
               <span class="pref-label">粘贴/拖入图片存储目录</span>
-              <span class="pref-desc">设置本地图片相对路径的文件夹命名规则</span>
+              <span class="pref-desc">设置本地图片相对路径的文件夹命名规则（重命名/删除文档时自动同步迁移或清理）</span>
             </div>
             <div class="pref-control">
               <select id="pref-img-folder" class="pref-select">
                 <option value="assets">统一存放至 ./assets/</option>
                 <option value="filename.assets">按文档名存放至 ./\${filename}.assets/</option>
               </select>
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">导出 HTML / Word 时内联本地图片</span>
+              <span class="pref-desc">导出时自动将本地相对路径图片转换为 Base64 DataURL 内嵌，保证单文件跨设备分享不裂图</span>
+            </div>
+            <div class="pref-control">
+              <input type="checkbox" id="pref-inline-export-img" class="pref-checkbox" />
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">清理未引用的孤儿图片资源</span>
+              <span class="pref-desc">扫描当前工作区或文档目录下的 assets / *.assets 文件夹，清理未被任何笔记引用的冗余图片</span>
+            </div>
+            <div class="pref-control">
+              <button type="button" class="pref-action-btn secondary" id="pref-cleanup-assets-btn">清理孤儿图片</button>
             </div>
           </div>
         </div>
@@ -281,6 +316,63 @@ export function openPreferencesModal() {
     });
   });
 
+  const inlineExportImgCheck = prefModalEl.querySelector(
+    "#pref-inline-export-img"
+  ) as HTMLInputElement;
+  inlineExportImgCheck?.addEventListener("change", () => {
+    updatePreferences({ inlineExportImages: inlineExportImgCheck.checked });
+  });
+
+  const setDefaultMdBtn = prefModalEl.querySelector(
+    "#pref-set-default-md-btn"
+  ) as HTMLButtonElement | null;
+  setDefaultMdBtn?.addEventListener("click", async () => {
+    try {
+      setDefaultMdBtn.disabled = true;
+      setDefaultMdBtn.textContent = "正在注册关联...";
+      const msg = await invoke<string>("register_default_markdown_app", {
+        openSystemSettings: true,
+      });
+      showToast(msg || "已注册 .md 文件关联", "success");
+      setDefaultMdBtn.textContent = "已注册为默认关联";
+    } catch (err) {
+      showToast(`设置默认程序失败: ${err}`, "error");
+      setDefaultMdBtn.textContent = "设为默认打开程序";
+    } finally {
+      setDefaultMdBtn.disabled = false;
+    }
+  });
+
+  const cleanupAssetsBtn = prefModalEl.querySelector(
+    "#pref-cleanup-assets-btn"
+  ) as HTMLButtonElement | null;
+  cleanupAssetsBtn?.addEventListener("click", async () => {
+    try {
+      cleanupAssetsBtn.disabled = true;
+      cleanupAssetsBtn.textContent = "正在扫描...";
+      const res = await invoke<{ removedCount: number; freedBytes: number }>(
+        "cleanup_orphan_assets",
+        {
+          currentFilePath: localStorage.getItem("typora_last_file") || null,
+        }
+      );
+      if (res.removedCount > 0) {
+        const kb = (res.freedBytes / 1024).toFixed(1);
+        showToast(
+          `已清理 ${res.removedCount} 张未引用孤儿图片，释放 ${kb} KB 空间`,
+          "success"
+        );
+      } else {
+        showToast("扫描完成，当前没有未引用的孤儿图片", "info");
+      }
+    } catch (err) {
+      showToast(`${err}`, "info");
+    } finally {
+      cleanupAssetsBtn.disabled = false;
+      cleanupAssetsBtn.textContent = "清理孤儿图片";
+    }
+  });
+
   prefModalEl.querySelector("#pref-reset-btn")?.addEventListener("click", () => {
     updatePreferences({ ...DEFAULT_PREFERENCES });
     if (prefModalEl) syncFormWithPreferences(prefModalEl, currentPrefs);
@@ -322,6 +414,13 @@ function syncFormWithPreferences(modal: HTMLElement, prefs: AppPreferences) {
 
   const imgFolderSelect = modal.querySelector("#pref-img-folder") as HTMLSelectElement;
   if (imgFolderSelect) imgFolderSelect.value = prefs.imageFolderMode;
+
+  const inlineExportImgCheck = modal.querySelector(
+    "#pref-inline-export-img"
+  ) as HTMLInputElement;
+  if (inlineExportImgCheck) {
+    inlineExportImgCheck.checked = prefs.inlineExportImages !== false;
+  }
 }
 
 window.addEventListener("keydown", (e) => {

@@ -18,7 +18,8 @@ pub fn run() {
             if arg == "--new-window" {
                 is_new_window = true;
             } else if !arg.starts_with('-') {
-                let path = std::path::Path::new(arg);
+                let cleaned = arg.trim_matches('"');
+                let path = std::path::Path::new(cleaned);
                 if path.exists() {
                     initial_file = Some(path.to_string_lossy().to_string());
                 }
@@ -33,10 +34,11 @@ pub fn run() {
         is_new_window: Mutex::new(is_new_window),
         document_buffers: Mutex::new(HashMap::new()),
         workspace_watcher: watcher::WorkspaceWatcher::default(),
+        workspace_index: search::WorkspaceIndex::default(),
         force_closing_windows: Mutex::new(HashSet::new()),
     };
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(app_state)
         .setup(|app| {
             // 启动主题目录监听器（同时兼容开发环境 src/themes 与生产环境可执行文件同级目录）
@@ -115,10 +117,32 @@ pub fn run() {
             commands::create_folder,
             commands::rename_path,
             commands::delete_path,
+            commands::cleanup_orphan_assets,
+            commands::register_default_markdown_app,
             commands::reveal_in_explorer,
             commands::reveal_in_folder,
             commands::open_external_url
         ])
-        .run(tauri::generate_context!())
-        .expect("运行 Quilla 失败");
+        .build(tauri::generate_context!())
+        .expect("构建 Quilla 失败");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = event {
+            for url in urls {
+                if let Ok(path) = url.to_file_path() {
+                    if path.exists() {
+                        let path_str = path.to_string_lossy().to_string();
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            if let Ok(mut init) = state.initial_file.lock() {
+                                *init = Some(path_str.clone());
+                            }
+                        }
+                        let _ = app_handle.emit("quilla-open-external-file", path_str);
+                    }
+                }
+            }
+        }
+        let _ = (app_handle, event);
+    });
 }

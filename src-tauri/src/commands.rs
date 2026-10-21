@@ -1,6 +1,6 @@
 use crate::buffer::{DocumentBuffer, HeadingItem, TextDelta};
 use crate::safe_io::{DraftSnapshotRecord, HistorySnapshotRecord, SafeIO};
-use crate::search::{KnowledgeGraphData, SearchEngine, SearchMatch, TagSummary};
+use crate::search::{KnowledgeGraphData, SearchEngine, SearchMatch, TagSummary, WorkspaceIndex};
 use crate::watcher::WorkspaceWatcher;
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ pub struct AppState {
     pub is_new_window: Mutex<bool>,
     pub document_buffers: Mutex<HashMap<String, DocumentBuffer>>,
     pub workspace_watcher: WorkspaceWatcher,
+    pub workspace_index: WorkspaceIndex,
     pub force_closing_windows: Mutex<HashSet<String>>,
 }
 
@@ -29,6 +30,14 @@ pub struct FileItem {
     pub is_dir: bool,
     pub modified_ms: u64,
     pub children: Option<Vec<FileItem>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrphanCleanupResult {
+    #[serde(rename = "removedCount")]
+    pub removed_count: usize,
+    #[serde(rename = "freedBytes")]
+    pub freed_bytes: u64,
 }
 
 fn resolve_window_workspace(window: &tauri::Window, state: &AppState) -> Option<String> {
@@ -57,6 +66,11 @@ pub fn save_file_content(
     state.workspace_watcher.mark_self_save();
     SafeIO::atomic_write(&path, &content).map_err(|e| format!("写入失败: {}", e))?;
     state.workspace_watcher.mark_self_save();
+
+    // O(1) 增量更新内存倒排索引（无需重扫磁盘）
+    state
+        .workspace_index
+        .update_single_file(Path::new(&path), Some(&content));
 
     // 自动记录本地时间机器 (Time Machine) 版本历史快照
     let _ = SafeIO::save_file_history_snapshot(&path, &content, Some("保存文档".to_string()));
@@ -220,7 +234,7 @@ pub fn scan_workspace_tags(
     state: State<'_, AppState>,
 ) -> Result<Vec<TagSummary>, String> {
     if let Some(root) = resolve_window_workspace(&window, &state) {
-        Ok(SearchEngine::scan_workspace_tags(root))
+        Ok(state.workspace_index.scan_workspace_tags(root))
     } else {
         Ok(Vec::new())
     }
@@ -240,7 +254,7 @@ pub fn get_workspace_graph(
         .and_then(|p| Path::new(p).parent())
         .map(|p| p.to_string_lossy().to_string());
     if let Some(root) = resolve_window_workspace(&window, &state).or(inferred_root) {
-        Ok(SearchEngine::build_knowledge_graph(
+        Ok(state.workspace_index.build_knowledge_graph(
             root,
             effective_center.as_deref(),
             local_depth.unwrap_or(2),
@@ -296,9 +310,19 @@ pub fn list_workspace_files(
     if let Ok(mut ws) = state.current_workspace.lock() {
         *ws = Some(root.clone());
     }
-    state
-        .workspace_watcher
-        .watch_directory(&label, &root, app);
+    state.workspace_watcher.watch_directory(
+        &label,
+        &root,
+        app,
+        state.workspace_index.clone(),
+    );
+
+    // 后台线程增量预热内存倒排索引（仅重扫 mtime 变化的文件）
+    let idx_clone = state.workspace_index.clone();
+    let root_clone = root_path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = idx_clone.refresh_workspace_incremental(&root_clone);
+    });
 
     const MAX_DEPTH: usize = 8;
     const MAX_ITEMS: usize = 3500;
@@ -422,7 +446,7 @@ pub fn search_backlinks(
         .map(|p| p.to_string_lossy().to_string());
 
     if let Some(root) = resolve_window_workspace(&window, &state).or(inferred_root) {
-        Ok(SearchEngine::search_backlinks(
+        Ok(state.workspace_index.search_backlinks(
             root,
             &target_name,
             active_path.as_deref(),
@@ -451,9 +475,17 @@ pub async fn select_workspace_folder(
         if let Ok(mut ws) = state.current_workspace.lock() {
             *ws = Some(path_str.clone());
         }
-        state
-            .workspace_watcher
-            .watch_directory(&label, &path_str, app);
+        state.workspace_watcher.watch_directory(
+            &label,
+            &path_str,
+            app,
+            state.workspace_index.clone(),
+        );
+        let idx_clone = state.workspace_index.clone();
+        let root_clone = path.clone();
+        std::thread::spawn(move || {
+            let _ = idx_clone.refresh_workspace_incremental(&root_clone);
+        });
         Ok(Some(path_str))
     } else {
         Ok(None)
@@ -763,6 +795,7 @@ pub fn read_image_base64(
     rel_path: String,
 ) -> Result<String, String> {
     let decoded_rel = urlencoding_decode(&rel_path);
+    let clean_rel = decoded_rel.trim().trim_start_matches("./");
     let path = if Path::new(&decoded_rel).is_absolute() {
         Path::new(&decoded_rel).to_path_buf()
     } else {
@@ -771,7 +804,12 @@ pub fn read_image_base64(
         } else {
             Path::new(".").to_path_buf()
         };
-        base_dir.join(&decoded_rel)
+        let direct = base_dir.join(clean_rel);
+        if direct.exists() {
+            direct
+        } else {
+            base_dir.join(&decoded_rel)
+        }
     };
 
     if !path.exists() {
@@ -912,6 +950,7 @@ pub fn create_file(
     }
     let body = initial_content.unwrap_or_default();
     SafeIO::atomic_write(p, &body).map_err(|e| format!("创建文件失败: {}", e))?;
+    state.workspace_index.update_single_file(p, Some(&body));
     Ok(())
 }
 
@@ -924,6 +963,55 @@ pub fn create_folder(path: String, state: State<'_, AppState>) -> Result<(), Str
     }
     fs::create_dir_all(p).map_err(|e| format!("创建文件夹失败: {}", e))?;
     Ok(())
+}
+
+/// 提取 Markdown 文本中引用的本地图片文件名集合（用于重命名/删除时清理或迁移 .assets 资源）
+fn extract_referenced_image_filenames(md_content: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for line in md_content.lines() {
+        // 1. 匹配 ![alt](path)
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i + 3 < bytes.len() {
+            if bytes[i] == b'!' && bytes[i + 1] == b'[' {
+                if let Some(mid) = line[i + 2..].find("](") {
+                    let url_start = i + 2 + mid + 2;
+                    if let Some(close) = line[url_start..].find(')') {
+                        let raw_url = line[url_start..url_start + close].trim();
+                        let decoded = urlencoding_decode(raw_url);
+                        if let Some(fname) = Path::new(&decoded).file_name().and_then(|s| s.to_str())
+                        {
+                            names.insert(fname.to_lowercase());
+                        }
+                        i = url_start + close + 1;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+        // 2. 匹配 <img src="path" />
+        let lower_line = line.to_lowercase();
+        if let Some(img_idx) = lower_line.find("<img") {
+            if let Some(src_idx) = lower_line[img_idx..].find("src=") {
+                let rest = &line[img_idx + src_idx + 4..].trim_start();
+                if let Some(quote) = rest.chars().next() {
+                    if quote == '"' || quote == '\'' {
+                        if let Some(end_q) = rest[1..].find(quote) {
+                            let raw_url = &rest[1..1 + end_q];
+                            let decoded = urlencoding_decode(raw_url);
+                            if let Some(fname) =
+                                Path::new(&decoded).file_name().and_then(|s| s.to_str())
+                            {
+                                names.insert(fname.to_lowercase());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
 }
 
 #[tauri::command]
@@ -943,7 +1031,47 @@ pub fn rename_path(
     if !is_same_case_only && new_p.exists() {
         return Err("目标名称已存在，无法覆盖".to_string());
     }
+
+    let was_file = old_p.is_file();
+    let old_stem = old_p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+    let new_stem = new_p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+    let same_parent = old_p.parent() == new_p.parent();
+
     fs::rename(old_p, new_p).map_err(|e| format!("重命名失败: {}", e))?;
+
+    // 若重命名的是 Markdown 文档且同级存在专属 <old_stem>.assets 目录，自动迁移专属资源目录并更新文档内相对路径
+    if was_file && same_parent {
+        if let (Some(parent), Some(os), Some(ns)) = (old_p.parent(), old_stem, new_stem) {
+            if os != ns {
+                let old_assets_dir = parent.join(format!("{}.assets", os));
+                let new_assets_dir = parent.join(format!("{}.assets", ns));
+                if old_assets_dir.exists() && old_assets_dir.is_dir() && !new_assets_dir.exists() {
+                    if fs::rename(&old_assets_dir, &new_assets_dir).is_ok() {
+                        if let Ok(content) = fs::read_to_string(new_p) {
+                            let old_prefix_1 = format!("{}.assets/", os);
+                            let new_prefix_1 = format!("{}.assets/", ns);
+                            let old_prefix_2 = format!("{}.assets\\", os);
+                            let new_prefix_2 = format!("{}.assets\\", ns);
+                            if content.contains(&old_prefix_1) || content.contains(&old_prefix_2) {
+                                let updated = content
+                                    .replace(&old_prefix_1, &new_prefix_1)
+                                    .replace(&old_prefix_2, &new_prefix_2);
+                                let _ = SafeIO::atomic_write(new_p, &updated);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    state.workspace_index.handle_rename(old_p, new_p);
     Ok(())
 }
 
@@ -956,10 +1084,285 @@ pub fn delete_path(path: String, state: State<'_, AppState>) -> Result<(), Strin
     }
     if p.is_dir() {
         fs::remove_dir_all(p).map_err(|e| format!("删除文件夹失败: {}", e))?;
+        state.workspace_index.remove_path(p);
     } else {
+        // 读取被删除文档引用的本地图片，并在删除文档后自动清理其专属 .assets 文件夹或共享 assets/ 下的孤儿图片
+        let parent_dir = p.parent().map(|d| d.to_path_buf());
+        let doc_stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+        let referenced_imgs = fs::read_to_string(p)
+            .map(|c| extract_referenced_image_filenames(&c))
+            .unwrap_or_default();
+
         fs::remove_file(p).map_err(|e| format!("删除文件失败: {}", e))?;
+        state.workspace_index.remove_path(p);
+
+        if let Some(parent) = parent_dir {
+            // 1. 若存在专属 <stem>.assets 目录，直接一并清理
+            if let Some(stem) = doc_stem {
+                let dedicated_assets = parent.join(format!("{}.assets", stem));
+                if dedicated_assets.exists() && dedicated_assets.is_dir() {
+                    let _ = fs::remove_dir_all(&dedicated_assets);
+                }
+            }
+
+            // 2. 若被删文档引用了共享 assets/ 下的图片，检查同目录其余 .md 是否仍引用该图片，若无则清理孤儿图片
+            if !referenced_imgs.is_empty() {
+                let shared_assets = parent.join("assets");
+                if shared_assets.exists() && shared_assets.is_dir() {
+                    let mut still_used = HashSet::new();
+                    if let Ok(entries) = fs::read_dir(&parent) {
+                        for entry in entries.flatten() {
+                            let ep = entry.path();
+                            if ep.is_file() {
+                                if let Ok(c) = fs::read_to_string(&ep) {
+                                    for name in extract_referenced_image_filenames(&c) {
+                                        still_used.insert(name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for img_name in referenced_imgs {
+                        if !still_used.contains(&img_name) {
+                            let candidate = shared_assets.join(&img_name);
+                            if candidate.exists() && candidate.is_file() {
+                                let _ = fs::remove_file(&candidate);
+                            }
+                        }
+                    }
+                    if let Ok(mut rem) = fs::read_dir(&shared_assets) {
+                        if rem.next().is_none() {
+                            let _ = fs::remove_dir(&shared_assets);
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// 扫描并清理当前工作区（或当前文档所在目录）下未被任何 Markdown 文档引用的 .assets / assets 孤儿图片
+#[tauri::command]
+pub fn cleanup_orphan_assets(
+    current_file_path: Option<String>,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<OrphanCleanupResult, String> {
+    let inferred_root = current_file_path
+        .as_deref()
+        .and_then(|p| Path::new(p).parent())
+        .map(|p| p.to_string_lossy().to_string());
+    let root_str = resolve_window_workspace(&window, &state)
+        .or(inferred_root)
+        .ok_or_else(|| "请先打开工作区或保存当前文档后再执行孤儿图片清理".to_string())?;
+
+    let root_path = Path::new(&root_str);
+    if !root_path.exists() {
+        return Err("目标目录不存在".to_string());
+    }
+
+    state.workspace_watcher.mark_self_save();
+
+    let md_files = SearchEngine::collect_markdown_files(root_path);
+    let mut all_referenced = HashSet::new();
+    for md in &md_files {
+        if let Ok(content) = fs::read_to_string(md) {
+            for fname in extract_referenced_image_filenames(&content) {
+                all_referenced.insert(fname);
+            }
+        }
+    }
+
+    let mut asset_dirs: Vec<PathBuf> = Vec::new();
+    fn collect_asset_dirs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > 6 {
+            return;
+        }
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let name = p
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    if name == "assets" || name.ends_with(".assets") {
+                        out.push(p);
+                    } else if !name.starts_with('.') && name != "node_modules" && name != "target" {
+                        collect_asset_dirs(&p, depth + 1, out);
+                    }
+                }
+            }
+        }
+    }
+    collect_asset_dirs(root_path, 0, &mut asset_dirs);
+
+    let mut removed_count = 0usize;
+    let mut freed_bytes = 0u64;
+    static IMG_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"];
+
+    for adir in asset_dirs {
+        if let Ok(entries) = fs::read_dir(&adir) {
+            for entry in entries.flatten() {
+                let fp = entry.path();
+                if !fp.is_file() {
+                    continue;
+                }
+                let is_img = fp.extension().map_or(false, |ext| {
+                    let e = ext.to_string_lossy().to_lowercase();
+                    IMG_EXTS.contains(&e.as_str())
+                });
+                if !is_img {
+                    continue;
+                }
+                let fname = fp
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase();
+                if !all_referenced.contains(&fname) {
+                    let sz = fs::metadata(&fp).map(|m| m.len()).unwrap_or(0);
+                    if fs::remove_file(&fp).is_ok() {
+                        removed_count += 1;
+                        freed_bytes += sz;
+                    }
+                }
+            }
+        }
+        if let Ok(mut rem) = fs::read_dir(&adir) {
+            if rem.next().is_none() {
+                let _ = fs::remove_dir(&adir);
+            }
+        }
+    }
+
+    Ok(OrphanCleanupResult {
+        removed_count,
+        freed_bytes,
+    })
+}
+
+/// 将 Quilla 注册为操作系统默认的 Markdown (.md / .markdown / .mdown / .mkd) 打开程序
+#[tauri::command]
+pub fn register_default_markdown_app(open_system_settings: Option<bool>) -> Result<String, String> {
+    let exe_path = std::env::current_exe().map_err(|e| format!("无法获取当前程序路径: {}", e))?;
+    let exe_str = exe_path.to_string_lossy().to_string();
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let open_cmd = format!("\"{}\" \"%1\"", exe_str);
+        let icon_val = format!("\"{}\",0", exe_str);
+
+        let reg_commands: Vec<Vec<String>> = vec![
+            vec![
+                "add".into(),
+                r"HKCU\Software\Classes\Quilla.Markdown".into(),
+                "/ve".into(),
+                "/d".into(),
+                "Quilla Markdown Document".into(),
+                "/f".into(),
+            ],
+            vec![
+                "add".into(),
+                r"HKCU\Software\Classes\Quilla.Markdown\DefaultIcon".into(),
+                "/ve".into(),
+                "/d".into(),
+                icon_val.clone(),
+                "/f".into(),
+            ],
+            vec![
+                "add".into(),
+                r"HKCU\Software\Classes\Quilla.Markdown\shell\open\command".into(),
+                "/ve".into(),
+                "/d".into(),
+                open_cmd.clone(),
+                "/f".into(),
+            ],
+            vec![
+                "add".into(),
+                r"HKCU\Software\Classes\Applications\quilla.exe\shell\open\command".into(),
+                "/ve".into(),
+                "/d".into(),
+                open_cmd,
+                "/f".into(),
+            ],
+        ];
+
+        for args in reg_commands {
+            let _ = Command::new("reg")
+                .args(&args)
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+
+        for ext in [".md", ".markdown", ".mdown", ".mkd"] {
+            let ext_key = format!(r"HKCU\Software\Classes\{}", ext);
+            let progids_key = format!(r"HKCU\Software\Classes\{}\OpenWithProgids", ext);
+            let _ = Command::new("reg")
+                .args(["add", &ext_key, "/ve", "/d", "Quilla.Markdown", "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+            let _ = Command::new("reg")
+                .args([
+                    "add",
+                    &progids_key,
+                    "/v",
+                    "Quilla.Markdown",
+                    "/t",
+                    "REG_NONE",
+                    "/f",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+
+        if open_system_settings.unwrap_or(true) {
+            let _ = Command::new("cmd")
+                .args(["/C", "start", "", "ms-settings:defaultapps"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+
+        return Ok("已向系统注册 .md / .markdown 文件关联，并在系统默认应用设置中就绪".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("duti")
+            .args(["-s", "app.quilla.editor", "net.daringfireball.markdown", "all"])
+            .status();
+        let _ = std::process::Command::new("duti")
+            .args(["-s", "app.quilla.editor", ".md", "all"])
+            .status();
+        if open_system_settings.unwrap_or(false) {
+            let _ = std::process::Command::new("open")
+                .arg("-a")
+                .arg(&exe_str)
+                .spawn();
+        }
+        return Ok("已注册 macOS Markdown 文件关联 (app.quilla.editor)".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = open_system_settings;
+        let _ = std::process::Command::new("xdg-mime")
+            .args(["default", "quilla.desktop", "text/markdown"])
+            .status();
+        let _ = std::process::Command::new("xdg-mime")
+            .args(["default", "quilla.desktop", "text/x-markdown"])
+            .status();
+        return Ok("已通过 xdg-mime 将 Quilla 设为默认 Markdown 程序".to_string());
+    }
 }
 
 #[tauri::command]

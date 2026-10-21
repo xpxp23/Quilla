@@ -544,17 +544,35 @@ pre > code {
   background: transparent !important;
 }
 
+.exported-code-line {
+  position: relative;
+  display: block;
+  min-height: 1.65em;
+  line-height: 1.65;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+}
+
+.exported-code-line[data-code-line] {
+  padding-left: 44px !important;
+}
+
 .exported-code-line[data-code-line]::before {
   content: attr(data-code-line);
-  display: inline-block;
-  width: 26px;
-  margin-right: 12px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 30px;
   padding-right: 8px;
+  margin: 0;
   text-align: right;
   color: var(--control-text-color, #8c959f);
   border-right: 1px solid var(--border-color, #d0d7de);
-  opacity: 0.65;
+  opacity: 0.68;
   user-select: none;
+  box-sizing: border-box;
 }
 
 /* Token 微观展开：定界符淡化规范 */
@@ -1688,7 +1706,8 @@ body.show-code-line-numbers .cm-line.cm-code-block-line:not(.cm-frontmatter-line
   width: 34px;
   padding-right: 8px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  padding-top: 2px;
   justify-content: flex-end;
   font-family: var(--monospace);
   font-size: 0.82em;
@@ -2093,7 +2112,14 @@ body.theme-night .cm-search-match-selected {
   overflow-x: auto !important;
 }
 
-.cm-code-expand-footer {
+.cm-line.cm-code-block-line.cm-code-line-wrapped {
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+}
+
+.cm-code-expand-footer,
+.code-block-expand-footer {
   display: flex;
   justify-content: center;
   align-items: center;

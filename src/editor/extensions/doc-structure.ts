@@ -583,6 +583,23 @@ function isStructuralLineText(text: string): boolean {
   return false;
 }
 
+function isLineTouchingCachedStructure(value: DocStructure, ln: number): boolean {
+  if (ln <= Math.max(3, value.frontMatterEndLine + 1)) return true;
+  if (value.codeLineSet.has(ln)) return true;
+  if (value.headings.some((h) => h.line === ln)) return true;
+  if (value.tables.some((tb) => ln >= tb.startLine - 1 && ln <= tb.endLine + 1)) return true;
+  if (value.mathBlocks.some((mb) => ln >= mb.startLine && ln <= mb.endLine)) return true;
+  if (value.mermaidBlocks.some((mb) => ln >= mb.startLine && ln <= mb.endLine)) return true;
+  if (value.callouts.some((cb) => ln >= cb.startLine - 1 && ln <= cb.endLine + 1)) return true;
+  return false;
+}
+
+/**
+ * 增量 DocStructure 缓存 (v0.8 O(1) 行号平移架构):
+ * 1. 当用户在普通段落/列表打字且行数不变时，O(K) 直接通过 tr.changes.mapPos 映射块坐标。
+ * 2. 当用户在普通段落/列表按 Enter 换行或 Backspace 合并行（deltaLines !== 0）且变更行不涉及块级结构定界符时，
+ *    仅对变更点之后的结构块执行 O(K) 行号平移 (line += deltaLines)，将万字长文换行耗时从 O(N) 全量扫描降为 O(1)。
+ */
 export const docStructureField = StateField.define<DocStructure>({
   create(state) {
     return buildDocStructure(state.doc, state);
@@ -590,48 +607,47 @@ export const docStructureField = StateField.define<DocStructure>({
   update(value, tr) {
     if (!tr.docChanged) return value;
 
-    // 增量快速路径：若行数未变且单行普通正文打字未触及任何块级结构或块级定界符，仅通过 mapPos O(K) 映射偏移量
-    if (tr.startState.doc.lines === tr.state.doc.lines) {
-      let canFastMap = true;
-      tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
-        if (!canFastMap) return;
-        const lineAStart = tr.startState.doc.lineAt(fromA);
-        const lineAEnd = tr.startState.doc.lineAt(toA);
-        const lineBStart = tr.state.doc.lineAt(fromB);
-        const lineBEnd = tr.state.doc.lineAt(toB);
-        if (
-          lineAStart.number !== lineAEnd.number ||
-          lineBStart.number !== lineBEnd.number ||
-          lineAStart.number !== lineBStart.number
-        ) {
-          canFastMap = false;
-          return;
-        }
-        const ln = lineAStart.number;
-        if (ln <= Math.max(3, value.frontMatterEndLine + 1)) {
-          canFastMap = false;
-          return;
-        }
-        if (
-          value.codeLineSet.has(ln) ||
-          value.headings.some((h) => h.line === ln) ||
-          value.tables.some((tb) => ln >= tb.startLine - 1 && ln <= tb.endLine + 1) ||
-          value.mathBlocks.some((mb) => ln >= mb.startLine && ln <= mb.endLine) ||
-          value.mermaidBlocks.some((mb) => ln >= mb.startLine && ln <= mb.endLine) ||
-          value.callouts.some((cb) => ln >= cb.startLine - 1 && ln <= cb.endLine + 1)
-        ) {
-          canFastMap = false;
-          return;
-        }
-        if (
-          isStructuralLineText(lineAStart.text) ||
-          isStructuralLineText(lineBStart.text)
-        ) {
-          canFastMap = false;
-        }
-      });
+    const deltaLines = tr.state.doc.lines - tr.startState.doc.lines;
+    let canIncrementalShift = true;
+    let rangeCount = 0;
+    let pivotLineA = 0;
 
-      if (canFastMap) {
+    tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+      rangeCount++;
+      // 若同一次事务包含多处跨区变更且行数改变，回退全量构建以确保绝对精确
+      if (!canIncrementalShift || (rangeCount > 1 && deltaLines !== 0)) {
+        canIncrementalShift = false;
+        return;
+      }
+
+      const lineAStart = tr.startState.doc.lineAt(fromA);
+      const lineAEnd = tr.startState.doc.lineAt(toA);
+      const lineBStart = tr.state.doc.lineAt(fromB);
+      const lineBEnd = tr.state.doc.lineAt(toB);
+      pivotLineA = lineAEnd.number;
+
+      // 检查旧文档受影响的所有行是否触及任何块级结构
+      for (let ln = lineAStart.number; ln <= lineAEnd.number; ln++) {
+        if (
+          isLineTouchingCachedStructure(value, ln) ||
+          isStructuralLineText(tr.startState.doc.line(ln).text)
+        ) {
+          canIncrementalShift = false;
+          return;
+        }
+      }
+
+      // 检查新文档变更后的所有行是否引入了新的块级定界符 (#, >, ```, ~~~, $$, |, ---)
+      for (let ln = lineBStart.number; ln <= lineBEnd.number; ln++) {
+        if (isStructuralLineText(tr.state.doc.line(ln).text)) {
+          canIncrementalShift = false;
+          return;
+        }
+      }
+    });
+
+    if (canIncrementalShift && rangeCount > 0) {
+      if (deltaLines === 0) {
         return {
           ...value,
           mermaidBlocks:
@@ -667,6 +683,82 @@ export const docStructureField = StateField.define<DocStructure>({
                 })),
         };
       }
+
+      // O(K) 行号平移：仅对 pivotLineA 之后的块级结构应用 line += deltaLines
+      const shiftLine = (ln: number) => (ln > pivotLineA ? ln + deltaLines : ln);
+
+      const shiftedCodeLineSet = new Set<number>();
+      value.codeLineSet.forEach((ln) => {
+        shiftedCodeLineSet.add(shiftLine(ln));
+      });
+
+      const shiftedHeadings =
+        value.headings.length === 0
+          ? value.headings
+          : value.headings.map((h) => ({
+              ...h,
+              line: shiftLine(h.line),
+              endLine: h.endLine >= pivotLineA ? h.endLine + deltaLines : h.endLine,
+              from: tr.changes.mapPos(h.from),
+            }));
+
+      const headingsSignature =
+        shiftedHeadings.length === 0
+          ? value.headingsSignature
+          : shiftedHeadings.map((h) => `${h.level}:${h.line}:${h.text}`).join("|");
+
+      return {
+        ...value,
+        codeRanges:
+          value.codeRanges.length === 0
+            ? value.codeRanges
+            : value.codeRanges.map((cr) => ({
+                ...cr,
+                startLine: shiftLine(cr.startLine),
+                endLine: shiftLine(cr.endLine),
+              })),
+        mermaidBlocks:
+          value.mermaidBlocks.length === 0
+            ? value.mermaidBlocks
+            : value.mermaidBlocks.map((m) => ({
+                ...m,
+                startLine: shiftLine(m.startLine),
+                endLine: shiftLine(m.endLine),
+                from: tr.changes.mapPos(m.from),
+                to: tr.changes.mapPos(m.to),
+              })),
+        mathBlocks:
+          value.mathBlocks.length === 0
+            ? value.mathBlocks
+            : value.mathBlocks.map((m) => ({
+                ...m,
+                startLine: shiftLine(m.startLine),
+                endLine: shiftLine(m.endLine),
+                from: tr.changes.mapPos(m.from),
+                to: tr.changes.mapPos(m.to),
+              })),
+        tables:
+          value.tables.length === 0
+            ? value.tables
+            : value.tables.map((t) => ({
+                ...t,
+                startLine: shiftLine(t.startLine),
+                endLine: shiftLine(t.endLine),
+                from: tr.changes.mapPos(t.from),
+                to: tr.changes.mapPos(t.to),
+              })),
+        callouts:
+          value.callouts.length === 0
+            ? value.callouts
+            : value.callouts.map((c) => ({
+                ...c,
+                startLine: shiftLine(c.startLine),
+                endLine: shiftLine(c.endLine),
+              })),
+        headings: shiftedHeadings,
+        headingsSignature,
+        codeLineSet: shiftedCodeLineSet,
+      };
     }
 
     return buildDocStructure(tr.state.doc, tr.state);
@@ -681,6 +773,7 @@ export function getDocStructureFromState(state: EditorState): DocStructure {
 
 /**
  * O(1) 从缓存的 DocStructure 解析指定行所属的完整语义块起止行号（供 Focus Mode 与 Block Handle 复用）
+ * 支持：FrontMatter、围栏代码块、Mermaid、多行公式块、表格、Callout、连续引用块、以及带嵌套子列表的列表项闭包
  */
 export function resolveSemanticBlockSpanFromState(
   state: EditorState,
@@ -733,6 +826,33 @@ export function resolveSemanticBlockSpanFromState(
     while (s > 1 && doc.line(s - 1).text.trim().startsWith(">")) s--;
     while (e < totalLines && doc.line(e + 1).text.trim().startsWith(">")) e++;
     return { startLine: s, endLine: e };
+  }
+
+  // 列表项及挂载在其下方的更深缩进子列表项
+  const listMatch = lineText.match(/^(\s*)(?:[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/);
+  if (listMatch) {
+    const baseIndent = listMatch[1].replace(/\t/g, "  ").length;
+    let e = clamped;
+    while (e < totalLines) {
+      const nextText = doc.line(e + 1).text;
+      if (!nextText.trim()) break;
+      const nextListMatch = nextText.match(/^(\s*)(?:[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/);
+      if (nextListMatch) {
+        const nextIndent = nextListMatch[1].replace(/\t/g, "  ").length;
+        if (nextIndent > baseIndent) {
+          e++;
+          continue;
+        }
+        break;
+      }
+      const leadingIndent = (nextText.match(/^\s*/)?.[0] || "").replace(/\t/g, "  ").length;
+      if (leadingIndent > baseIndent) {
+        e++;
+        continue;
+      }
+      break;
+    }
+    return { startLine: clamped, endLine: e };
   }
 
   return { startLine: clamped, endLine: clamped };

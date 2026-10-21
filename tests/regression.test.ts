@@ -5,21 +5,26 @@ import {
   renderMarkdownDocumentToHtml,
   parseTableRowCells,
 } from "../src/editor/markdown-ast-renderer";
+import {
+  buildSmartMarkdownLink,
+  isLikelyUrl,
+} from "../src/editor/extensions/inline-boundary-guard";
 
 /**
- * Quilla v0.7 自动化防回归测试套件 (Regression Test Suite)
+ * Quilla v0.8 自动化防回归测试套件 (Regression Test Suite)
  * 覆盖：
  * 1. Bug #4 & 同源表格 Bug：超链接、行内代码、数学公式、双链、#标签、带下划线变量与带括号 Wikipedia URL 导出绝不出现 EXP*PH*0_ 或 PH*0*
  * 2. 代码块导出结构：生成带 .exported-code-card 与 .exported-code-header 的完整卡片结构，支持 4 反引号与 ~~~ 波浪线嵌套围栏
  * 3. 多级列表渲染与 3 空格有序子列表、列表项内嵌套代码块/引用块
  * 4. GFM 表格单元格分割（支持转义竖线 \| 与行内代码内竖线 `a | b`）
+ * 5. Bug #7 智能网址转超链接：网址自动填入 (url) 链接栏并选中 [链接文字] 名称栏
  */
 
 export async function runAllRegressionTests(): Promise<void> {
   // 1. 验证超链接、#标签、双链、公式、行内代码在含下划线斜体上下文下绝不被腐蚀为 EXP_PH_0_
   {
     const sample =
-      "点击访问 [Quilla_Official_Site](https://example.com/a_b_c) 与标签 #效率工具/写作_v07 以及双链 [[核心架构_设计|架构文档]]，还有行内代码 `const MAX_VAL = 1` 与 _斜体文字_。";
+      "点击访问 [Quilla_Official_Site](https://example.com/a_b_c) 与标签 #效率工具/写作_v08 以及双链 [[核心架构_设计|架构文档]]，还有行内代码 `const MAX_VAL = 1` 与 _斜体文字_。";
     const ast = parseInlineAST(sample);
     const exportHtml = renderInlineASTSync(ast, { mode: "export" });
     const tableHtml = renderInlineASTSync(ast, { mode: "table-cell" });
@@ -34,7 +39,7 @@ export async function runAllRegressionTests(): Promise<void> {
       "超链接含下划线文本与 URL 应完整保留"
     );
     assert.equal(
-      exportHtml.includes('<span class="cm-hashtag">#效率工具/写作_v07</span>'),
+      exportHtml.includes('<span class="cm-hashtag">#效率工具/写作_v08</span>'),
       true,
       "含下划线与斜杠的多级 #标签 应正确渲染为胶囊"
     );
@@ -84,11 +89,11 @@ export async function runAllRegressionTests(): Promise<void> {
           .split("\n")
           .map(
             (l, idx) =>
-              `<span class="exported-code-line"${
+              `<div class="exported-code-line"${
                 showLn ? ` data-code-line="${idx + 1}"` : ""
-              }>${l}</span>`
+              }>${l}</div>`
           )
-          .join("\n"),
+          .join(""),
     });
 
     assert.equal(
@@ -112,5 +117,25 @@ export async function runAllRegressionTests(): Promise<void> {
   {
     const cells = parseTableRowCells("| `a | b` | 转义 \\| 竖线 | [链接](https://a.com/x_y) |");
     assert.deepEqual(cells, ["`a | b`", "转义 | 竖线", "[链接](https://a.com/x_y)"]);
+  }
+
+  // 5. 验证选中网址转超链接自动填入链接栏而非名称栏 (Bug #7)
+  {
+    assert.equal(isLikelyUrl("https://github.com/quilla"), true);
+    assert.equal(isLikelyUrl("www.example.com/docs"), true);
+    assert.equal(isLikelyUrl("普通文本标题"), false);
+
+    const fromUrl = buildSmartMarkdownLink("https://github.com/quilla");
+    assert.equal(fromUrl.insertStr, "[链接文字](https://github.com/quilla)");
+    assert.equal(fromUrl.isUrlInput, true);
+    assert.equal(
+      fromUrl.insertStr.slice(fromUrl.anchorOffset, fromUrl.headOffset),
+      "链接文字",
+      "选中网址转超链接时应将网址放入右侧链接栏，并自动选中左侧名称栏供用户输入名称"
+    );
+
+    const fromText = buildSmartMarkdownLink("Quilla 官网");
+    assert.equal(fromText.insertStr, "[Quilla 官网](https://)");
+    assert.equal(fromText.isUrlInput, false);
   }
 }

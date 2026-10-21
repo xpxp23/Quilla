@@ -88,17 +88,17 @@ import { renderMarkdownDocumentToHtml } from "./editor/markdown-ast-renderer";
 import { quillaPluginRegistry } from "./editor/plugin-system";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.7 全景工作台指南
+title: Quilla (羽墨) v0.8 全景工作台指南
 author: Quilla Studio
 tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.7.0
+version: 0.8.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.7
+# 欢迎使用 Quilla (羽墨) v0.8
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
-> [!TIP] Quilla v0.7 全景深度精进与架构升级
+> [!TIP] Quilla v0.8 全景深度精进与架构升级
 > - **第一阶段 · 块级与大纲深度操控**：左侧 6 点抓手采用真实 DOM 几何与悬停桥接锁，点击或右键唤起 **块级命令菜单（Turn Into / 克隆 / 移动 / 章节折叠）**；侧边栏大纲支持右键 **单标题升降级、带子标题整体升级/降级（思源笔记风格）、复制章节双链与整章操作**。
 > - **第二阶段 · 块级嵌入与知识图谱**：支持 \`![[文档#标题]]\` 块级/章节实时嵌入卡片、YAML Front Matter 可视化属性面板、多级 \`#父标签/子标签\` 胶囊检索，以及按 \`Ctrl+G\` 唤起 **交互式双链知识图谱**。
 > - **第三阶段 · 时间机器与多渠道发布**：按 \`Ctrl+Alt+H\` 打开 **本地版本历史（Time Machine）** 进行逐行 Diff 对比与一键无损回滚；支持 **一键复制微信公众号/知乎内联富文本**、导出 **Word (\`.doc\`)** 及 **社交长图分享卡片 (\`.png\`)**。
@@ -140,7 +140,7 @@ version: 0.7.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.7"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
+    Start["Quilla v0.8"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
     Start --> Phase2["![[块级嵌入]] & 双链知识图谱"]
     Start --> Phase3["时间机器 Diff & 公众号/长图发布"]
 \`\`\`
@@ -151,7 +151,7 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.7!");
+    println!("Hello, Quilla (羽墨) v0.8!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
@@ -188,6 +188,7 @@ class App {
   private isClosingConfirmationOpen: boolean = false;
   private searchCaseSensitive: boolean = false;
   private searchDebounceTimer: any = null;
+  private lastSelfSaveInfo: { path: string; timestamp: number } = { path: "", timestamp: 0 };
 
   async init() {
     applyPreferencesToDOM();
@@ -354,8 +355,10 @@ class App {
         await this.openTabInNewWindow(tab);
       },
       onSecondaryDocChanged: (tab, content) => {
-        saveRecoverySnapshot(tab.filePath, content, tab.title);
+        saveRecoverySnapshot(tab.filePath, content, tab.title, undefined, tab.id);
       },
+      onStatsUpdate: (words, chars) => this.updateStats(words, chars),
+      onOutlineUpdate: (headings) => this.updateOutline(headings),
     });
     this.tabsManager.init(null, "未命名.md", INITIAL_DEMO_DOC);
 
@@ -426,12 +429,33 @@ class App {
       }
     });
 
+    // 监听系统双击 .md 文件热唤起事件 (macOS RunEvent::Opened / 外部文件唤起)
+    listen<string>("quilla-open-external-file", async (event) => {
+      const extPath = event.payload;
+      if (extPath && typeof extPath === "string" && extPath.trim()) {
+        await this.loadFile(extPath.trim());
+      }
+    }).catch(() => {});
+
     // 监听来自多窗口状态总线的实时保存广播 (Multi-Window State Bus)
+    // 严格过滤当前窗口自己发出的保存事件，彻底根治按 Ctrl+S 保存时重置 EditorState 导致的页面乱跳 (Bug #4)
     listen<{ path: string; sourceWindow: string }>(
       "quilla-cross-window-file-saved",
       async (event) => {
         const savedPath = event.payload?.path;
         if (!savedPath) return;
+        const currentWinLabel =
+          (window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label || "";
+        if (currentWinLabel && event.payload?.sourceWindow === currentWinLabel) {
+          return;
+        }
+        const normSaved = savedPath.replace(/\\/g, "/").toLowerCase();
+        if (
+          normSaved === this.lastSelfSaveInfo.path &&
+          Date.now() - this.lastSelfSaveInfo.timestamp < 2500
+        ) {
+          return;
+        }
         try {
           const diskContent = await invoke<string>("read_file_content", {
             path: savedPath,
@@ -439,8 +463,7 @@ class App {
           this.tabsManager?.syncExternalFileSaved(savedPath, diskContent);
           if (
             this.currentFilePath &&
-            this.currentFilePath.replace(/\\/g, "/").toLowerCase() ===
-              savedPath.replace(/\\/g, "/").toLowerCase() &&
+            this.currentFilePath.replace(/\\/g, "/").toLowerCase() === normSaved &&
             !this.isModified
           ) {
             this.savedContent = diskContent;
@@ -470,7 +493,16 @@ class App {
             if (diskContent !== currentDoc) {
               if (!this.isModified && this.editorView) {
                 this.savedContent = diskContent;
-                resetEditorDocument(this.editorView, diskContent);
+                const prevScroll = this.editorView.scrollDOM.scrollTop;
+                const prevHead = Math.min(
+                  this.editorView.state.selection.main.head,
+                  diskContent.length
+                );
+                this.editorView.dispatch({
+                  changes: { from: 0, to: currentDoc.length, insert: diskContent },
+                  selection: { anchor: prevHead },
+                });
+                this.editorView.scrollDOM.scrollTop = prevScroll;
                 this.tabsManager?.updateActiveTabSavedMeta(
                   this.currentFilePath,
                   this.currentFilePath.split(/[\\/]/).pop() || "未命名.md",
@@ -973,7 +1005,9 @@ class App {
 
     this.findReplaceCtrl?.notifyDocChanged();
     this.backlinksCtrl?.refresh();
-    this.refreshSidebarTags();
+    if (document.getElementById("panel-search")?.classList.contains("active")) {
+      this.refreshSidebarTags();
+    }
   }
 
   private async refreshWorkspaceMarkdownIndex(): Promise<
@@ -1229,7 +1263,7 @@ class App {
   }
 
   public async saveFile(silent: boolean = false): Promise<boolean> {
-    // 若用户当前焦点位于分屏右侧副面板且副面板打开的是另一篇已命名文档，优先保存副面板对应标签
+    // 若用户当前焦点位于分屏右侧副面板且副面板打开的是另一篇文档，优先保存副面板对应标签（含未命名文档另存为）
     if (
       !silent &&
       this.tabsManager?.isSecondaryPaneFocused() &&
@@ -1238,25 +1272,35 @@ class App {
     ) {
       const secTab = this.tabsManager.getSecondaryTab()!;
       const secView = this.tabsManager.getSecondaryView();
-      if (secTab.filePath && secView) {
-        const secContent = secView.state.doc.toString();
-        try {
-          await invoke("save_file_content", {
-            path: secTab.filePath,
-            content: secContent,
-          });
-          this.tabsManager.updateTabSavedMetaById(
-            secTab.id,
-            secTab.filePath,
-            secTab.title,
-            secContent
-          );
-          clearRecoverySnapshot(secTab.filePath);
-          showToast(`已保存右侧分屏文档：${secTab.title}`, "success");
-          return true;
-        } catch (err) {
-          showToast(`保存分屏文件失败: ${err}`, "error");
-          return false;
+      if (secView) {
+        if (secTab.filePath) {
+          const secContent = secView.state.doc.toString();
+          try {
+            this.lastSelfSaveInfo = {
+              path: secTab.filePath.replace(/\\/g, "/").toLowerCase(),
+              timestamp: Date.now(),
+            };
+            await invoke("save_file_content", {
+              path: secTab.filePath,
+              content: secContent,
+            });
+            this.lastSelfSaveInfo.timestamp = Date.now();
+            this.tabsManager.updateTabSavedMetaById(
+              secTab.id,
+              secTab.filePath,
+              secTab.title,
+              secContent
+            );
+            clearRecoverySnapshot(secTab.filePath, secTab.id);
+            showToast(`已保存右侧分屏文档：${secTab.title}`, "success");
+            return true;
+          } catch (err) {
+            showToast(`保存分屏文件失败: ${err}`, "error");
+            return false;
+          }
+        } else {
+          this.tabsManager.activateTab(secTab.id);
+          return this.saveFileAs();
         }
       }
     }
@@ -1270,15 +1314,20 @@ class App {
     if (saveStatus) saveStatus.textContent = "保存中...";
 
     try {
+      this.lastSelfSaveInfo = {
+        path: this.currentFilePath.replace(/\\/g, "/").toLowerCase(),
+        timestamp: Date.now(),
+      };
       await invoke("save_file_content", {
         path: this.currentFilePath,
         content,
       });
+      this.lastSelfSaveInfo.timestamp = Date.now();
       this.savedContent = content;
       this.isModified = false;
       addRecentFile(this.currentFilePath);
       localStorage.setItem("typora_last_file", this.currentFilePath);
-      clearRecoverySnapshot(this.currentFilePath);
+      clearRecoverySnapshot(this.currentFilePath, this.tabsManager?.getActiveTab()?.id);
       const fileName = this.currentFilePath.split(/[\\/]/).pop() || "未命名.md";
       this.tabsManager?.updateActiveTabSavedMeta(this.currentFilePath, fileName, content);
       updateWindowTitle(fileName, false);
@@ -1287,8 +1336,9 @@ class App {
         saveStatus.classList.remove("is-dirty");
       }
       quillaPluginRegistry.notifyDocumentSaved(this.currentFilePath, content);
-      this.backlinksCtrl?.refresh();
-      this.refreshSidebarTags();
+      if (document.getElementById("panel-search")?.classList.contains("active")) {
+        this.refreshSidebarTags();
+      }
       return true;
     } catch (err) {
       if (!silent) {
@@ -1340,10 +1390,15 @@ class App {
         }
       }
 
+      this.lastSelfSaveInfo = {
+        path: targetPath.replace(/\\/g, "/").toLowerCase(),
+        timestamp: Date.now(),
+      };
       await invoke("save_file_content", {
         path: targetPath,
         content,
       });
+      this.lastSelfSaveInfo.timestamp = Date.now();
 
       const oldPath = this.currentFilePath;
       this.currentFilePath = targetPath;
@@ -1490,8 +1545,10 @@ class App {
    * ![[文档#标题]] 块级嵌入卡片、#多级标签、标准 W3C 嵌套列表树、Mermaid 矢量 SVG、KaTeX 公式及内联 Base64 图片。
    */
   private async renderMarkdownToHtmlBody(md: string): Promise<string> {
+    const inlineImages = getPreferences().inlineExportImages !== false;
     const resolveImgSrc = async (rawSrc: string): Promise<string> => {
       if (
+        !inlineImages ||
         rawSrc.startsWith("http://") ||
         rawSrc.startsWith("https://") ||
         rawSrc.startsWith("data:")
@@ -1605,18 +1662,36 @@ class App {
     .exported-code-dots i.dot-green { background: #27c93f; }
     .exported-code-lang { font-weight: 700; letter-spacing: 0.05em; color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.1); padding: 1px 7px; border-radius: 999px; font-size: 11px; }
     .exported-code-meta { margin-left: auto; font-size: 11px; opacity: 0.72; }
-    pre { margin: 0; padding: 12px 16px; background: transparent; border: none; overflow-x: auto; font-family: Consolas, "JetBrains Mono", monospace; font-size: 13px; line-height: 1.65; }
+    pre { margin: 0; padding: 12px 16px; background: transparent; border: none; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-family: Consolas, "JetBrains Mono", monospace; font-size: 13px; line-height: 1.65; }
     pre > code { background: transparent !important; border: none !important; padding: 0 !important; font-size: inherit !important; }
     :not(pre) > code { font-family: Consolas, "JetBrains Mono", monospace; font-size: 87%; background-color: rgba(127, 127, 127, 0.1); padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border-color, #dfe2e5); }
+    .exported-code-line {
+      position: relative;
+      display: block;
+      min-height: 1.65em;
+      line-height: 1.65;
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+      overflow-wrap: anywhere !important;
+    }
+    .exported-code-line[data-code-line] {
+      padding-left: 44px !important;
+    }
     .exported-code-line[data-code-line]::before {
       content: attr(data-code-line);
-      display: inline-block;
-      width: 28px;
-      margin-right: 14px;
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 30px;
+      padding-right: 8px;
+      margin: 0;
       text-align: right;
       color: var(--control-text-color, #8c959f);
-      opacity: 0.6;
+      border-right: 1px solid var(--border-color, #d0d7de);
+      opacity: 0.68;
       user-select: none;
+      box-sizing: border-box;
     }
     .cm-syn-keyword { color: #cf222e; font-weight: 600; }
     .cm-syn-string { color: #0a3069; }
@@ -1699,9 +1774,9 @@ ${bodyHtml}
     this.findReplaceCtrl?.notifyDocChanged();
 
     if (isDirty) {
-      saveRecoverySnapshot(this.currentFilePath, content, fileName, deltas);
+      saveRecoverySnapshot(this.currentFilePath, content, fileName, deltas, activeTab?.id);
     } else {
-      clearRecoverySnapshot(this.currentFilePath);
+      clearRecoverySnapshot(this.currentFilePath, activeTab?.id);
     }
   }
 

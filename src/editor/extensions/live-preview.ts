@@ -1543,10 +1543,10 @@ class CodeBlockExpandFooterWidget extends WidgetType {
 
   toDOM(view: EditorView) {
     const bar = document.createElement("div");
-    bar.className = "code-block-expand-footer";
+    bar.className = "cm-code-expand-footer code-block-expand-footer";
     bar.innerHTML = this.isExpanded
-      ? `<span>收起超长代码</span>`
-      : `<span>展开剩余 ${this.hiddenLinesCount} 行代码 ▾</span>`;
+      ? `<span class="code-expand-more-btn">收起超长代码 ▴</span>`
+      : `<span class="code-expand-more-btn">展开剩余 ${this.hiddenLinesCount} 行代码 ▾</span>`;
     bar.addEventListener("pointerdown", (e) => e.stopPropagation());
     bar.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2246,7 +2246,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         const codeRange = codeRanges[codeRangeIdx];
         const stableKey = stableCodeKeys[codeRangeIdx] || `${codeRange.startLine}`;
         const isCodeCollapsed = collapsedCodeBlocks.has(stableKey);
-        const isCodeWrapped = wrappedCodeBlocks.has(stableKey);
+        const isCodeWrapped = !wrappedCodeBlocks.has(stableKey);
         const codeLinesCount = Math.max(0, codeRange.endLine - codeRange.startLine - 1);
         const isLongBlock = codeLinesCount > CODE_MAX_VISIBLE_LINES;
         if (
@@ -2329,7 +2329,7 @@ function buildDecorations(view: EditorView): DecorationSet {
             line.from,
             line.from,
             Decoration.line({
-              class: `cm-code-block-line ${isCodeWrapped ? "cm-code-line-wrapped" : ""}`,
+              class: `cm-code-block-line ${isCodeWrapped ? "cm-code-line-wrapped" : "cm-code-nowrap"}`,
               attributes: { "data-code-line": String(codeLineIdx) },
             })
           );
@@ -2818,11 +2818,17 @@ function buildDecorations(view: EditorView): DecorationSet {
             "data-to": String(e),
             title: `点击查看/编辑链接，Ctrl+点击打开: ${tok.data.url}`,
           };
+          const isSelectionInsideThisLink =
+            !mouseSelectingViews.has(view) &&
+            !selection.empty &&
+            selection.from >= s &&
+            selection.to <= e;
           const isCursorInUrlPart =
-            isCursorInside &&
-            (!prefs.compactLinkExpansion ||
-              cursorHead <= s + 1 ||
-              cursorHead >= s + 1 + textLen);
+            isSelectionInsideThisLink ||
+            (isCursorInside &&
+              (!prefs.compactLinkExpansion ||
+                cursorHead <= s + 1 ||
+                cursorHead >= s + 1 + textLen));
 
           if (!isCursorInUrlPart) {
             addDeco(s, s + 1, Decoration.replace({}));

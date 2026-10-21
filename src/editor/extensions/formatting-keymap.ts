@@ -6,6 +6,10 @@ import {
   isInsideCodeContextAST,
   parseBalancedLinksAndImages,
 } from "./doc-structure";
+import {
+  buildSmartMarkdownLink,
+  resolveSafeInlineEnterPosition,
+} from "./inline-boundary-guard";
 
 /**
  * 转义正则特殊字符
@@ -106,7 +110,7 @@ function findParentListSpec(
 /**
  * 从 startLine 向后扫描并生成指定缩进层级 ordered list 的连续重编号 ChangeSpec
  */
-function buildSubsequentRenumberChanges(
+export function buildSubsequentRenumberChanges(
   doc: Text,
   startLine: number,
   quotePrefix: string,
@@ -511,6 +515,12 @@ export function handleListEnter(view: EditorView): boolean {
     return false;
   }
 
+  // 行内原子语法安全逃逸 (Bug #6): 若光标卡在超链接 `[text|](url)` 或行内语法右半闭合区，自动将换行点逃逸至闭合括号后
+  const { escaped: isInlineEscaped, safePos: effectiveHead } = resolveSafeInlineEnterPosition(
+    view.state,
+    selection.head
+  );
+
   const quotePrefixMatch = text.match(/^(\s*(?:> ?)+)/);
   const quotePrefix = quotePrefixMatch ? quotePrefixMatch[1] : "";
   const quoteLen = quotePrefix.length;
@@ -518,13 +528,13 @@ export function handleListEnter(view: EditorView): boolean {
 
   // 计算光标右侧紧邻的多余空格数，拆分行时自动吞掉，杜绝回车后新行开头多出空格
   const countTrailingSpacesAtCursor = (minPos: number): number => {
-    const start = Math.max(selection.head, minPos);
+    const start = Math.max(effectiveHead, minPos);
     const after = doc.sliceString(start, line.to);
     const m = after.match(/^[ \t]+/);
     return m ? m[0].length : 0;
   };
 
-  // 构建回退到父列表层级的行前缀与重编号变更
+  // 构建回退到父列表层级的行前缀与重编号变更 (Bug #5 修复：有序列表从中间断开时，下方列表重新从 1 开始编号)
   const buildOutdentListDispatch = (currentIndentLen: number) => {
     if (currentIndentLen > 0) {
       const parentSpec = findParentListSpec(doc, line.number, quotePrefix, currentIndentLen);
@@ -557,6 +567,17 @@ export function handleListEnter(view: EditorView): boolean {
         changes.push({ from: line.from, to: line.to, insert: newPrefix });
       }
 
+      // 原缩进层级的子列表被当前回退的父级项截断，下方同缩进子列表重置从 1 开始排列
+      changes.push(
+        ...buildSubsequentRenumberChanges(
+          doc,
+          line.number + 1,
+          quotePrefix,
+          currentIndentLen,
+          1
+        )
+      );
+
       view.dispatch({
         changes,
         selection: { anchor: line.from + newPrefix.length },
@@ -566,14 +587,14 @@ export function handleListEnter(view: EditorView): boolean {
       return true;
     }
 
+    // 顶层空列表项按回车退出列表（变成空行）：有序列表在此处从中间断开，下方断开的部分必须从 1 重新开始排列！(Bug #5)
     const fallbackLine = quotePrefix ? quotePrefix.trimEnd() + " " : "";
-    const prevExpected = computeExpectedOrderedNumber(doc, line.number, quotePrefix, 0);
     const renumberChanges = buildSubsequentRenumberChanges(
       doc,
       line.number + 1,
       quotePrefix,
       0,
-      prevExpected
+      1
     );
     view.dispatch({
       changes: [{ from: line.from, to: line.to, insert: fallbackLine }, ...renumberChanges],
@@ -597,11 +618,22 @@ export function handleListEnter(view: EditorView): boolean {
       return buildOutdentListDispatch(rawIndent.length);
     }
 
-    if (selection.head < prefixEndPos) {
+    if (effectiveHead < prefixEndPos) {
+      const renumberBelow = buildSubsequentRenumberChanges(
+        doc,
+        line.number,
+        quotePrefix,
+        alignedIndent.length,
+        1
+      );
       view.dispatch({
-        changes: { from: line.from, insert: `${quotePrefix}\n` },
-        selection: { anchor: selection.head + quotePrefix.length + 1 },
+        changes: [
+          { from: line.from, insert: `${quotePrefix}\n` },
+          ...renumberBelow,
+        ],
+        selection: { anchor: effectiveHead + quotePrefix.length + 1 },
         scrollIntoView: true,
+        userEvent: "input.enter",
       });
       return true;
     }
@@ -611,11 +643,11 @@ export function handleListEnter(view: EditorView): boolean {
     const skipRightSpaces = countTrailingSpacesAtCursor(prefixEndPos);
     view.dispatch({
       changes: {
-        from: selection.head,
-        to: selection.head + skipRightSpaces,
+        from: effectiveHead,
+        to: effectiveHead + skipRightSpaces,
         insert: `\n${nextPrefix}`,
       },
-      selection: { anchor: selection.head + 1 + nextPrefix.length },
+      selection: { anchor: effectiveHead + 1 + nextPrefix.length },
       scrollIntoView: true,
       userEvent: "input.enter",
     });
@@ -637,10 +669,10 @@ export function handleListEnter(view: EditorView): boolean {
       return buildOutdentListDispatch(rawIndent.length);
     }
 
-    if (selection.head < prefixEndPos) {
+    if (effectiveHead < prefixEndPos) {
       view.dispatch({
         changes: { from: line.from, insert: `${quotePrefix}\n` },
-        selection: { anchor: selection.head + quotePrefix.length + 1 },
+        selection: { anchor: effectiveHead + quotePrefix.length + 1 },
         scrollIntoView: true,
       });
       return true;
@@ -651,8 +683,8 @@ export function handleListEnter(view: EditorView): boolean {
     const skipRightSpaces = countTrailingSpacesAtCursor(prefixEndPos);
     const changes: ChangeSpec[] = [
       {
-        from: selection.head,
-        to: selection.head + skipRightSpaces,
+        from: effectiveHead,
+        to: effectiveHead + skipRightSpaces,
         insert: `\n${nextPrefix}`,
       },
       ...buildSubsequentRenumberChanges(
@@ -666,7 +698,7 @@ export function handleListEnter(view: EditorView): boolean {
 
     view.dispatch({
       changes,
-      selection: { anchor: selection.head + 1 + nextPrefix.length },
+      selection: { anchor: effectiveHead + 1 + nextPrefix.length },
       scrollIntoView: true,
       userEvent: "input.enter",
     });
@@ -692,10 +724,10 @@ export function handleListEnter(view: EditorView): boolean {
       return buildOutdentListDispatch(rawIndent.length);
     }
 
-    if (selection.head < prefixEndPos) {
+    if (effectiveHead < prefixEndPos) {
       view.dispatch({
         changes: { from: line.from, insert: `${quotePrefix}\n` },
-        selection: { anchor: selection.head + quotePrefix.length + 1 },
+        selection: { anchor: effectiveHead + quotePrefix.length + 1 },
         scrollIntoView: true,
       });
       return true;
@@ -705,11 +737,11 @@ export function handleListEnter(view: EditorView): boolean {
     const skipRightSpaces = countTrailingSpacesAtCursor(prefixEndPos);
     view.dispatch({
       changes: {
-        from: selection.head,
-        to: selection.head + skipRightSpaces,
+        from: effectiveHead,
+        to: effectiveHead + skipRightSpaces,
         insert: `\n${nextPrefix}`,
       },
-      selection: { anchor: selection.head + 1 + nextPrefix.length },
+      selection: { anchor: effectiveHead + 1 + nextPrefix.length },
       scrollIntoView: true,
       userEvent: "input.enter",
     });
@@ -743,19 +775,18 @@ export function handleListEnter(view: EditorView): boolean {
     const skipRightSpaces = countTrailingSpacesAtCursor(line.from + quoteLen);
     view.dispatch({
       changes: {
-        from: selection.head,
-        to: selection.head + skipRightSpaces,
+        from: effectiveHead,
+        to: effectiveHead + skipRightSpaces,
         insert: `\n${normalizedPrefix}`,
       },
-      selection: { anchor: selection.head + 1 + normalizedPrefix.length },
+      selection: { anchor: effectiveHead + 1 + normalizedPrefix.length },
       scrollIntoView: true,
     });
     return true;
   }
 
-  // 5. 普通段落行若意外带有行首缩进空格，拦截默认 insertNewlineAndIndent 防止将行首空格传染给后续所有段落；
-  // 若整行仅有残留缩进空格（如列表退格后残留），按回车仅清除残留空格，绝不多换一行
-  if (/^[ \t]+/.test(text)) {
+  // 5. 普通段落行若意外带有行首缩进空格，或触发了超链接/行内原子语法右边界安全逃逸 (Bug #6)
+  if (/^[ \t]+/.test(text) || isInlineEscaped) {
     if (text.trim() === "") {
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: "" },
@@ -768,15 +799,47 @@ export function handleListEnter(view: EditorView): boolean {
     const skipRightSpaces = countTrailingSpacesAtCursor(line.from);
     view.dispatch({
       changes: {
-        from: selection.head,
-        to: selection.head + skipRightSpaces,
+        from: effectiveHead,
+        to: effectiveHead + skipRightSpaces,
         insert: "\n",
       },
-      selection: { anchor: selection.head + 1 },
+      selection: { anchor: effectiveHead + 1 },
       scrollIntoView: true,
       userEvent: "input.enter",
     });
     return true;
+  }
+
+  // 若在两个有序列表之间的空行按退格键将其合并为一个连续列表，自动衔接并重排下半部分的序号
+  if (text.trim() === "" && selection.head === line.from && line.number > 1 && line.number < doc.lines) {
+    const prevLine = doc.line(line.number - 1);
+    const nextLine = doc.line(line.number + 1);
+    const prevQm = prevLine.text.match(/^(\s*(?:> ?)+)/);
+    const nextQm = nextLine.text.match(/^(\s*(?:> ?)+)/);
+    const prevQp = prevQm ? prevQm[1] : "";
+    const nextQp = nextQm ? nextQm[1] : "";
+    if (prevQp === nextQp) {
+      const prevOrd = prevLine.text.slice(prevQp.length).match(/^(\s*)(\d+)\.\s+/);
+      const nextOrd = nextLine.text.slice(nextQp.length).match(/^(\s*)(\d+)\.\s+/);
+      if (prevOrd && nextOrd && prevOrd[1].length === nextOrd[1].length) {
+        const startNum = parseInt(prevOrd[2], 10) + 1;
+        const renumberChanges = buildSubsequentRenumberChanges(
+          doc,
+          line.number + 1,
+          prevQp,
+          prevOrd[1].length,
+          startNum
+        );
+        view.dispatch({
+          changes: [
+            { from: prevLine.to, to: line.to, insert: "" },
+            ...renumberChanges,
+          ],
+          selection: { anchor: prevLine.to },
+        });
+        return true;
+      }
+    }
   }
 
   return false;
@@ -838,6 +901,17 @@ export function handleListBackspace(view: EditorView): boolean {
         );
       }
 
+      // 原子列表被截断，下方同深度子列表从 1 重新编号
+      extraChanges.push(
+        ...buildSubsequentRenumberChanges(
+          doc,
+          line.number + 1,
+          quotePrefix,
+          indent.length,
+          1
+        )
+      );
+
       const replacement = `${quotePrefix}${newIndent}${newPrefix}`;
       view.dispatch({
         changes: [
@@ -854,9 +928,9 @@ export function handleListBackspace(view: EditorView): boolean {
     } else {
       const extraChanges: ChangeSpec[] = [];
       if (isOrdered) {
-        const prevExpected = computeExpectedOrderedNumber(doc, line.number, quotePrefix, 0);
+        // 顶层有序列表项退格移除列表前缀后，列表从此处断开，下方断开的有序列表必须从 1 重新编号 (Bug #5)
         extraChanges.push(
-          ...buildSubsequentRenumberChanges(doc, line.number + 1, quotePrefix, 0, prevExpected)
+          ...buildSubsequentRenumberChanges(doc, line.number + 1, quotePrefix, 0, 1)
         );
       }
       view.dispatch({
@@ -897,7 +971,7 @@ export function handleListBackspace(view: EditorView): boolean {
 
 /**
  * 列表与引用块缩进/反缩进 (Tab / Shift-Tab)
- * 显式维护光标 selection 偏移，彻底杜绝行首按 Tab 后光标滞留在缩进空格或 > 左侧的同类问题
+ * 显式维护光标 selection 偏移，并支持多行选区有序列表自动重排编号
  */
 export function handleListTab(view: EditorView, isShift: boolean): boolean {
   const doc = view.state.doc;
@@ -909,31 +983,110 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       : selection.to
   ).number;
 
-  // 1. 多行框选批量列表/段落缩进
+  // 1. 多行框选批量列表/段落缩进（含多行有序列表智能重排）
   if (endLineNum > startLineNum) {
-    const changes: ChangeSpec[] = [];
-    let anyHandled = false;
+    const simLines: string[] = [];
+    for (let i = 1; i <= doc.lines; i++) {
+      simLines.push(doc.line(i).text);
+    }
 
+    let anyHandled = false;
     for (let ln = startLineNum; ln <= endLineNum; ln++) {
-      const l = doc.line(ln);
-      const quoteMatch = l.text.match(/^(\s*(?:> ?)+)/);
+      const text = simLines[ln - 1];
+      const quoteMatch = text.match(/^(\s*(?:> ?)+)/);
       const quotePrefix = quoteMatch ? quoteMatch[1] : "";
       const qLen = quotePrefix.length;
-      const rest = l.text.slice(qLen);
+      const rest = text.slice(qLen);
 
       if (isShift) {
-        const removeLen = rest.startsWith("  ") ? 2 : rest.startsWith(" ") ? 1 : 0;
+        const removeLen = rest.startsWith("   ")
+          ? 3
+          : rest.startsWith("  ")
+          ? 2
+          : rest.startsWith(" ")
+          ? 1
+          : 0;
         if (removeLen > 0) {
-          changes.push({ from: l.from + qLen, to: l.from + qLen + removeLen, insert: "" });
+          simLines[ln - 1] = `${quotePrefix}${rest.slice(removeLen)}`;
           anyHandled = true;
         }
       } else {
-        changes.push({ from: l.from + qLen, insert: "  " });
+        let step = "  ";
+        if (ln > 1) {
+          const prevRest = simLines[ln - 2].slice(qLen);
+          if (/^\s*\d+\.\s+/.test(prevRest)) {
+            step = "   ";
+          }
+        }
+        simLines[ln - 1] = `${quotePrefix}${step}${rest}`;
         anyHandled = true;
       }
     }
 
-    if (anyHandled) {
+    if (!anyHandled) return false;
+
+    // 对受影响区间及后续连续有序列表行统一重排编号
+    const renumberSimLines = (fromLn: number) => {
+      const counters = new Map<string, number>();
+      for (let ln = Math.max(1, fromLn); ln <= simLines.length; ln++) {
+        const raw = simLines[ln - 1];
+        const qm = raw.match(/^(\s*(?:> ?)+)/);
+        const qp = qm ? qm[1] : "";
+        const sub = raw.slice(qp.length);
+        if (!sub.trim()) {
+          counters.clear();
+          if (ln > endLineNum) break;
+          continue;
+        }
+        const lm = sub.match(/^(\s*)([-*+]|\d+\.)(\s+)(.*)$/);
+        if (!lm) {
+          counters.clear();
+          if (ln > endLineNum) break;
+          continue;
+        }
+        const ind = lm[1];
+        const marker = lm[2];
+        const spaceAfter = lm[3];
+        const body = lm[4];
+
+        // 清除比当前缩进更深的子列表计数器
+        for (const k of Array.from(counters.keys())) {
+          const [kQp, kLenStr] = k.split("::");
+          if (kQp === qp && parseInt(kLenStr, 10) > ind.length) {
+            counters.delete(k);
+          }
+        }
+
+        const key = `${qp}::${ind.length}`;
+        if (/^\d+\.$/.test(marker)) {
+          const nextNum = (counters.get(key) || 0) + 1;
+          counters.set(key, nextNum);
+          simLines[ln - 1] = `${qp}${ind}${nextNum}.${spaceAfter}${body}`;
+        } else {
+          counters.delete(key);
+        }
+      }
+    };
+
+    let scanStart = startLineNum;
+    while (scanStart > 1 && simLines[scanStart - 2].trim() !== "") {
+      scanStart--;
+    }
+    renumberSimLines(scanStart);
+
+    const changes: ChangeSpec[] = [];
+    for (let ln = 1; ln <= doc.lines; ln++) {
+      const origLine = doc.line(ln);
+      if (origLine.text !== simLines[ln - 1]) {
+        changes.push({
+          from: origLine.from,
+          to: origLine.to,
+          insert: simLines[ln - 1],
+        });
+      }
+    }
+
+    if (changes.length > 0) {
       view.dispatch({ changes, userEvent: isShift ? "delete.dedent" : "input.indent" });
       return true;
     }
@@ -990,12 +1143,9 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
       },
     ];
 
-    const oldExpectedAtCurrent = computeExpectedOrderedNumber(
-      doc,
-      line.number,
-      quotePrefix,
-      oldIndent.length
-    );
+    const oldExpectedAtCurrent = isShift
+      ? 1
+      : computeExpectedOrderedNumber(doc, line.number, quotePrefix, oldIndent.length);
     changes.push(
       ...buildSubsequentRenumberChanges(
         doc,
@@ -1099,7 +1249,7 @@ export function handleListTab(view: EditorView, isShift: boolean): boolean {
 
 /**
  * 切换当前行或多行选区的标题层级 (H1 ~ H6，支持引用块内标题切换及多块框选批量转换)
- * 彻底修复按 Ctrl+1~6 后光标落在 ## 左侧而非右侧的问题，以及框选多行点击 H1~H3 只转换第一行的问题
+ * 若被转换的行原本是有序列表项，转换后自动将下方断开的有序列表从 1 重新编号 (Bug #5)
  */
 export function toggleHeadingLevel(view: EditorView, level: number): boolean {
   const doc = view.state.doc;
@@ -1120,6 +1270,8 @@ export function toggleHeadingLevel(view: EditorView, level: number): boolean {
       basePos: number;
       oldPrefixEnd: number;
       currentLevel: number;
+      quotePrefix: string;
+      wasOrderedIndentLen: number | null;
     }> = [];
 
     for (let ln = startLineNum; ln <= endLineNum; ln++) {
@@ -1127,18 +1279,24 @@ export function toggleHeadingLevel(view: EditorView, level: number): boolean {
       const line = doc.line(ln);
       if (!line.text.trim()) continue;
       const quoteMatch = line.text.match(/^(\s*(?:> ?)+)/);
-      const quoteLen = quoteMatch ? quoteMatch[1].length : 0;
+      const quotePrefix = quoteMatch ? quoteMatch[1] : "";
+      const quoteLen = quotePrefix.length;
       const rest = line.text.slice(quoteLen);
       const existingPrefixMatch = rest.match(
-        /^(?:(#{1,6})\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/
+        /^(\s*)(?:(#{1,6})\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|(\d+)\.\s+)/
       );
       const oldPrefixLen = existingPrefixMatch ? existingPrefixMatch[0].length : 0;
-      const curLvl = existingPrefixMatch?.[1] ? existingPrefixMatch[1].length : 0;
+      const curLvl = existingPrefixMatch?.[2] ? existingPrefixMatch[2].length : 0;
+      const wasOrderedIndentLen = existingPrefixMatch?.[3]
+        ? existingPrefixMatch[1].length
+        : null;
       targetLines.push({
         lineNum: ln,
         basePos: line.from + quoteLen,
         oldPrefixEnd: line.from + quoteLen + oldPrefixLen,
         currentLevel: curLvl,
+        quotePrefix,
+        wasOrderedIndentLen,
       });
     }
 
@@ -1155,6 +1313,19 @@ export function toggleHeadingLevel(view: EditorView, level: number): boolean {
       });
     }
 
+    const lastTarget = targetLines[targetLines.length - 1];
+    if (lastTarget.wasOrderedIndentLen !== null) {
+      changes.push(
+        ...buildSubsequentRenumberChanges(
+          doc,
+          endLineNum + 1,
+          lastTarget.quotePrefix,
+          lastTarget.wasOrderedIndentLen,
+          1
+        )
+      );
+    }
+
     view.dispatch({
       changes,
       userEvent: "input.format",
@@ -1166,12 +1337,14 @@ export function toggleHeadingLevel(view: EditorView, level: number): boolean {
   const text = line.text;
 
   const quotePrefixMatch = text.match(/^(\s*(?:> ?)+)/);
-  const quoteLen = quotePrefixMatch ? quotePrefixMatch[1].length : 0;
+  const quotePrefix = quotePrefixMatch ? quotePrefixMatch[1] : "";
+  const quoteLen = quotePrefix.length;
   const restText = text.slice(quoteLen);
 
-  const currentMatch = restText.match(/^(#{1,6})\s+/);
+  const currentMatch = restText.match(/^(\s*)(?:(#{1,6})\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|(\d+)\.\s+)/);
   const oldPrefixLen = currentMatch ? currentMatch[0].length : 0;
-  const currentLevel = currentMatch ? currentMatch[1].length : 0;
+  const currentLevel = currentMatch?.[2] ? currentMatch[2].length : 0;
+  const wasOrderedIndentLen = currentMatch?.[3] ? currentMatch[1].length : null;
 
   const newPrefix =
     level === 0 || currentLevel === level ? "" : `${"#".repeat(level)} `;
@@ -1182,12 +1355,28 @@ export function toggleHeadingLevel(view: EditorView, level: number): boolean {
   const mapCursor = (pos: number) =>
     pos <= oldPrefixEnd ? newPrefixEnd : pos + (newPrefix.length - oldPrefixLen);
 
+  const extraChanges: ChangeSpec[] = [];
+  if (wasOrderedIndentLen !== null) {
+    extraChanges.push(
+      ...buildSubsequentRenumberChanges(
+        doc,
+        line.number + 1,
+        quotePrefix,
+        wasOrderedIndentLen,
+        1
+      )
+    );
+  }
+
   view.dispatch({
-    changes: {
-      from: basePos,
-      to: oldPrefixEnd,
-      insert: newPrefix,
-    },
+    changes: [
+      {
+        from: basePos,
+        to: oldPrefixEnd,
+        insert: newPrefix,
+      },
+      ...extraChanges,
+    ],
     selection: {
       anchor: mapCursor(selection.anchor),
       head: mapCursor(selection.head),
@@ -1295,12 +1484,25 @@ export const formattingKeymap: KeyBinding[] = [
         }
       }
 
-      const linkText = text || "链接文字";
-      const insertStr = `[${linkText}](https://)`;
+      const smartLink = buildSmartMarkdownLink(text);
       view.dispatch({
-        changes: { from, to, insert: insertStr },
-        selection: { anchor: from + linkText.length + 3, head: from + insertStr.length - 1 },
+        changes: { from, to, insert: smartLink.insertStr },
+        selection: {
+          anchor: from + 1,
+          head: from + 1 + smartLink.labelValue.length,
+        },
       });
+      view.dom.dispatchEvent(
+        new CustomEvent("quilla-edit-active-link", {
+          detail: {
+            from,
+            to: from + smartLink.insertStr.length,
+            text: smartLink.labelValue,
+            url: smartLink.urlValue,
+            focusField: smartLink.isUrlInput ? "text" : "url",
+          },
+        })
+      );
       return true;
     },
   },
@@ -1359,11 +1561,4 @@ export const formattingKeymap: KeyBinding[] = [
   { key: "Mod-5", run: (view) => toggleHeadingLevel(view, 5) },
   { key: "Mod-6", run: (view) => toggleHeadingLevel(view, 6) },
   { key: "Mod-0", run: (view) => toggleHeadingLevel(view, 0) },
-  { key: "Mod-Alt-1", run: (view) => toggleHeadingLevel(view, 1) },
-  { key: "Mod-Alt-2", run: (view) => toggleHeadingLevel(view, 2) },
-  { key: "Mod-Alt-3", run: (view) => toggleHeadingLevel(view, 3) },
-  { key: "Mod-Alt-4", run: (view) => toggleHeadingLevel(view, 4) },
-  { key: "Mod-Alt-5", run: (view) => toggleHeadingLevel(view, 5) },
-  { key: "Mod-Alt-6", run: (view) => toggleHeadingLevel(view, 6) },
-  { key: "Mod-Alt-0", run: (view) => toggleHeadingLevel(view, 0) },
 ];

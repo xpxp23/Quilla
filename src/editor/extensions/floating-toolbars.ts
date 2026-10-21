@@ -1,6 +1,11 @@
 import { EditorView } from "@codemirror/view";
 import { handleOpenLink } from "../index";
 import { smartToggleFormat, toggleHeadingLevel } from "./formatting-keymap";
+import {
+  buildSmartMarkdownLink,
+  isLikelyUrl,
+  normalizeUrlForLink,
+} from "./inline-boundary-guard";
 
 function escapeAttr(str: string): string {
   return str
@@ -58,7 +63,7 @@ export function initFloatingToolbars(
   `;
   document.body.appendChild(imgToolbar);
 
-  // 2. 创建超链接悬浮工具栏与内联双字段编辑器
+  // 2. 创建超链接悬浮工具栏与带明确“名称 / 链接”双字段标识的内联编辑器 (Bug #7)
   const linkTooltip = document.createElement("div");
   linkTooltip.className = "ty-link-tooltip hidden";
   linkTooltip.innerHTML = `
@@ -69,7 +74,7 @@ export function initFloatingToolbars(
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
         <span>打开</span>
       </button>
-      <button type="button" class="ty-toolbar-btn" data-action="edit-link" title="编辑链接文字与地址">
+      <button type="button" class="ty-toolbar-btn" data-action="edit-link" title="编辑链接名称与地址">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
         <span>编辑</span>
       </button>
@@ -82,8 +87,20 @@ export function initFloatingToolbars(
       </button>
     </div>
     <div class="link-tooltip-edit-form hidden" id="ty-link-edit-form">
-      <input type="text" id="ty-link-edit-text" class="ty-inline-input" placeholder="链接显示文字..." />
-      <input type="text" id="ty-link-edit-url" class="ty-inline-input" placeholder="https://..." />
+      <label class="link-edit-field" for="ty-link-edit-text">
+        <span class="link-edit-label" title="超链接显示名称">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>
+          <span>名称</span>
+        </span>
+        <input type="text" id="ty-link-edit-text" class="ty-inline-input" placeholder="输入显示名称 (如：Quilla 官网)..." />
+      </label>
+      <label class="link-edit-field" for="ty-link-edit-url">
+        <span class="link-edit-label" title="超链接目标 URL 地址">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+          <span>链接</span>
+        </span>
+        <input type="text" id="ty-link-edit-url" class="ty-inline-input" placeholder="https://example.com" />
+      </label>
       <div class="link-edit-actions">
         <button type="button" class="ty-toolbar-btn primary" data-action="save-link">保存</button>
         <button type="button" class="ty-toolbar-btn" data-action="cancel-link">取消</button>
@@ -365,12 +382,27 @@ export function initFloatingToolbars(
     } else if (fmt === "link") {
       keepBubbleAlive = false;
       const sel = view.state.selection.main;
-      const text = view.state.sliceDoc(sel.from, sel.to) || "链接文字";
-      const insertStr = `[${text}](https://)`;
+      const text = view.state.sliceDoc(sel.from, sel.to);
+      const smartLink = buildSmartMarkdownLink(text);
+      const from = sel.from;
       view.dispatch({
-        changes: { from: sel.from, to: sel.to, insert: insertStr },
-        selection: { anchor: sel.from + text.length + 3, head: sel.from + insertStr.length - 1 },
+        changes: { from, to: sel.to, insert: smartLink.insertStr },
+        selection: {
+          anchor: from + 1,
+          head: from + 1 + smartLink.labelValue.length,
+        },
       });
+      view.dom.dispatchEvent(
+        new CustomEvent("quilla-edit-active-link", {
+          detail: {
+            from,
+            to: from + smartLink.insertStr.length,
+            text: smartLink.labelValue,
+            url: smartLink.urlValue,
+            focusField: smartLink.isUrlInput ? "text" : "url",
+          },
+        })
+      );
     } else if (heading) {
       toggleHeadingLevel(view, parseInt(heading, 10));
     }
@@ -546,13 +578,30 @@ export function initFloatingToolbars(
       const urlInput = linkTooltip.querySelector("#ty-link-edit-url") as HTMLInputElement;
       viewRow?.classList.add("hidden");
       editForm?.classList.remove("hidden");
-      textInput.value = text;
-      urlInput.value = url;
-      positionToolbar(linkTooltip, elem);
-      setTimeout(() => {
-        urlInput.focus();
-        urlInput.select();
-      }, 15);
+
+      // 智能纠偏：若旧数据中名称栏填了网址而链接栏还是空的 https://，自动将网址移入链接栏并聚焦名称栏 (Bug #7)
+      if ((url === "https://" || !url.trim()) && isLikelyUrl(text)) {
+        textInput.value = "链接文字";
+        urlInput.value = normalizeUrlForLink(text);
+        positionToolbar(linkTooltip, elem);
+        setTimeout(() => {
+          textInput.focus();
+          textInput.select();
+        }, 15);
+      } else {
+        textInput.value = text;
+        urlInput.value = url;
+        positionToolbar(linkTooltip, elem);
+        setTimeout(() => {
+          if (!text || text === "链接文字") {
+            textInput.focus();
+            textInput.select();
+          } else {
+            urlInput.focus();
+            urlInput.select();
+          }
+        }, 15);
+      }
     } else if (action === "save-link") {
       saveLinkChanges();
     } else if (action === "cancel-link") {
@@ -574,6 +623,46 @@ export function initFloatingToolbars(
       }
     });
   });
+
+  // 监听右键菜单 / 气泡栏 / Ctrl+K 新建超链接事件，直接弹出带“名称/链接”标识的编辑面板并精准聚焦待填栏 (Bug #7)
+  view.dom.addEventListener("quilla-edit-active-link", ((e: CustomEvent) => {
+    const detail = e.detail;
+    if (!detail) return;
+    requestAnimationFrame(() => {
+      const linkEl =
+        view.dom.querySelector<HTMLElement>(`.cm-link[data-from="${detail.from}"]`) ||
+        view.dom.querySelector<HTMLElement>(".cm-link.cm-link-active");
+      if (!linkEl) return;
+      activeLinkTarget = {
+        elem: linkEl,
+        url: detail.url,
+        text: detail.text,
+        from: detail.from,
+        to: detail.to,
+      };
+      const viewRow = linkTooltip.querySelector("#ty-link-view-row");
+      const editForm = linkTooltip.querySelector("#ty-link-edit-form");
+      const textInput = linkTooltip.querySelector("#ty-link-edit-text") as HTMLInputElement;
+      const urlInput = linkTooltip.querySelector("#ty-link-edit-url") as HTMLInputElement;
+      viewRow?.classList.add("hidden");
+      editForm?.classList.remove("hidden");
+      textInput.value = detail.text;
+      urlInput.value = detail.url;
+      linkTooltip.classList.remove("hidden");
+      imgToolbar.classList.add("hidden");
+      selToolbar.classList.add("hidden");
+      positionToolbar(linkTooltip, linkEl);
+      setTimeout(() => {
+        if (detail.focusField === "text") {
+          textInput.focus();
+          textInput.select();
+        } else {
+          urlInput.focus();
+          urlInput.select();
+        }
+      }, 15);
+    });
+  }) as EventListener);
 
   view.scrollDOM.addEventListener("scroll", () => {
     hideAllToolbars();

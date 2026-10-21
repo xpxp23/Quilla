@@ -1,3 +1,4 @@
+import { isLikelyUrl, normalizeUrlForLink } from "./inline-boundary-guard";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { EditorView, KeyBinding, WidgetType, Decoration, DecorationSet } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
@@ -304,10 +305,19 @@ function promptCellInlineLink(cellEditor: HTMLElement, onCommit: () => void) {
   const pop = document.createElement("div");
   pop.id = "quilla-tbl-link-popover";
   pop.className = "ty-link-tooltip";
+  const selectedIsUrl = isLikelyUrl(selectedText);
+  const initTextVal = selectedIsUrl ? "" : selectedText;
+  const initUrlVal = selectedIsUrl ? normalizeUrlForLink(selectedText) : "https://";
   pop.innerHTML = `
     <div class="link-tooltip-edit-form">
-      <input type="text" id="tbl-lnk-text" class="ty-inline-input" placeholder="链接显示文字..." value="${selectedText.replace(/"/g, "&quot;")}" />
-      <input type="text" id="tbl-lnk-url" class="ty-inline-input" placeholder="https://..." value="https://" />
+      <label class="link-edit-field" for="tbl-lnk-text">
+        <span class="link-edit-label">名称</span>
+        <input type="text" id="tbl-lnk-text" class="ty-inline-input" placeholder="输入链接显示名称..." value="${initTextVal.replace(/"/g, "&quot;")}" />
+      </label>
+      <label class="link-edit-field" for="tbl-lnk-url">
+        <span class="link-edit-label">链接</span>
+        <input type="text" id="tbl-lnk-url" class="ty-inline-input" placeholder="https://..." value="${initUrlVal.replace(/"/g, "&quot;")}" />
+      </label>
       <div class="link-edit-actions">
         <button type="button" class="ty-toolbar-btn primary" id="tbl-lnk-save">插入</button>
         <button type="button" class="ty-toolbar-btn" id="tbl-lnk-cancel">取消</button>
@@ -372,7 +382,7 @@ function promptCellInlineLink(cellEditor: HTMLElement, onCommit: () => void) {
   });
 
   setTimeout(() => {
-    if (selectedText) {
+    if (selectedText && !selectedIsUrl) {
       urlInp.focus();
       urlInp.select();
     } else {

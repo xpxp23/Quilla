@@ -11,6 +11,7 @@ import {
   isHeadingFoldedAtLine,
 } from "./extensions/live-preview";
 import { docStructureField } from "./extensions/doc-structure";
+import { inlineBoundaryCursorGuardExtension } from "./extensions/inline-boundary-guard";
 import { imeGuardPlugin } from "./extensions/ime-guard";
 import { tableKeymap, tableLiveViewField } from "./extensions/table-editor";
 import { formattingKeymap } from "./extensions/formatting-keymap";
@@ -248,9 +249,52 @@ export function createEditor(
   let pendingDeltas: TextDeltaPayload[] = [];
   let lastEditTime = 0;
 
+  // 行级词数增量缓存，避免大文档每次按键对全文执行正则扫描
+  let lineWordCounts: number[] = [];
+  let cachedTotalWords = 0;
+  let wordCacheInitialized = false;
+
+  const initOrRebuildWordCache = (doc: EditorState["doc"]) => {
+    lineWordCounts = new Array(doc.lines);
+    let sum = 0;
+    for (let i = 1; i <= doc.lines; i++) {
+      const w = countMixedWords(doc.line(i).text);
+      lineWordCounts[i - 1] = w;
+      sum += w;
+    }
+    cachedTotalWords = sum;
+    wordCacheInitialized = true;
+  };
+
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
       lastEditTime = performance.now();
+      const oldDoc = update.startState.doc;
+      const newDoc = update.state.doc;
+
+      if (!wordCacheInitialized || lineWordCounts.length !== oldDoc.lines) {
+        initOrRebuildWordCache(newDoc);
+      } else if (oldDoc.lines === newDoc.lines) {
+        update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+          const sLine = oldDoc.lineAt(fromA).number;
+          const eLine = oldDoc.lineAt(toA).number;
+          const sLineB = newDoc.lineAt(fromB).number;
+          const eLineB = newDoc.lineAt(toB).number;
+          if (sLine === sLineB && eLine === eLineB) {
+            for (let ln = sLine; ln <= eLine; ln++) {
+              const oldW = lineWordCounts[ln - 1] || 0;
+              const newW = countMixedWords(newDoc.line(ln).text);
+              lineWordCounts[ln - 1] = newW;
+              cachedTotalWords += newW - oldW;
+            }
+          } else {
+            initOrRebuildWordCache(newDoc);
+          }
+        });
+      } else {
+        initOrRebuildWordCache(newDoc);
+      }
+
       update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
         pendingDeltas.push({
           fromChar: fromA,
@@ -265,9 +309,8 @@ export function createEditor(
         const doc = state.doc;
         const text = doc.toString();
 
-        const chars = text.length;
-        const words = countMixedWords(text);
-        callbacks.onStatsUpdate(words, chars);
+        const chars = doc.length;
+        callbacks.onStatsUpdate(Math.max(0, cachedTotalWords), chars);
 
         const headings = extractOutlineHeadings(doc, state);
         callbacks.onOutlineUpdate(headings);
@@ -289,6 +332,7 @@ export function createEditor(
     history(),
     markdown({ addKeymap: false }),
     docStructureField,
+    inlineBoundaryCursorGuardExtension,
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     imeGuardPlugin,
     ...smartAutopairExtension(),
@@ -459,8 +503,8 @@ export function createEditor(
   setupWikiLinkInteractions(view);
 
   // 初次触发一次统计与大纲构建
-  const words = countMixedWords(initialDoc);
-  callbacks.onStatsUpdate(words, initialDoc.length);
+  initOrRebuildWordCache(view.state.doc);
+  callbacks.onStatsUpdate(cachedTotalWords, initialDoc.length);
   callbacks.onOutlineUpdate(extractOutlineHeadings(view.state.doc, view.state));
 
   return view;

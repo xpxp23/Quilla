@@ -1,8 +1,8 @@
 {
   "name": "quilla",
   "private": true,
-  "version": "0.7.0",
-  "description": "Quilla (羽墨) v0.7 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust",
+  "version": "0.8.0",
+  "description": "Quilla (羽墨) v0.8 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust",
   "type": "module",
   "scripts": {
     "dev": "vite",

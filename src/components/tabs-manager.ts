@@ -40,6 +40,8 @@ export interface TabsManagerCallbacks {
   onSaveTabAsRequest?: (tab: DocumentTab) => Promise<void>;
   onOpenInNewWindowRequest?: (tab: DocumentTab) => Promise<void>;
   onSecondaryDocChanged?: (tab: DocumentTab, content: string) => void;
+  onStatsUpdate?: (words: number, chars: number) => void;
+  onOutlineUpdate?: (headings: Array<{ level: number; text: string; line: number }>) => void;
 }
 
 function escapeHtml(str: string): string {
@@ -104,7 +106,7 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.7
+ * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.8
  * - 新增顶部标签右键菜单（保存、另存为/重命名、在右侧分屏打开、独立窗口打开、复制路径/文件名、定位文件夹、关闭其他/右侧/已保存标签）(Bug #2)
  * - 修复非激活脏标签关闭时的保存逻辑 (Homologous Bug #9)
  */
@@ -627,18 +629,36 @@ export class TabsManager {
       }
       tab.savedContent = newContent;
       if (!tab.isModified) {
-        tab.editorState = createEditorStateForView(primaryView, newContent);
         if (tab.id === this.activeTabId) {
-          const prevScroll = primaryView.scrollDOM.scrollTop;
-          primaryView.setState(tab.editorState);
-          primaryView.scrollDOM.scrollTop = prevScroll;
+          const curPrimaryDoc = primaryView.state.doc.toString();
+          if (curPrimaryDoc !== newContent) {
+            const prevScroll = primaryView.scrollDOM.scrollTop;
+            const prevHead = Math.min(primaryView.state.selection.main.head, newContent.length);
+            primaryView.dispatch({
+              changes: { from: 0, to: curPrimaryDoc.length, insert: newContent },
+              selection: { anchor: prevHead },
+            });
+            primaryView.scrollDOM.scrollTop = prevScroll;
+            tab.editorState = primaryView.state;
+          }
+        } else if (tab.editorState.doc.toString() !== newContent) {
+          tab.editorState = createEditorStateForView(primaryView, newContent);
         }
+
         if (this.splitActive && this.secondaryView && tab.id === this.secondaryTabId) {
-          const prevSecScroll = this.secondaryView.scrollDOM.scrollTop;
-          this.secondaryView.setState(
-            createEditorStateForView(this.secondaryView, newContent)
-          );
-          this.secondaryView.scrollDOM.scrollTop = prevSecScroll;
+          const curSecDoc = this.secondaryView.state.doc.toString();
+          if (curSecDoc !== newContent) {
+            const prevSecScroll = this.secondaryView.scrollDOM.scrollTop;
+            const prevSecHead = Math.min(
+              this.secondaryView.state.selection.main.head,
+              newContent.length
+            );
+            this.secondaryView.dispatch({
+              changes: { from: 0, to: curSecDoc.length, insert: newContent },
+              selection: { anchor: prevSecHead },
+            });
+            this.secondaryView.scrollDOM.scrollTop = prevSecScroll;
+          }
         }
       } else {
         const curDoc =
@@ -812,8 +832,16 @@ export class TabsManager {
           this.callbacks.onSecondaryDocChanged?.(targetTab, content);
         }
       },
-      onStatsUpdate: () => {},
-      onOutlineUpdate: () => {},
+      onStatsUpdate: (words, chars) => {
+        if (this.lastFocusedPane === "secondary") {
+          this.callbacks.onStatsUpdate?.(words, chars);
+        }
+      },
+      onOutlineUpdate: (headings) => {
+        if (this.lastFocusedPane === "secondary") {
+          this.callbacks.onOutlineUpdate?.(headings);
+        }
+      },
       onOpenFile: (filePath) => this.callbacks.onOpenFileRequest(filePath),
     });
 

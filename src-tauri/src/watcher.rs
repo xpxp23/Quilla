@@ -1,3 +1,4 @@
+use crate::search::WorkspaceIndex;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -53,7 +54,8 @@ struct WindowWatcherEntry {
 }
 
 /// 多窗口隔离的工作区与活动文档磁盘变动监听器
-/// 采用 180ms 防抖聚合（Debounce Aggregation）替代原先的丢尾节流（Drop-Tail Throttle），彻底杜绝目录事件吞掉后续文件更新事件
+/// 采用 180ms 防抖聚合（Debounce Aggregation）+ 1800ms 自保存抑制窗口，
+/// 并在外部文件变动时自动增量同步内存索引 WorkspaceIndex
 pub struct WorkspaceWatcher {
     watchers: Mutex<HashMap<String, WindowWatcherEntry>>,
     last_self_save: Arc<Mutex<Instant>>,
@@ -81,7 +83,13 @@ impl WorkspaceWatcher {
         }
     }
 
-    pub fn watch_directory(&self, window_label: &str, root_path: &str, app_handle: AppHandle) {
+    pub fn watch_directory(
+        &self,
+        window_label: &str,
+        root_path: &str,
+        app_handle: AppHandle,
+        workspace_index: WorkspaceIndex,
+    ) {
         let new_root = PathBuf::from(root_path);
         if !new_root.exists() {
             return;
@@ -132,9 +140,10 @@ impl WorkspaceWatcher {
                                     continue;
                                 }
 
+                                // 1800ms 自保存抑制窗口，彻底避免杀毒软件或同步盘延迟扫描触发误报回环
                                 let is_self_save = self_save_ref
                                     .lock()
-                                    .map(|t| t.elapsed() < Duration::from_millis(750))
+                                    .map(|t| t.elapsed() < Duration::from_millis(1800))
                                     .unwrap_or(false);
                                 if is_self_save {
                                     continue;
@@ -176,6 +185,9 @@ impl WorkspaceWatcher {
                                     let paths: Vec<String> = pending_paths.drain().collect();
                                     let kind_str = dominant_kind.to_string();
                                     dominant_kind = "other";
+
+                                    // 外部文件变动时自动增量同步内存索引
+                                    workspace_index.sync_changed_paths(&paths);
 
                                     let _ = app_handle.emit_to(
                                         &win_label,

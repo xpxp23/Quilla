@@ -1,4 +1,6 @@
 import { EditorView } from "@codemirror/view";
+import { isInsideCodeContextAST } from "./doc-structure";
+import { isLikelyUrl, normalizeUrlForLink } from "./inline-boundary-guard";
 
 /**
  * 递归解析 HTML DOM 节点为标准优雅的 Markdown 格式 (支持多级嵌套列表、引用块内列表、保留空表头、代码块与内联样式)
@@ -199,8 +201,9 @@ window.addEventListener("keyup", (e) => {
 });
 
 /**
- * 监听剪贴板粘贴事件，在普通 Ctrl+V 粘贴富文本时智能转换为 Markdown
- * 若按下 Ctrl+Shift+V，则保留浏览器原生纯文本粘贴
+ * 监听剪贴板粘贴事件：
+ * 1. 当选中了一段非空单行文本且剪贴板内容为 URL 网址时，自动将选中文本包裹为 `[选中文本](网址)` 超链接。
+ * 2. 在普通 Ctrl+V 粘贴富文本时智能转换为 Markdown；若按下 Ctrl+Shift+V，则保留浏览器原生纯文本粘贴。
  */
 export function initSmartPaste(view: EditorView) {
   view.dom.addEventListener(
@@ -221,6 +224,30 @@ export function initSmartPaste(view: EditorView) {
           if (clipboardData.files[i].type.startsWith("image/")) {
             return;
           }
+        }
+      }
+
+      // 1. 选中文字粘贴 URL 自动合成超链接 `[选中文本](URL)`
+      const sel = view.state.selection.main;
+      const plainText = clipboardData.getData("text/plain")?.trim() || "";
+      if (
+        !sel.empty &&
+        plainText &&
+        isLikelyUrl(plainText) &&
+        !isInsideCodeContextAST(view.state, sel.from)
+      ) {
+        const selectedText = view.state.sliceDoc(sel.from, sel.to);
+        if (selectedText && !selectedText.includes("\n") && !isLikelyUrl(selectedText)) {
+          e.preventDefault();
+          e.stopPropagation();
+          const normalizedUrl = normalizeUrlForLink(plainText);
+          const mdLink = `[${selectedText}](${normalizedUrl})`;
+          view.dispatch({
+            changes: { from: sel.from, to: sel.to, insert: mdLink },
+            selection: { anchor: sel.from + mdLink.length },
+            userEvent: "input.paste.link",
+          });
+          return;
         }
       }
 

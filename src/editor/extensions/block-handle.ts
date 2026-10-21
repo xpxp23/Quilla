@@ -1,10 +1,14 @@
-import { EditorState } from "@codemirror/state";
-import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
+import { ChangeSpec, EditorState } from "@codemirror/state";
+import { EditorView, ViewPlugin } from "@codemirror/view";
 import {
   resolveSemanticBlockSpanFromState,
   stripInlineMarkdown,
 } from "./doc-structure";
-import { toggleHeadingLevel } from "./formatting-keymap";
+import {
+  buildSubsequentRenumberChanges,
+  computeExpectedOrderedNumber,
+  toggleHeadingLevel,
+} from "./formatting-keymap";
 import { toggleHeadingFoldAtLine, isHeadingFoldedAtLine } from "./live-preview";
 import { showToast } from "../../components/save-dialog";
 
@@ -23,7 +27,7 @@ const BLOCK_SVG = {
 };
 
 /**
- * 计算给定行所属的完整语义块行号区间（支持表格、围栏代码块、Mermaid、多行公式块、Callout、连续引用块及多块框选范围）
+ * 计算给定行所属的完整语义块行号区间（支持表格、围栏代码块、Mermaid、多行公式块、Callout、连续引用块、带嵌套子列表的列表项及多块框选范围）
  */
 export function resolveSemanticBlockSpan(
   state: EditorState,
@@ -47,8 +51,9 @@ export function resolveSemanticBlockSpan(
 }
 
 /**
- * 批量转换一个或多个文本块/行区间的块级类型 (Bug #8 核心修复)
+ * 批量转换一个或多个文本块/行区间的块级类型 (Bug #5 & Bug #8 增强)
  * 支持：h1~h6、p (普通段落)、ul (无序列表)、ol (自动递增有序列表)、task (任务列表)、quote (引用块)、callout (提示卡)、code (围栏代码块)
+ * 当把有序列表中间某项转为其他类型时，自动将下方断开的有序列表从 1 重新编号。
  */
 export function convertBlockSpanType(
   view: EditorView,
@@ -76,6 +81,12 @@ export function convertBlockSpanType(
     rawLines.push(doc.line(ln).text);
   }
 
+  // 检测末行是否原本为有序列表项（用于列表从中间断开时重排下方列表）
+  const lastLineQuoteMatch = lastLine.text.match(/^(\s*(?:> ?)+)/);
+  const lastQuotePrefix = lastLineQuoteMatch ? lastLineQuoteMatch[1] : "";
+  const lastRest = lastLine.text.slice(lastQuotePrefix.length);
+  const lastOrderedMatch = lastRest.match(/^(\s*)\d+\.\s+/);
+
   // 如果原本是一个完整的围栏代码块，转换到其他类型时先剥离首尾 ``` 围栏行
   const isWrappedInFence =
     rawLines.length >= 2 &&
@@ -91,8 +102,20 @@ export function convertBlockSpanType(
       });
     } else {
       const codeBlock = `\`\`\`\n${rawLines.join("\n")}\n\`\`\``;
+      const extraRenumber = lastOrderedMatch
+        ? buildSubsequentRenumberChanges(
+            doc,
+            endLineNum + 1,
+            lastQuotePrefix,
+            lastOrderedMatch[1].length,
+            1
+          )
+        : [];
       view.dispatch({
-        changes: { from: firstLine.from, to: lastLine.to, insert: codeBlock },
+        changes: [
+          { from: firstLine.from, to: lastLine.to, insert: codeBlock },
+          ...extraRenumber,
+        ],
         selection: { anchor: firstLine.from + 4 },
       });
     }
@@ -118,15 +141,30 @@ export function convertBlockSpanType(
         ? bodyLines.map((l) => `> ${l}`).join("\n")
         : "> 在此输入内容...";
     const replacement = `> [!NOTE] 核心提示\n${calloutContent}`;
+    const extraRenumber = lastOrderedMatch
+      ? buildSubsequentRenumberChanges(
+          doc,
+          endLineNum + 1,
+          lastQuotePrefix,
+          lastOrderedMatch[1].length,
+          1
+        )
+      : [];
     view.dispatch({
-      changes: { from: firstLine.from, to: lastLine.to, insert: replacement },
+      changes: [
+        { from: firstLine.from, to: lastLine.to, insert: replacement },
+        ...extraRenumber,
+      ],
       selection: { anchor: firstLine.from, head: firstLine.from + replacement.length },
     });
     view.focus();
     return;
   }
 
-  let olCounter = 1;
+  let olCounter =
+    targetType === "ol"
+      ? computeExpectedOrderedNumber(doc, startLineNum, "", 0)
+      : 1;
   const convertedLines = effectiveLines.map((lineText) => {
     if (lineText.trim().length === 0) {
       return targetType === "quote" ? ">" : "";
@@ -141,14 +179,86 @@ export function convertBlockSpanType(
   });
 
   const replacement = convertedLines.join("\n");
+  const extraChanges: ChangeSpec[] = [];
+  if (targetType === "ol") {
+    extraChanges.push(
+      ...buildSubsequentRenumberChanges(doc, endLineNum + 1, "", 0, olCounter)
+    );
+  } else if (lastOrderedMatch) {
+    extraChanges.push(
+      ...buildSubsequentRenumberChanges(
+        doc,
+        endLineNum + 1,
+        lastQuotePrefix,
+        lastOrderedMatch[1].length,
+        1
+      )
+    );
+  }
+
   view.dispatch({
-    changes: { from: firstLine.from, to: lastLine.to, insert: replacement },
+    changes: [
+      { from: firstLine.from, to: lastLine.to, insert: replacement },
+      ...extraChanges,
+    ],
     selection: {
       anchor: firstLine.from,
       head: firstLine.from + replacement.length,
     },
   });
   view.focus();
+}
+
+/**
+ * 对一组行文本中的有序列表进行连续序号重整（用于块移动后保持有序列表序号自洽）
+ */
+function renumberOrderedListsInLines(lines: string[], startExpectedTopLevel: number): string[] {
+  const counters = new Map<string, number>();
+  let usedInitialTopLevel = false;
+
+  return lines.map((raw) => {
+    const qm = raw.match(/^(\s*(?:> ?)+)/);
+    const qp = qm ? qm[1] : "";
+    const sub = raw.slice(qp.length);
+    if (!sub.trim()) {
+      counters.clear();
+      usedInitialTopLevel = true;
+      return raw;
+    }
+    const lm = sub.match(/^(\s*)([-*+]|\d+\.)(\s+)(.*)$/);
+    if (!lm) {
+      counters.clear();
+      usedInitialTopLevel = true;
+      return raw;
+    }
+    const ind = lm[1];
+    const marker = lm[2];
+    const spaceAfter = lm[3];
+    const body = lm[4];
+
+    for (const k of Array.from(counters.keys())) {
+      const [kQp, kLenStr] = k.split("::");
+      if (kQp === qp && parseInt(kLenStr, 10) > ind.length) {
+        counters.delete(k);
+      }
+    }
+
+    const key = `${qp}::${ind.length}`;
+    if (/^\d+\.$/.test(marker)) {
+      let nextNum: number;
+      if (!counters.has(key) && ind.length === 0 && !usedInitialTopLevel) {
+        nextNum = startExpectedTopLevel;
+        usedInitialTopLevel = true;
+      } else {
+        nextNum = (counters.get(key) || 0) + 1;
+      }
+      counters.set(key, nextNum);
+      return `${qp}${ind}${nextNum}.${spaceAfter}${body}`;
+    } else {
+      counters.delete(key);
+      return raw;
+    }
+  });
 }
 
 /**
@@ -188,11 +298,14 @@ export function executeBlockSpanMove(
   relInsertIdx = Math.max(0, Math.min(remaining.length, relInsertIdx));
   remaining.splice(relInsertIdx, 0, ...movingLines);
 
+  const startExpected = computeExpectedOrderedNumber(doc, rangeStartLine, "", 0);
+  const renumberedRemaining = renumberOrderedListsInLines(remaining, startExpected);
+
   const replaceFrom = doc.line(rangeStartLine).from;
   const replaceTo = doc.line(rangeEndLine).to;
-  const newSegment = remaining.join("\n");
+  const newSegment = renumberedRemaining.join("\n");
 
-  const beforeMovedText = remaining.slice(0, relInsertIdx).join("\n");
+  const beforeMovedText = renumberedRemaining.slice(0, relInsertIdx).join("\n");
   const newBlockStartPos =
     replaceFrom + (relInsertIdx > 0 ? beforeMovedText.length + 1 : 0);
 
@@ -270,7 +383,7 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * 基于 Pointer Events 的段落/块级左侧拖拽手柄 (⋮⋮ Block Handle v0.6)
+ * 基于 Pointer Events 的段落/块级左侧拖拽手柄 (⋮⋮ Block Handle v0.8)
  */
 export const blockHandlePlugin = ViewPlugin.fromClass(
   class {
@@ -798,31 +911,30 @@ export const blockHandlePlugin = ViewPlugin.fromClass(
       const rawLineHeight = parseFloat(style.lineHeight);
       const firstLineHeight = !Number.isNaN(rawLineHeight)
         ? Math.min(rawLineHeight, contentHeight)
-        : Math.min(contentHeight, 34);
+        : Math.min(28, contentHeight);
 
-      const handleHeight = 22;
-      const boxTop = lineRect.top - scrollerRect.top + scroller.scrollTop;
-      const alignedTop = boxTop + paddingTop + (firstLineHeight - handleHeight) / 2;
+      const handleHeight = 20;
+      const topInScroller =
+        lineRect.top -
+        scrollerRect.top +
+        scroller.scrollTop +
+        paddingTop +
+        Math.max(0, (firstLineHeight - handleHeight) / 2);
 
-      const lineLeft = lineRect.left - scrollerRect.left + scroller.scrollLeft;
-      const alignedLeft = Math.max(6, lineLeft - 24);
+      const contentRect = this.view.contentDOM.getBoundingClientRect();
+      const contentStyle = window.getComputedStyle(this.view.contentDOM);
+      const contentPadLeft = parseFloat(contentStyle.paddingLeft) || 48;
+      const textStartLeft = contentRect.left - scrollerRect.left + contentPadLeft;
+      const leftInScroller = Math.max(6, textStartLeft - 28);
 
-      this.handle.style.top = `${Math.round(alignedTop)}px`;
-      this.handle.style.left = `${Math.round(alignedLeft)}px`;
+      this.handle.style.top = `${Math.round(topInScroller)}px`;
+      this.handle.style.left = `${Math.round(leftInScroller)}px`;
       this.handle.classList.add("visible");
-      this.handle.style.pointerEvents = "auto";
     }
 
     private hideHandle() {
-      this.activeLineEl = null;
       this.handle.classList.remove("visible");
-      this.handle.style.pointerEvents = "none";
-    }
-
-    update(update: ViewUpdate) {
-      if (update.docChanged && this.activeLineEl && this.activeLineEl.isConnected) {
-        this.updateHandlePosition(this.activeLineEl);
-      }
+      this.activeLineEl = null;
     }
 
     destroy() {

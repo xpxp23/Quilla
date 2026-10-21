@@ -1,3 +1,4 @@
+import { buildSmartMarkdownLink } from "../editor/extensions/inline-boundary-guard";
 import { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import { openShortcutGuide, formatModKey } from "./shortcut-guide";
@@ -596,12 +597,27 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
       smartToggleFormat(view, "`");
     } else if (act === "link") {
       const sel = view.state.selection.main;
-      const txt = view.state.sliceDoc(sel.from, sel.to) || "链接文字";
-      const insertStr = `[${txt}](https://)`;
+      const from = sel.from;
+      const rawTxt = view.state.sliceDoc(from, sel.to);
+      const smartLink = buildSmartMarkdownLink(rawTxt);
       view.dispatch({
-        changes: { from: sel.from, to: sel.to, insert: insertStr },
-        selection: { anchor: sel.from + txt.length + 3, head: sel.from + insertStr.length - 1 },
+        changes: { from, to: sel.to, insert: smartLink.insertStr },
+        selection: {
+          anchor: from + 1,
+          head: from + 1 + smartLink.labelValue.length,
+        },
       });
+      view.dom.dispatchEvent(
+        new CustomEvent("quilla-edit-active-link", {
+          detail: {
+            from,
+            to: from + smartLink.insertStr.length,
+            text: smartLink.labelValue,
+            url: smartLink.urlValue,
+            focusField: smartLink.isUrlInput ? "text" : "url",
+          },
+        })
+      );
     } else if (act === "table") {
       insertTableCommand(view);
     } else if (act === "codeblock") {

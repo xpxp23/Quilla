@@ -61,29 +61,44 @@ function materializeCodeBlockLines(
 
     codeLines.forEach((lineSpan, idx) => {
       const lineDiv = root.ownerDocument.createElement("div");
+      const isWordMode = Boolean(options.preserveSpacesWithNbsp);
       lineDiv.setAttribute(
         "style",
-        "display: block; margin: 0; padding: 0; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-family: Consolas, 'JetBrains Mono', 'Courier New', monospace; font-size: 13px;"
+        isWordMode
+          ? "display: block; margin: 0; padding: 0 0 0 34pt; text-indent: -34pt; line-height: 1.65; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-family: Consolas, 'JetBrains Mono', 'Courier New', monospace; font-size: 9.5pt;"
+          : "display: flex; align-items: stretch; margin: 0; padding: 0; line-height: 1.65; font-family: Consolas, 'JetBrains Mono', 'Courier New', monospace; font-size: 13px;"
       );
 
       if (showLn) {
         const lnAttr = lineSpan.getAttribute("data-code-line") || String(idx + 1);
         const lnSpan = root.ownerDocument.createElement("span");
-        lnSpan.setAttribute(
-          "style",
-          `display: inline-block; min-width: 26px; padding-right: 12px; margin-right: 8px; text-align: right; color: ${lnColor}; border-right: 1px solid ${
-            options.isDark ? "#30363d" : "#e1e4e8"
-          }; user-select: none; font-size: 12px;`
-        );
-        lnSpan.textContent = options.preserveSpacesWithNbsp
-          ? `${lnAttr.padStart(2, "\u00A0")}\u00A0│\u00A0`
-          : lnAttr;
+        if (isWordMode) {
+          lnSpan.setAttribute(
+            "style",
+            `display: inline-block; min-width: 24pt; color: ${lnColor}; user-select: none; font-size: 9pt;`
+          );
+          lnSpan.textContent = `${lnAttr.padStart(2, "\u00A0")}\u00A0│\u00A0`;
+        } else {
+          lnSpan.setAttribute(
+            "style",
+            `flex: 0 0 34px; width: 34px; padding-right: 8px; margin-right: 12px; text-align: right; color: ${lnColor}; border-right: 1px solid ${
+              options.isDark ? "#30363d" : "#d0d7de"
+            }; user-select: none; font-size: 12px; line-height: 1.65; box-sizing: border-box;`
+          );
+          lnSpan.textContent = lnAttr;
+        }
         lineDiv.appendChild(lnSpan);
       }
 
       const contentSpan = root.ownerDocument.createElement("span");
+      if (!isWordMode) {
+        contentSpan.setAttribute(
+          "style",
+          "flex: 1 1 0%; min-width: 0; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; line-height: 1.65;"
+        );
+      }
       let inner = lineSpan.innerHTML;
-      if (options.preserveSpacesWithNbsp) {
+      if (isWordMode) {
         // 将行首与连续空格替换为 &nbsp; 防止 Word 吞噬代码缩进
         inner = inner.replace(/\t/g, "    ");
         inner = inner.replace(/^( +)/, (m) => "&nbsp;".repeat(m.length));
@@ -345,7 +360,7 @@ export function buildWeChatInlineHtml(bodyHtml: string, title: string): string {
     "style",
     "margin-top: 24px; padding-top: 10px; border-top: 1px dashed #d0d7de; font-size: 12px; color: #8c959f; text-align: right;"
   );
-  footer.textContent = `由 Quilla (羽墨) v0.7 排版生成 · ${title}`;
+  footer.textContent = `由 Quilla (羽墨) v0.8 排版生成 · ${title}`;
   root.appendChild(footer);
 
   return root.outerHTML;
@@ -447,6 +462,28 @@ async function buildWordCompatibleHtml(bodyHtml: string, title: string): Promise
       "margin: 10pt 0; padding: 8pt 12pt; background-color: #f8fafc; border: 1pt solid #e2e8f0; text-align: center; font-family: 'Cambria Math', 'Times New Roman', serif; font-size: 12pt;"
     );
   });
+
+  // 3.5 将本地相对路径图片自动转换为 Base64 DataURL 内嵌至 Word 文档
+  const localImgs = Array.from(root.querySelectorAll<HTMLImageElement>("img"));
+  for (const img of localImgs) {
+    const rawSrc = img.getAttribute("src") || "";
+    if (
+      rawSrc &&
+      !rawSrc.startsWith("http://") &&
+      !rawSrc.startsWith("https://") &&
+      !rawSrc.startsWith("data:")
+    ) {
+      try {
+        const b64 = await invoke<string>("read_image_base64", {
+          docPath: localStorage.getItem("typora_last_file") || null,
+          relPath: rawSrc,
+        });
+        if (b64) img.setAttribute("src", b64);
+      } catch {
+        // keep original src on fallback
+      }
+    }
+  }
 
   // 4. 将 Mermaid <svg> 转换为高清 Base64 PNG 图片嵌入 Word
   const mermaidCards = Array.from(root.querySelectorAll<HTMLElement>(".md-mermaid-card"));
@@ -636,7 +673,7 @@ async function buildWordCompatibleHtml(bodyHtml: string, title: string): Promise
     "style",
     "margin-top: 18pt; padding-top: 8pt; border-top: 1pt dashed #d0d7de; font-size: 9pt; color: #8c959f; text-align: right;"
   );
-  footer.textContent = `由 Quilla (羽墨) v0.7 导出 · ${title}`;
+  footer.textContent = `由 Quilla (羽墨) v0.8 导出 · ${title}`;
   root.appendChild(footer);
 
   return root.innerHTML;
@@ -802,7 +839,7 @@ export function openSharePosterModal(options: {
               ${preparedBody}
             </div>
             <div class="poster-card-footer">
-              <span>Written with Quilla (羽墨) v0.7</span>
+              <span>Written with Quilla (羽墨) v0.8</span>
               <span>Markdown Knowledge Studio</span>
             </div>
           </div>
@@ -1141,7 +1178,7 @@ export function buildStandalonePdfDocumentHtml(
 
   const footerHtml = config.includeHeaderFooter
     ? `<footer class="pdf-doc-footer">
-        <span>由 Quilla (羽墨) v0.7 矢量排版引擎生成</span>
+        <span>由 Quilla (羽墨) v0.8 矢量排版引擎生成</span>
         <span>${escapeHtml(title)}</span>
       </footer>`
     : "";
@@ -1230,8 +1267,6 @@ export function buildStandalonePdfDocumentHtml(
       border-radius: 6px;
       background-color: #f6f8fa !important;
       overflow: hidden;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
     }
     .exported-code-header {
       display: flex;
@@ -1243,6 +1278,8 @@ export function buildStandalonePdfDocumentHtml(
       font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif;
       font-size: 8pt;
       color: #57606a;
+      page-break-after: avoid !important;
+      break-after: avoid !important;
     }
     .exported-code-dots {
       display: inline-flex;
@@ -1295,16 +1332,34 @@ export function buildStandalonePdfDocumentHtml(
       border-radius: 3px;
       border: 1px solid #d0d7de;
     }
+    .exported-code-line {
+      position: relative;
+      display: block;
+      min-height: 1.55em;
+      line-height: 1.55;
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+      overflow-wrap: anywhere !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    .exported-code-line[data-code-line] {
+      padding-left: 40px !important;
+    }
     .exported-code-line[data-code-line]::before {
       content: attr(data-code-line);
-      display: inline-block;
-      width: 24px;
-      margin-right: 10px;
-      padding-right: 8px;
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 28px;
+      padding-right: 7px;
+      margin: 0;
       text-align: right;
       color: #8c959f;
       border-right: 1px solid #d0d7de;
       user-select: none;
+      box-sizing: border-box;
     }
     blockquote, .cm-callout-export, .md-math-block-preview, .md-mermaid-card, figure, img {
       page-break-inside: avoid !important;
@@ -1446,7 +1501,7 @@ export function openPdfExportModal(options: PdfExportOptions) {
             ${
               includeHeaderFooter
                 ? `<div class="poster-card-footer">
-                    <span>由 Quilla (羽墨) v0.7 矢量排版引擎生成</span>
+                    <span>由 Quilla (羽墨) v0.8 矢量排版引擎生成</span>
                     <span>${escapeHtml(options.title)}</span>
                   </div>`
                 : ""

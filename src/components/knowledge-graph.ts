@@ -131,6 +131,7 @@ function buildFallbackGraphFromEditor(
 
 let graphModalEl: HTMLElement | null = null;
 let animFrameId: number | null = null;
+let graphWindowListenersAbort: AbortController | null = null;
 
 export async function openKnowledgeGraphModal(options: {
   view: EditorView | null;
@@ -142,6 +143,10 @@ export async function openKnowledgeGraphModal(options: {
   if (animFrameId !== null) {
     cancelAnimationFrame(animFrameId);
     animFrameId = null;
+  }
+  if (graphWindowListenersAbort) {
+    graphWindowListenersAbort.abort();
+    graphWindowListenersAbort = null;
   }
 
   if (!graphModalEl) {
@@ -443,27 +448,41 @@ function renderInteractiveSvgGraph(
     }
   });
 
-  window.addEventListener("pointermove", (e: PointerEvent) => {
-    if (draggedNode) {
-      dragMoved = true;
-      const rect = svg.getBoundingClientRect();
-      draggedNode.x = (e.clientX - rect.left - panX) / scale;
-      draggedNode.y = (e.clientY - rect.top - panY) / scale;
-      draggedNode.vx = 0;
-      draggedNode.vy = 0;
-      return;
-    }
-    if (isPanning) {
-      panX = e.clientX - panStartX;
-      panY = e.clientY - panStartY;
-      updateViewportTransform();
-    }
-  });
+  if (graphWindowListenersAbort) {
+    graphWindowListenersAbort.abort();
+  }
+  graphWindowListenersAbort = new AbortController();
+  const listenerSignal = graphWindowListenersAbort.signal;
 
-  window.addEventListener("pointerup", () => {
-    draggedNode = null;
-    isPanning = false;
-  });
+  window.addEventListener(
+    "pointermove",
+    (e: PointerEvent) => {
+      if (draggedNode) {
+        dragMoved = true;
+        const rect = svg.getBoundingClientRect();
+        draggedNode.x = (e.clientX - rect.left - panX) / scale;
+        draggedNode.y = (e.clientY - rect.top - panY) / scale;
+        draggedNode.vx = 0;
+        draggedNode.vy = 0;
+        return;
+      }
+      if (isPanning) {
+        panX = e.clientX - panStartX;
+        panY = e.clientY - panStartY;
+        updateViewportTransform();
+      }
+    },
+    { signal: listenerSignal }
+  );
+
+  window.addEventListener(
+    "pointerup",
+    () => {
+      draggedNode = null;
+      isPanning = false;
+    },
+    { signal: listenerSignal }
+  );
 
   svg.addEventListener(
     "wheel",

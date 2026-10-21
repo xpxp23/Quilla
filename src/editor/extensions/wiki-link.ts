@@ -532,28 +532,34 @@ export class BacklinksController {
 
       this.countBadgeEl.textContent = String(results.length);
       this.panelEl.classList.remove("hidden");
-      this.listEl.innerHTML = "";
 
+      const frag = document.createDocumentFragment();
       if (results.length === 0) {
-        this.listEl.innerHTML = `<div class="backlinks-empty-hint">暂无其他笔记引用此文档 · 点击右上角“知识图谱”可总览工作区连接网络</div>`;
-        return;
+        const emptyHint = document.createElement("div");
+        emptyHint.className = "backlinks-empty-hint";
+        emptyHint.textContent =
+          "暂无其他笔记引用此文档 · 点击右上角“知识图谱”可总览工作区连接网络";
+        frag.appendChild(emptyHint);
+      } else {
+        results.forEach((item) => {
+          const row = document.createElement("div");
+          row.className = "backlink-item";
+          row.innerHTML = `
+            <div class="backlink-item-meta">
+              <span class="backlink-file">${escapeHtml(item.file_name)}</span>
+              <span class="backlink-line">L${item.line}</span>
+            </div>
+            <div class="backlink-snippet">${escapeHtml(item.text)}</div>
+          `;
+          row.addEventListener("click", () => {
+            this.onNavigate(item.file, item.line, targetStem);
+          });
+          frag.appendChild(row);
+        });
       }
 
-      results.forEach((item) => {
-        const row = document.createElement("div");
-        row.className = "backlink-item";
-        row.innerHTML = `
-          <div class="backlink-item-meta">
-            <span class="backlink-file">${escapeHtml(item.file_name)}</span>
-            <span class="backlink-line">L${item.line}</span>
-          </div>
-          <div class="backlink-snippet">${escapeHtml(item.text)}</div>
-        `;
-        row.addEventListener("click", () => {
-          this.onNavigate(item.file, item.line, targetStem);
-        });
-        this.listEl.appendChild(row);
-      });
+      // 原子替换子节点，彻底消除异步刷新期间先清空 innerHTML 导致的编辑区高度跳动 (Bug #4)
+      this.listEl.replaceChildren(frag);
     } catch {
       this.panelEl.classList.add("hidden");
     }
