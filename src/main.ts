@@ -1820,11 +1820,13 @@ ${bodyHtml}
       headings,
       (targetLine) => {
         if (this.editorView) {
-          const linePos = this.editorView.state.doc.line(targetLine).from;
+          const lineObj = this.editorView.state.doc.line(targetLine);
+          const prefixMatch = lineObj.text.match(/^(\s*(?:>\s*)*#{1,6}\s+)/);
+          const visibleAnchor = lineObj.from + (prefixMatch ? prefixMatch[0].length : 0);
           this.editorView.dispatch({
-            selection: { anchor: linePos },
+            selection: { anchor: visibleAnchor },
             effects: [
-              EditorView.scrollIntoView(linePos, { y: "start", yMargin: 40 }),
+              EditorView.scrollIntoView(lineObj.from, { y: "start", yMargin: 40 }),
             ],
           });
           this.editorView.focus();

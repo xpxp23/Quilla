@@ -14,7 +14,7 @@ fs.readFileSync = function(...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.9.0 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 ===");
 
 // 1. 静态源码架构、历史防回归与 v0.9.0 七大核心 Bug 修复验证
 {
@@ -249,10 +249,46 @@ console.log("=== Quilla (羽墨) v0.9.0 自动化回归与架构完整性验证 
     "[v0.9 #6 & #7] 必须支持 PDF 书签大纲树导出、PicGo/GitHub/自定义图床一键上传及符号链接安全保存"
   );
 
-  console.log("✓ [1/3] 静态源码架构、历史回归项与 v0.9 八大新增特性检查全部通过");
+
+  // [v0.9.1 用户反馈三大顽疾根治防回归断言]
+  // 1) 超链接删空最后一个字不触发 MarkDecoration RangeError 崩溃变源码模式
+  assert.equal(
+    livePreviewTs.includes("if (!(deco as any).point) return;") &&
+      livePreviewTs.includes("textLen === 0 ||"),
+    true,
+    "[Bug #1 Fix] live-preview.ts 必须拦截 from === to 的空 MarkDecoration，防止删空超链接名称时崩溃退化为源码模式"
+  );
+
+  // 2) 两段有序列表中间空行按 Enter 正常换行，按 Backspace 才合并重编号
+  const enterFnBody = fmtKeymapTs.slice(
+    fmtKeymapTs.indexOf("export function handleListEnter"),
+    fmtKeymapTs.indexOf("export function handleListBackspace")
+  );
+  const backspaceFnBody = fmtKeymapTs.slice(
+    fmtKeymapTs.indexOf("export function handleListBackspace"),
+    fmtKeymapTs.indexOf("export function handleListTab")
+  );
+  assert.equal(
+    !enterFnBody.includes('from: prevLine.to, to: line.to, insert: ""') &&
+      backspaceFnBody.includes('from: prevLine.to, to: line.to, insert: ""'),
+    true,
+    "[Bug #2 Fix] 空行合并两段有序列表的逻辑必须位于 handleListBackspace 中，严禁在 handleListEnter 中误删空行"
+  );
+
+  // 3) 上下方向键全文档逐视觉行确定性移动（修复侧边栏 -260px goalColumn 偏移、接管普通行逐视觉行移动）
+  assert.equal(
+    boundaryTs.includes("goalXMemory") &&
+      boundaryTs.includes("stepWithinSoftWrappedLine") &&
+      boundaryTs.includes("getLineContentBox") &&
+      !boundaryTs.includes("coords.left - scrollerRect.left"),
+    true,
+    "[Bug #3 Fix] boundary-traversal.ts 必须使用视口 clientX goalColumn 与 getLineContentBox 逐视觉行导航，严禁减去 scrollerRect.left"
+  );
+
+  console.log("✓ [1/3] 静态源码架构、历史回归项、v0.9 八大特性及三大用户反馈顽疾修复检查全部通过");
 }
 
-// 2. 版本号一致性验证 (0.9.0)
+// 2. 版本号一致性验证 (0.9.1)
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf-8"));
   const tauriConf = JSON.parse(
@@ -260,8 +296,8 @@ console.log("=== Quilla (羽墨) v0.9.0 自动化回归与架构完整性验证 
   );
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
 
-  assert.equal(pkg.version, "0.9.0", "package.json 版本号必须为 0.8.0");
-  assert.equal(tauriConf.version, "0.9.0", "tauri.conf.json 版本号必须为 0.8.0");
+  assert.equal(pkg.version, "0.9.1", "package.json 版本号必须为 0.9.1");
+  assert.equal(tauriConf.version, "0.9.1", "tauri.conf.json 版本号必须为 0.9.1");
   assert.equal(
     Array.isArray(tauriConf.bundle?.fileAssociations) &&
       tauriConf.bundle.fileAssociations[0].ext.includes("md"),
@@ -269,12 +305,12 @@ console.log("=== Quilla (羽墨) v0.9.0 自动化回归与架构完整性验证 
     "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
   );
   assert.equal(
-    cargoToml.includes('version = "0.9.0"'),
+    cargoToml.includes('version = "0.9.1"'),
     true,
-    "Cargo.toml 版本号必须为 0.8.0"
+    "Cargo.toml 版本号必须为 0.9.1"
   );
 
-  console.log("✓ [2/3] 全工程版本号 (v0.9 / 0.9.0) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/3] 全工程版本号 (v0.9.1 / 0.9.1) 与桌面文件关联配置验证通过");
 }
 
 // 3. 统一 AST 渲染内核与智能超链接构建器逻辑验证

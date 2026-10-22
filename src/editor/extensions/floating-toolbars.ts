@@ -571,8 +571,8 @@ export function initFloatingToolbars(
     if (!activeLinkTarget) return;
     const textInput = linkTooltip.querySelector("#ty-link-edit-text") as HTMLInputElement;
     const urlInput = linkTooltip.querySelector("#ty-link-edit-url") as HTMLInputElement;
-    const newText = textInput.value.trim() || activeLinkTarget.text;
     const newUrl = sanitizeLinkUrl(urlInput.value);
+    const newText = textInput.value.trim() || activeLinkTarget.text || newUrl || "链接文字";
 
     if (newUrl) {
       const from = parseInt(

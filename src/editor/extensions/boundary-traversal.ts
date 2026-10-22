@@ -5,6 +5,17 @@ import { findMermaidBlocks } from "./mermaid-extension";
 import { findMathBlocks } from "./math-block-extension";
 import { getDocStructureFromState } from "./doc-structure";
 import { getFoldedSectionSpanAtLine, getCodeBlockVisibleBounds } from "./live-preview";
+import { getExactPosAtCoords } from "./precise-cursor";
+
+/**
+ * 按编辑器实例独立维护连续上下方向键移动时的水平基准列记忆 (Goal X Memory)
+ * - 采用相对于 .cm-content 内容区左边缘的像素偏移 relX，100% 免疫左侧 260px 侧边栏开关与垂直滚动影响；
+ * - 一旦用户通过鼠标点击、打字或按左右键改变了光标 head，自动失效并重新采样当前光标的真实 X 坐标。
+ */
+const goalXMemory = new WeakMap<
+  EditorView,
+  { lastHead: number; relX: number; clientX: number }
+>();
 
 /**
  * 根据目标表格块起始坐标精准查找对应的 DOM 表格元素
@@ -27,10 +38,16 @@ function findMatchingTableElement(
 
 /**
  * 计算源行中隐藏的 Markdown 块级前缀长度（跳过 # 标题、> 引用、列表标记）
+ * 注意：排除 `---` / `***` 水平分割线，防止将 `---` 误判为无序列表前缀
  */
-function getVisibleStartCol(view: EditorView, lineText: string, lineNumber: number): number {
+export function getVisibleStartCol(
+  view: EditorView,
+  lineText: string,
+  lineNumber: number
+): number {
   const struct = getDocStructureFromState(view.state);
   if (struct.codeLineSet.has(lineNumber)) return 0;
+  if (/^\s*(?:>\s*)*(\-{3,}|\*{3,}|_{3,})\s*$/.test(lineText)) return 0;
   const prefixMatch = lineText.match(
     /^(\s*(?:>\s*)*(?:#{1,6}\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)?)/
   );
@@ -38,8 +55,57 @@ function getVisibleStartCol(view: EditorView, lineText: string, lineNumber: numb
 }
 
 /**
- * 计算中英文混合字符串的等宽显示列宽（CJK 全角字符计 2 列，ASCII 计 1 列），
- * 解决无 DOM 坐标兜底时中英文宽度差异导致光标左右乱飞的问题
+ * 查找指定文档位置所在逻辑行对应的真实 `.cm-line` DOM 节点及其去除内边距后的文字内容区上下边界
+ * 彻底解决 `.cm-heading-1` 等大 padding-top 标题行导致原生坐标探测落入留白区而卡死或跳行的问题
+ */
+function getLineContentBox(
+  view: EditorView,
+  lineFrom: number
+): {
+  lineEl: HTMLElement;
+  rect: DOMRect;
+  contentTop: number;
+  contentBottom: number;
+} | null {
+  try {
+    const domHit = view.domAtPos(lineFrom);
+    const node = domHit.node;
+    let el =
+      node.nodeType === Node.ELEMENT_NODE
+        ? (node as HTMLElement)
+        : node.parentElement;
+    if (!el) return null;
+
+    let lineEl: HTMLElement | null = null;
+    if (el.classList.contains("cm-line")) {
+      lineEl = el;
+    } else {
+      lineEl = el.closest(".cm-line") as HTMLElement | null;
+      if (!lineEl && el === view.contentDOM && domHit.offset < el.childNodes.length) {
+        const candidate = el.childNodes[domHit.offset] as HTMLElement;
+        if (candidate?.classList?.contains("cm-line")) {
+          lineEl = candidate;
+        }
+      }
+    }
+    if (!lineEl) return null;
+
+    const rect = lineEl.getBoundingClientRect();
+    if (rect.height <= 0) return null;
+
+    const style = window.getComputedStyle(lineEl);
+    const padTop = parseFloat(style.paddingTop) || 0;
+    const padBottom = parseFloat(style.paddingBottom) || 0;
+    const contentTop = rect.top + padTop;
+    const contentBottom = Math.max(contentTop + 4, rect.bottom - padBottom);
+    return { lineEl, rect, contentTop, contentBottom };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 计算中英文混合字符串的等宽显示列宽（CJK 全角字符计 2 列，ASCII 计 1 列）
  */
 function computeVisualDisplayWidth(str: string): number {
   let width = 0;
@@ -81,40 +147,67 @@ function offsetAtVisualDisplayWidth(str: string, targetWidth: number): number {
 }
 
 /**
- * 获取当前光标的真实屏幕水平 X 坐标与 CodeMirror goalColumn
+ * 获取当前光标的真实屏幕水平 X 坐标（视口 clientX 坐标系，与 CodeMirror SelectionRange.goalColumn 严格对齐）
  */
 function resolveCursorGoalX(
   view: EditorView,
   pos: number
-): { screenX: number | null; goalColumn: number | undefined } {
-  const mainRange = view.state.selection.main;
-  const scrollerRect = view.scrollDOM.getBoundingClientRect();
-  if (mainRange.goalColumn !== undefined) {
+): { screenX: number | null; goalColumn: number | undefined; relX: number | null } {
+  const contentRect = view.contentDOM.getBoundingClientRect();
+  const mem = goalXMemory.get(view);
+  if (mem && mem.lastHead === pos && contentRect.width > 0) {
+    const screenX = contentRect.left + mem.relX;
     return {
-      screenX: scrollerRect.left + mainRange.goalColumn,
-      goalColumn: mainRange.goalColumn,
+      screenX,
+      goalColumn: screenX,
+      relX: mem.relX,
     };
   }
-  const coords = view.coordsAtPos(pos, mainRange.assoc || 1) || view.coordsAtPos(pos, -1);
+
+  const line = view.state.doc.lineAt(pos);
+  const visibleStart = line.from + getVisibleStartCol(view, line.text, line.number);
+  const measurePos = Math.min(line.to, Math.max(pos, visibleStart));
+  const mainRange = view.state.selection.main;
+  const coords =
+    view.coordsAtPos(measurePos, mainRange.assoc || 1) ||
+    view.coordsAtPos(measurePos, -1) ||
+    view.coordsAtPos(pos, 1);
+
   if (!coords) {
-    return { screenX: null, goalColumn: undefined };
+    return { screenX: null, goalColumn: undefined, relX: null };
   }
+
+  const relX = Math.max(0, coords.left - contentRect.left);
+  goalXMemory.set(view, {
+    lastHead: pos,
+    relX,
+    clientX: coords.left,
+  });
+
   return {
     screenX: coords.left,
-    goalColumn: coords.left - scrollerRect.left,
+    goalColumn: coords.left,
+    relX,
   };
 }
 
 /**
  * 检测光标是否位于当前逻辑行的第一个视觉软换行行 (First Visual Row)
- * 1. 直接复用携带 goalColumn 的当前真实选区调用 view.moveVertically，避免新建无记忆游标导致列漂移；
- * 2. 测量行首坐标时自动跳过被 Decoration.replace 隐藏的 # / > / - 前缀，彻底根治软换行列表/引用首行误判 (Bug #1)
  */
 function isOnFirstVisualLine(view: EditorView, pos: number, lineFrom: number): boolean {
   const line = view.state.doc.lineAt(pos);
   const visibleStart = lineFrom + getVisibleStartCol(view, line.text, line.number);
   if (pos <= visibleStart) return true;
   try {
+    const assoc = view.state.selection.main.assoc || 1;
+    const curCoords =
+      view.coordsAtPos(pos, assoc) || view.coordsAtPos(pos, (assoc === 1 ? -1 : 1) as -1 | 1);
+    const box = getLineContentBox(view, lineFrom);
+    if (curCoords && box) {
+      const rowHeight = Math.max(15, curCoords.bottom - curCoords.top);
+      return curCoords.top - box.contentTop < rowHeight * 0.6;
+    }
+
     const activeRange =
       view.state.selection.main.head === pos
         ? view.state.selection.main
@@ -123,11 +216,10 @@ function isOnFirstVisualLine(view: EditorView, pos: number, lineFrom: number): b
     if (probe.head !== pos && view.state.doc.lineAt(probe.head).number === line.number) {
       return false;
     }
-    const curCoords = view.coordsAtPos(pos, -1) || view.coordsAtPos(pos, 1);
     const startCoords =
       view.coordsAtPos(Math.min(visibleStart, line.to), 1) || view.coordsAtPos(lineFrom, 1);
     if (!curCoords || !startCoords) return true;
-    const rowHeight = Math.max(14, curCoords.bottom - curCoords.top);
+    const rowHeight = Math.max(15, curCoords.bottom - curCoords.top);
     return Math.abs(curCoords.top - startCoords.top) < rowHeight * 0.65;
   } catch {
     return true;
@@ -136,24 +228,34 @@ function isOnFirstVisualLine(view: EditorView, pos: number, lineFrom: number): b
 
 /**
  * 检测光标是否位于当前逻辑行的最后一个视觉软换行行 (Last Visual Row)
- * 优先复用携带 goalColumn 的当前真实选区调用 view.moveVertically 探测是否仍在同一逻辑行内折行
  */
 function isOnLastVisualLine(view: EditorView, pos: number, lineTo: number): boolean {
   if (pos >= lineTo) return true;
   try {
-    const lineNum = view.state.doc.lineAt(pos).number;
+    const line = view.state.doc.lineAt(pos);
+    const visibleStart = line.from + getVisibleStartCol(view, line.text, line.number);
+    const measurePos = Math.min(line.to, Math.max(pos, visibleStart));
+    const assoc = view.state.selection.main.assoc || 1;
+    const curCoords =
+      view.coordsAtPos(measurePos, assoc) ||
+      view.coordsAtPos(measurePos, (assoc === 1 ? -1 : 1) as -1 | 1);
+    const box = getLineContentBox(view, line.from);
+    if (curCoords && box) {
+      const rowHeight = Math.max(15, curCoords.bottom - curCoords.top);
+      return box.contentBottom - curCoords.bottom < rowHeight * 0.6;
+    }
+
     const activeRange =
       view.state.selection.main.head === pos
         ? view.state.selection.main
         : EditorSelection.cursor(pos);
     const probe = view.moveVertically(activeRange, true);
-    if (probe.head !== pos && view.state.doc.lineAt(probe.head).number === lineNum) {
+    if (probe.head !== pos && view.state.doc.lineAt(probe.head).number === line.number) {
       return false;
     }
-    const curCoords = view.coordsAtPos(pos, 1) || view.coordsAtPos(pos, -1);
     const endCoords = view.coordsAtPos(lineTo, -1);
     if (!curCoords || !endCoords) return true;
-    const rowHeight = Math.max(14, curCoords.bottom - curCoords.top);
+    const rowHeight = Math.max(15, curCoords.bottom - curCoords.top);
     return Math.abs(curCoords.bottom - endCoords.bottom) < rowHeight * 0.65;
   } catch {
     return true;
@@ -161,61 +263,172 @@ function isOnLastVisualLine(view: EditorView, pos: number, lineTo: number): bool
 }
 
 /**
- * 跨块垂直导航时保留用户当前水平列位置 (Goal Column / X Coordinate)，并感知进入方向 (v0.9 彻底根治版)：
- * - 当 enterFromBottom = false (按 ArrowDown 从上往下进) 时，定位到目标逻辑行的【第一视觉行】；
- * - 当 enterFromBottom = true (按 ArrowUp 从下往上进) 时，定位到目标逻辑行的【最后一个视觉行】，
- *   彻底修复按 ArrowUp 进入多行软换行段落时直接跳过中间所有折行飞到段落第一行的顽疾！
+ * 当当前逻辑行发生了软换行（包含多个视觉行）且光标不在边界视觉行时，
+ * 精准在当前逻辑行内向上或向下移动 1 个视觉行，同时严格保护行首隐藏前缀不弹开、水平基准列不漂移
+ */
+function stepWithinSoftWrappedLine(
+  view: EditorView,
+  pos: number,
+  direction: "down" | "up"
+): boolean {
+  const line = view.state.doc.lineAt(pos);
+  if (line.from === line.to) return false;
+
+  const visibleStart = line.from + getVisibleStartCol(view, line.text, line.number);
+  const measurePos = Math.min(line.to, Math.max(pos, visibleStart));
+  const assoc = view.state.selection.main.assoc || 1;
+  const curCoords =
+    view.coordsAtPos(measurePos, assoc) ||
+    view.coordsAtPos(measurePos, (assoc === 1 ? -1 : 1) as -1 | 1);
+  if (!curCoords) return false;
+
+  const { screenX, goalColumn, relX } = resolveCursorGoalX(view, pos);
+  const rowHeight = Math.max(16, curCoords.bottom - curCoords.top);
+  const probeY =
+    direction === "down"
+      ? curCoords.bottom + Math.min(12, rowHeight * 0.48)
+      : curCoords.top - Math.min(12, rowHeight * 0.48);
+
+  let targetPos: number | null = null;
+  let targetAssoc: -1 | 1 = direction === "down" ? 1 : -1;
+
+  if (screenX !== null) {
+    const exact = getExactPosAtCoords(view, screenX, probeY);
+    if (exact && exact.pos >= line.from && exact.pos <= line.to) {
+      targetPos = exact.pos;
+      targetAssoc = exact.assoc;
+    } else {
+      const sideHit = view.posAndSideAtCoords({ x: screenX, y: probeY }, false);
+      if (sideHit && sideHit.pos >= line.from && sideHit.pos <= line.to) {
+        targetPos = sideHit.pos;
+        targetAssoc = sideHit.assoc;
+      }
+    }
+  }
+
+  if (
+    targetPos === null ||
+    (direction === "down" && targetPos <= pos) ||
+    (direction === "up" && targetPos >= pos)
+  ) {
+    const seedCursor = EditorSelection.cursor(measurePos, assoc, undefined, goalColumn);
+    const moved = view.moveVertically(seedCursor, direction === "down");
+    if (
+      moved.head !== pos &&
+      moved.head >= line.from &&
+      moved.head <= line.to
+    ) {
+      targetPos = moved.head;
+      targetAssoc = moved.assoc || targetAssoc;
+    }
+  }
+
+  if (targetPos === null) return false;
+  const clampedPos = Math.min(line.to, Math.max(visibleStart, targetPos));
+  if (clampedPos === pos) return false;
+
+  const cursor = EditorSelection.cursor(clampedPos, targetAssoc, undefined, goalColumn);
+  view.dispatch({
+    selection: EditorSelection.create([cursor]),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  if (relX !== null && screenX !== null) {
+    goalXMemory.set(view, { lastHead: clampedPos, relX, clientX: screenX });
+  }
+  return true;
+}
+
+/**
+ * 跨行/跨块垂直导航时保留用户当前水平列位置 (Goal Column / X Coordinate)，并感知进入方向 (v0.9.1 彻底根治版)：
+ * - 当 enterFromBottom = false (按 ArrowDown 从上往下进) 时，基于目标 `.cm-line` 的 contentTop 定位到【第一视觉行】；
+ * - 当 enterFromBottom = true (按 ArrowUp 从下往上进) 时，基于目标 `.cm-line` 的 contentBottom 定位到【最后一个视觉行】；
+ * - 始终将落点限制在 `tgtVisibleFromPos`（隐藏的 `# / > / - / 1.` 之后），杜绝上下移动光标时行首 Markdown 符号突然弹出导致排版跳动。
  */
 function resolveTargetPosPreservingColumn(
   view: EditorView,
   sourcePos: number,
   targetLineNum: number,
   enterFromBottom: boolean = false
-): number {
+): { pos: number; assoc: -1 | 1 } {
   const doc = view.state.doc;
   const clampedLineNum = Math.max(1, Math.min(targetLineNum, doc.lines));
   const srcLine = doc.lineAt(sourcePos);
   const tgtLine = doc.line(clampedLineNum);
 
+  if (tgtLine.from === tgtLine.to) {
+    return { pos: tgtLine.from, assoc: 1 };
+  }
+
   const srcVisibleStart = getVisibleStartCol(view, srcLine.text, srcLine.number);
   const tgtVisibleStart = getVisibleStartCol(view, tgtLine.text, tgtLine.number);
   const tgtVisibleFromPos = Math.min(tgtLine.to, tgtLine.from + tgtVisibleStart);
 
-  // 1. 优先基于屏幕真实 X 坐标 (goalColumn) 与目标行首/末视觉行 Y 坐标精准命中
+  // 1. 优先基于真实 .cm-line 内容盒 (contentTop / contentBottom) 与 screenX 精准命中目标视觉行
   try {
     const { screenX } = resolveCursorGoalX(view, sourcePos);
-    const anchorPos = enterFromBottom ? tgtLine.to : tgtVisibleFromPos;
-    const anchorBias = enterFromBottom ? -1 : 1;
-    const tgtEdgeCoords =
-      view.coordsAtPos(anchorPos, anchorBias) || view.coordsAtPos(tgtLine.from, 1);
+    if (screenX !== null) {
+      let probeY: number | null = null;
+      const box = getLineContentBox(view, tgtLine.from);
+      if (box) {
+        const innerSpan = Math.max(8, box.contentBottom - box.contentTop);
+        const inset = Math.min(11, innerSpan * 0.35);
+        probeY = enterFromBottom
+          ? box.contentBottom - inset
+          : box.contentTop + inset;
+      } else {
+        const anchorPos = enterFromBottom ? tgtLine.to : tgtVisibleFromPos;
+        const anchorBias: -1 | 1 = enterFromBottom ? -1 : 1;
+        const tgtEdgeCoords =
+          view.coordsAtPos(anchorPos, anchorBias) || view.coordsAtPos(tgtLine.from, 1);
+        if (tgtEdgeCoords) {
+          probeY = (tgtEdgeCoords.top + tgtEdgeCoords.bottom) / 2;
+        }
+      }
 
-    if (screenX !== null && tgtEdgeCoords) {
-      const probeY = (tgtEdgeCoords.top + tgtEdgeCoords.bottom) / 2;
-      const probePos = view.posAtCoords({ x: screenX, y: probeY });
-      if (
-        probePos !== null &&
-        probePos >= tgtLine.from &&
-        probePos <= tgtLine.to
-      ) {
-        return Math.max(tgtVisibleFromPos, probePos);
+      if (probeY !== null) {
+        const exact = getExactPosAtCoords(view, screenX, probeY);
+        if (exact && exact.pos >= tgtLine.from && exact.pos <= tgtLine.to) {
+          return {
+            pos: Math.max(tgtVisibleFromPos, exact.pos),
+            assoc: exact.assoc,
+          };
+        }
+        const sideHit = view.posAndSideAtCoords({ x: screenX, y: probeY }, false);
+        if (sideHit && sideHit.pos >= tgtLine.from && sideHit.pos <= tgtLine.to) {
+          return {
+            pos: Math.max(tgtVisibleFromPos, sideHit.pos),
+            assoc: sideHit.assoc,
+          };
+        }
+        const probePos = view.posAtCoords({ x: screenX, y: probeY });
+        if (probePos !== null && probePos >= tgtLine.from && probePos <= tgtLine.to) {
+          return {
+            pos: Math.max(tgtVisibleFromPos, probePos),
+            assoc: enterFromBottom ? -1 : 1,
+          };
+        }
       }
     }
   } catch {
     // 回退至 CJK 感知的视觉列宽映射
   }
 
-  // 2. CJK 全角/半角感知的视觉列宽回退映射
+  // 2. CJK 全角/半角感知的视觉列宽回退映射（当目标行尚未挂载到视口 DOM 时使用）
   const srcRelOffset = Math.max(0, sourcePos - (srcLine.from + srcVisibleStart));
   const visualDisplayWidth = computeVisualDisplayWidth(
     srcLine.text.slice(srcVisibleStart, srcVisibleStart + srcRelOffset)
   );
   const tgtBodyText = tgtLine.text.slice(tgtVisibleStart);
   const mappedBodyOffset = offsetAtVisualDisplayWidth(tgtBodyText, visualDisplayWidth);
-  return Math.min(tgtLine.from + tgtVisibleStart + mappedBodyOffset, tgtLine.to);
+  return {
+    pos: Math.min(tgtLine.from + tgtVisibleStart + mappedBodyOffset, tgtLine.to),
+    assoc: enterFromBottom ? -1 : 1,
+  };
 }
 
 /**
- * 派发保留 goalColumn 的垂直光标移动事务，确保连续按上下箭头跨越多个块时水平基准列绝不丢失
+ * 派发保留 goalColumn 的垂直光标移动事务，确保连续按上下箭头跨越任意行、空行与块级组件时水平基准列绝不丢失
  */
 function dispatchVerticalCursorMove(
   view: EditorView,
@@ -223,24 +436,26 @@ function dispatchVerticalCursorMove(
   targetLineNum: number,
   enterFromBottom: boolean
 ): boolean {
-  const { goalColumn } = resolveCursorGoalX(view, sourcePos);
-  const targetPos = resolveTargetPosPreservingColumn(
+  const { screenX, goalColumn, relX } = resolveCursorGoalX(view, sourcePos);
+  const { pos: targetPos, assoc } = resolveTargetPosPreservingColumn(
     view,
     sourcePos,
     targetLineNum,
     enterFromBottom
   );
-  const cursor = EditorSelection.cursor(
-    targetPos,
-    enterFromBottom ? -1 : 1,
-    undefined,
-    goalColumn
-  );
+  const cursor = EditorSelection.cursor(targetPos, assoc, undefined, goalColumn);
   view.dispatch({
     selection: EditorSelection.create([cursor]),
     scrollIntoView: true,
     userEvent: "select",
   });
+  if (relX !== null && screenX !== null) {
+    goalXMemory.set(view, {
+      lastHead: targetPos,
+      relX,
+      clientX: screenX,
+    });
+  }
   return true;
 }
 
@@ -276,7 +491,6 @@ function focusTableCellMatchingX(
     }
   }
 
-  // 同步更新 CodeMirror 选区至表格边界，杜绝 DOM Focus 与 CM6 Selection 脱节
   view.dispatch({
     selection: { anchor: syncDocPos },
     scrollIntoView: true,
@@ -295,10 +509,10 @@ function focusTableCellMatchingX(
 }
 
 /**
- * 块级边界漫游扩展 (Widget Boundary Traversal v0.9):
- * 1. 基于原生 moveVertically（携带 goalColumn）与可见前缀偏移精准识别软换行首/末视觉行，彻底根治按上/下箭头一次跳多行的 Bug。
- * 2. 区分进入方向（下移进首视觉行、上移进末视觉行）并严格保持 goalColumn 像素列坐标，杜绝光标忽左忽右乱窜。
- * 3. 完整覆盖 YAML Front Matter、折叠章节、分割线 (---)、[TOC] 目录块、代码块、数学块、Mermaid 与表格，消除经过原子块时 Widget 突然卸载导致的巨幅重排。
+ * 全场景逐视觉行垂直导航与块级边界漫游引擎 (Visual-Row & Boundary Traversal v0.9.1):
+ * 1. 统一接管全文档所有行的 ArrowUp / ArrowDown，彻底告别 CodeMirror 默认 moveVertically 在大 padding 标题与隐藏前缀上的跳行/卡死顽疾；
+ * 2. 基于真实 .cm-line 内容盒 (getLineContentBox) 精准执行软换行段落内部逐视觉行移动与跨行首/末视觉行进入；
+ * 3. 采用相对于 .cm-content 的像素偏移记忆 (goalXMemory)，彻底修复 260px 侧边栏开启时 goalColumn 坐标系错位导致的左跳行首 Bug。
  */
 export const boundaryTraversalKeymap: KeyBinding[] = [
   {
@@ -307,37 +521,24 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       if (typeof document !== "undefined" && document.body.classList.contains("source-mode")) {
         return false;
       }
+      if (!view.state.selection.main.empty) {
+        return false;
+      }
+
       const head = view.state.selection.main.head;
       const line = view.state.doc.lineAt(head);
       const totalLines = view.state.doc.lines;
 
-      // 若当前行发生了软换行且光标尚不在最后一个视觉行，交由 CodeMirror 原生逻辑在当前段落内下移一行
+      // 0. 若当前逻辑行发生了软换行且光标尚不在最后一个视觉行，直接在当前行内向下移动 1 个视觉行
       if (!isOnLastVisualLine(view, head, line.to)) {
-        return false;
+        if (stepWithinSoftWrappedLine(view, head, "down")) {
+          return true;
+        }
       }
 
       const struct = getDocStructureFromState(view.state);
 
-      // 0. 顶部 YAML Front Matter 卡片穿透：当处于折叠卡片态时，按 ArrowDown 直接跳至正文首行 (frontMatterEndLine + 1)
-      if (struct.frontMatterEndLine > 0 && line.number === 1) {
-        if (struct.frontMatterEndLine < totalLines) {
-          return dispatchVerticalCursorMove(
-            view,
-            head,
-            struct.frontMatterEndLine + 1,
-            false
-          );
-        }
-        const endDoc = view.state.doc.line(struct.frontMatterEndLine).to;
-        view.dispatch({
-          changes: { from: endDoc, insert: "\n" },
-          selection: { anchor: endDoc + 1 },
-          scrollIntoView: true,
-        });
-        return true;
-      }
-
-      // 0a. 检查当前行是否是已折叠标题行（或正处于已折叠章节内部）
+      // 1. 检查当前行是否是已折叠标题行（或正处于已折叠章节内部）
       const foldedSpan = getFoldedSectionSpanAtLine(view.state, line.number);
       if (foldedSpan && line.number >= foldedSpan.startLine && line.number <= foldedSpan.endLine) {
         if (foldedSpan.endLine < totalLines) {
@@ -353,7 +554,7 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
         return true;
       }
 
-      // 0b. 检查围栏代码块边界穿透（兼容折叠态与 28 行截断态，严格保留水平列坐标）
+      // 2. 检查围栏代码块边界穿透（兼容折叠态与 28 行截断态，严格保留水平列坐标）
       for (let cIdx = 0; cIdx < struct.codeRanges.length; cIdx++) {
         const cr = struct.codeRanges[cIdx];
         if (cr.unclosed) continue;
@@ -381,7 +582,7 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
           return dispatchVerticalCursorMove(view, head, targetLineNum, false);
         }
 
-        // 在代码块最后一行可见代码 (lastVisibleCodeLine 或 endLine - 1) 按 ArrowDown -> 跨过底部围栏跳到代码块下方一行
+        // 在代码块最后一行可见代码 (lastVisibleCodeLine 或 endLine - 1) 按 ArrowDown -> 跨过底部 6px 收口围栏跳到代码块下方一行
         if (
           line.number === lastVisibleCodeLine ||
           line.number === cr.endLine - 1 ||
@@ -404,21 +605,7 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       if (line.number >= totalLines) return false;
       const nextLineNum = line.number + 1;
 
-      // 0c. 若下一行是连续的水平分割线 (---) 或 [TOC] 目录卡片，自动平滑跨过，防止方向键路过时卸载卡片引发视口抖动
-      if (struct.hrLines.includes(nextLineNum) || struct.tocLines.includes(nextLineNum)) {
-        let skipToLine = nextLineNum + 1;
-        while (
-          skipToLine <= totalLines &&
-          (struct.hrLines.includes(skipToLine) || struct.tocLines.includes(skipToLine))
-        ) {
-          skipToLine++;
-        }
-        if (skipToLine <= totalLines) {
-          return dispatchVerticalCursorMove(view, head, skipToLine, false);
-        }
-      }
-
-      // 1. 检查下一行是否是表格块的起始行（按水平 X 坐标智能聚焦对应列）
+      // 3. 检查下一行是否是表格块的起始行（按水平 X 坐标智能聚焦对应列）
       const tables = findTablesInDoc(view.state);
       const targetTableIdx = tables.findIndex((t) => t.startLine === nextLineNum);
       if (targetTableIdx !== -1) {
@@ -430,24 +617,21 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
         }
       }
 
-      // 2. 检查下一行是否是多行数学公式块的起始行
+      // 4. 检查下一行是否是多行数学公式块的起始行
       const mathBlocks = findMathBlocks(view.state);
       const targetMath = mathBlocks.find((m) => m.startLine === nextLineNum);
       if (targetMath) {
         const enterLine = Math.min(targetMath.startLine + 1, targetMath.endLine);
         return dispatchVerticalCursorMove(view, head, enterLine, false);
       }
-      // 在多行数学公式块的最后一行内容 (endLine - 1) 按 ArrowDown -> 直接跳出到 endLine + 1
       const currentMath = mathBlocks.find(
         (m) => line.number === m.endLine - 1 || line.number === m.endLine
       );
-      if (currentMath) {
-        if (currentMath.endLine < totalLines) {
-          return dispatchVerticalCursorMove(view, head, currentMath.endLine + 1, false);
-        }
+      if (currentMath && currentMath.endLine < totalLines) {
+        return dispatchVerticalCursorMove(view, head, currentMath.endLine + 1, false);
       }
 
-      // 3. 检查下一行是否是 Mermaid 流程图的起始行
+      // 5. 检查下一行是否是 Mermaid 流程图的起始行
       const mermaids = findMermaidBlocks(view.state);
       const targetMermaid = mermaids.find((m) => m.startLine === nextLineNum);
       if (targetMermaid) {
@@ -457,13 +641,12 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       const currentMermaid = mermaids.find(
         (m) => line.number === m.endLine - 1 || line.number === m.endLine
       );
-      if (currentMermaid) {
-        if (currentMermaid.endLine < totalLines) {
-          return dispatchVerticalCursorMove(view, head, currentMermaid.endLine + 1, false);
-        }
+      if (currentMermaid && currentMermaid.endLine < totalLines) {
+        return dispatchVerticalCursorMove(view, head, currentMermaid.endLine + 1, false);
       }
 
-      return false;
+      // 6. 所有普通行（标题、段落、列表、引用块、Callout、分割线、空行）：确定性逐行下移至下一逻辑行的第一视觉行
+      return dispatchVerticalCursorMove(view, head, nextLineNum, false);
     },
   },
   {
@@ -472,32 +655,30 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       if (typeof document !== "undefined" && document.body.classList.contains("source-mode")) {
         return false;
       }
+      if (!view.state.selection.main.empty) {
+        return false;
+      }
+
       const head = view.state.selection.main.head;
       const line = view.state.doc.lineAt(head);
       const struct = getDocStructureFromState(view.state);
 
-      // 若当前行发生了软换行且光标尚不在第一个视觉行，交由 CodeMirror 原生逻辑在当前段落内上移一行
+      // 0. 若当前逻辑行发生了软换行且光标尚不在第一个视觉行，直接在当前行内向上移动 1 个视觉行
       if (!isOnFirstVisualLine(view, head, line.from)) {
-        return false;
-      }
-
-      // 0. 顶部 YAML Front Matter 保护：在正文第一行 (frontMatterEndLine + 1) 按 ArrowUp 时不踏入隐藏的 YAML 内部行
-      if (
-        struct.frontMatterEndLine > 0 &&
-        line.number === struct.frontMatterEndLine + 1
-      ) {
-        return true;
+        if (stepWithinSoftWrappedLine(view, head, "up")) {
+          return true;
+        }
       }
 
       if (line.number > 1) {
-        // 0a. 检查上一行是否处于已折叠的章节内部 -> 直接跳到该折叠章节的标题行并保留列偏移
+        // 1. 检查上一行是否处于已折叠的章节内部 -> 直接跳到该折叠章节的标题行并保留列偏移
         const prevFoldedSpan = getFoldedSectionSpanAtLine(view.state, line.number - 1);
         if (prevFoldedSpan && line.number - 1 >= prevFoldedSpan.startLine) {
           return dispatchVerticalCursorMove(view, head, prevFoldedSpan.startLine, true);
         }
       }
 
-      // 0b. 检查围栏代码块边界穿透（兼容折叠态与 28 行截断态，严格保留水平列坐标并落入目标行最后视觉行）
+      // 2. 检查围栏代码块边界穿透（兼容折叠态与 28 行截断态，严格保留水平列坐标并落入目标行最后视觉行）
       for (let cIdx = 0; cIdx < struct.codeRanges.length; cIdx++) {
         const cr = struct.codeRanges[cIdx];
         if (cr.unclosed) continue;
@@ -527,21 +708,7 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
       if (line.number <= 1) return false;
       const prevLineNum = line.number - 1;
 
-      // 0c. 若上一行是水平分割线 (---) 或 [TOC] 目录卡片，平滑向上跨过并落入上方段落的最后视觉行
-      if (struct.hrLines.includes(prevLineNum) || struct.tocLines.includes(prevLineNum)) {
-        let skipToLine = prevLineNum - 1;
-        while (
-          skipToLine >= 1 &&
-          (struct.hrLines.includes(skipToLine) || struct.tocLines.includes(skipToLine))
-        ) {
-          skipToLine--;
-        }
-        if (skipToLine >= 1) {
-          return dispatchVerticalCursorMove(view, head, skipToLine, true);
-        }
-      }
-
-      // 1. 检查上一行是否是表格块的结束行（按水平 X 坐标聚焦末行对应列）
+      // 3. 检查上一行是否是表格块的结束行（按水平 X 坐标聚焦末行对应列）
       const tables = findTablesInDoc(view.state);
       const targetTableIdx = tables.findIndex((t) => t.endLine === prevLineNum);
       if (targetTableIdx !== -1) {
@@ -559,7 +726,7 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
         }
       }
 
-      // 2. 检查上一行是否是多行公式块的结束行
+      // 4. 检查上一行是否是多行公式块的结束行
       const mathBlocks = findMathBlocks(view.state);
       const targetMath = mathBlocks.find((m) => m.endLine === prevLineNum);
       if (targetMath) {
@@ -573,7 +740,7 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
         return dispatchVerticalCursorMove(view, head, currentMath.startLine - 1, true);
       }
 
-      // 3. 检查上一行是否是 Mermaid 流程图的结束行
+      // 5. 检查上一行是否是 Mermaid 流程图的结束行
       const mermaids = findMermaidBlocks(view.state);
       const targetMermaid = mermaids.find((m) => m.endLine === prevLineNum);
       if (targetMermaid) {
@@ -587,17 +754,8 @@ export const boundaryTraversalKeymap: KeyBinding[] = [
         return dispatchVerticalCursorMove(view, head, currentMermaid.startLine - 1, true);
       }
 
-      // 4. 普通段落间的 ArrowUp：若上一行是软换行多行段落且带有隐藏前缀，确保原生移动不会因行首 replace 跳到第一视觉行
-      const prevLine = view.state.doc.line(prevLineNum);
-      if (
-        !struct.codeLineSet.has(prevLineNum) &&
-        prevLine.length > 35 &&
-        getVisibleStartCol(view, prevLine.text, prevLineNum) > 0
-      ) {
-        return dispatchVerticalCursorMove(view, head, prevLineNum, true);
-      }
-
-      return false;
+      // 6. 所有普通行（标题、段落、列表、引用块、Callout、分割线、空行）：确定性逐行上移至上一逻辑行的最后一个视觉行
+      return dispatchVerticalCursorMove(view, head, prevLineNum, true);
     },
   },
 ];

@@ -257,10 +257,13 @@ export function createEditor(
   const initOrRebuildWordCache = (doc: EditorState["doc"]) => {
     lineWordCounts = new Array(doc.lines);
     let sum = 0;
-    for (let i = 1; i <= doc.lines; i++) {
-      const w = countMixedWords(doc.line(i).text);
-      lineWordCounts[i - 1] = w;
+    let idx = 0;
+    const iter = doc.iterLines();
+    while (!iter.next().done && idx < doc.lines) {
+      const w = countMixedWords(iter.value);
+      lineWordCounts[idx] = w;
       sum += w;
+      idx++;
     }
     cachedTotalWords = sum;
     wordCacheInitialized = true;
@@ -274,25 +277,45 @@ export function createEditor(
 
       if (!wordCacheInitialized || lineWordCounts.length !== oldDoc.lines) {
         initOrRebuildWordCache(newDoc);
-      } else if (oldDoc.lines === newDoc.lines) {
+      } else {
+        // 支持单区间增删行（如 Enter 换行或 Backspace 合并行）的 O(1) 增量词数数组 splice 更新，彻底消除大文档回车重算全文词数的卡顿
+        let rangeCount = 0;
+        let singleRange: { sA: number; eA: number; sB: number; eB: number } | null = null;
         update.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
-          const sLine = oldDoc.lineAt(fromA).number;
-          const eLine = oldDoc.lineAt(toA).number;
-          const sLineB = newDoc.lineAt(fromB).number;
-          const eLineB = newDoc.lineAt(toB).number;
-          if (sLine === sLineB && eLine === eLineB) {
-            for (let ln = sLine; ln <= eLine; ln++) {
-              const oldW = lineWordCounts[ln - 1] || 0;
-              const newW = countMixedWords(newDoc.line(ln).text);
-              lineWordCounts[ln - 1] = newW;
-              cachedTotalWords += newW - oldW;
-            }
-          } else {
-            initOrRebuildWordCache(newDoc);
+          rangeCount++;
+          if (rangeCount === 1) {
+            singleRange = {
+              sA: oldDoc.lineAt(fromA).number,
+              eA: oldDoc.lineAt(toA).number,
+              sB: newDoc.lineAt(fromB).number,
+              eB: newDoc.lineAt(toB).number,
+            };
           }
         });
-      } else {
-        initOrRebuildWordCache(newDoc);
+
+        if (rangeCount === 1 && singleRange) {
+          const { sA, eA, sB, eB } = singleRange as {
+            sA: number;
+            eA: number;
+            sB: number;
+            eB: number;
+          };
+          let removedWords = 0;
+          for (let ln = sA; ln <= eA; ln++) {
+            removedWords += lineWordCounts[ln - 1] || 0;
+          }
+          const newCounts: number[] = [];
+          let addedWords = 0;
+          for (let ln = sB; ln <= eB; ln++) {
+            const w = countMixedWords(newDoc.line(ln).text);
+            newCounts.push(w);
+            addedWords += w;
+          }
+          lineWordCounts.splice(sA - 1, eA - sA + 1, ...newCounts);
+          cachedTotalWords += addedWords - removedWords;
+        } else {
+          initOrRebuildWordCache(newDoc);
+        }
       }
 
       update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {

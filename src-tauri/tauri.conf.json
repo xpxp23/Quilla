@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
   "productName": "Quilla",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "identifier": "app.quilla.editor",
   "build": {
     "beforeBuildCommand": "pnpm build",
@@ -23,7 +23,9 @@
     ],
     "security": {
       "csp": null,
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
     }
   },
   "bundle": {
@@ -37,7 +39,12 @@
     ],
     "fileAssociations": [
       {
-        "ext": ["md", "markdown", "mdown", "mkd"],
+        "ext": [
+          "md",
+          "markdown",
+          "mdown",
+          "mkd"
+        ],
         "name": "Markdown Document",
         "description": "Quilla Markdown Document",
         "role": "Editor",

@@ -670,10 +670,21 @@ export function handleListEnter(view: EditorView): boolean {
     }
 
     if (effectiveHead < prefixEndPos) {
+      const renumberBelow = buildSubsequentRenumberChanges(
+        doc,
+        line.number,
+        quotePrefix,
+        alignedIndent.length,
+        1
+      );
       view.dispatch({
-        changes: { from: line.from, insert: `${quotePrefix}\n` },
+        changes: [
+          { from: line.from, insert: `${quotePrefix}\n` },
+          ...renumberBelow,
+        ],
         selection: { anchor: effectiveHead + quotePrefix.length + 1 },
         scrollIntoView: true,
+        userEvent: "input.enter",
       });
       return true;
     }
@@ -810,8 +821,27 @@ export function handleListEnter(view: EditorView): boolean {
     return true;
   }
 
-  // 若在两个有序列表之间的空行按退格键将其合并为一个连续列表，自动衔接并重排下半部分的序号
-  if (text.trim() === "" && selection.head === line.from && line.number > 1 && line.number < doc.lines) {
+  return false;
+}
+
+/**
+ * 列表与引用块退格键智能回退 (Backspace)
+ */
+export function handleListBackspace(view: EditorView): boolean {
+  const selection = view.state.selection.main;
+  if (!selection.empty) return false;
+
+  const doc = view.state.doc;
+  const line = doc.lineAt(selection.head);
+  const text = line.text;
+
+  // 若在两个有序列表之间的空行按退格键 (Backspace) 将其合并为一个连续列表，自动衔接并重排下半部分的序号 (Bug #2 归位修复)
+  if (
+    text.trim() === "" &&
+    selection.head === line.from &&
+    line.number > 1 &&
+    line.number < doc.lines
+  ) {
     const prevLine = doc.line(line.number - 1);
     const nextLine = doc.line(line.number + 1);
     const prevQm = prevLine.text.match(/^(\s*(?:> ?)+)/);
@@ -836,25 +866,12 @@ export function handleListEnter(view: EditorView): boolean {
             ...renumberChanges,
           ],
           selection: { anchor: prevLine.to },
+          userEvent: "delete.backward",
         });
         return true;
       }
     }
   }
-
-  return false;
-}
-
-/**
- * 列表与引用块退格键智能回退 (Backspace)
- */
-export function handleListBackspace(view: EditorView): boolean {
-  const selection = view.state.selection.main;
-  if (!selection.empty) return false;
-
-  const doc = view.state.doc;
-  const line = doc.lineAt(selection.head);
-  const text = line.text;
 
   // 若在非代码块纯空白缩进行末尾按退格，一次性清空所有残留缩进空格
   if (/^[ \t]+$/.test(text) && !isInsideCodeContextAST(view.state, selection.head)) {

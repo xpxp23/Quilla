@@ -2134,8 +2134,24 @@ function buildDecorations(view: EditorView): DecorationSet {
 
   const ranges: Range<Decoration>[] = [];
   const addDeco = (from: number, to: number, deco: Decoration) => {
-    if (from <= to) {
+    if (from < 0 || to < from) return;
+    if (from === to) {
+      // CodeMirror 6 中 MarkDecoration (point === false) 严禁 from === to，
+      // 否则会抛出 RangeError: Mark decorations may not be empty 导致整个 ViewPlugin 崩溃并退化为源码模式 (Bug #1)
+      if (!(deco as any).point) return;
+      // 无 widget 且无行级属性的空 ReplaceDecoration 在 from === to 时无意义，直接忽略
+      if (
+        !(deco as any).widget &&
+        !(deco as any).spec?.attributes &&
+        !(deco as any).spec?.class
+      ) {
+        return;
+      }
+    }
+    try {
       ranges.push(deco.range(from, to));
+    } catch {
+      // 防御性兜底：绝不因单处装饰器区间异常导致整篇文档丢失实时预览
     }
   };
 
@@ -2396,43 +2412,43 @@ function buildDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 2.3 水平分割线 (--- 或 *** 或 ___)
+      // 2.3 水平分割线 (--- 或 *** 或 ___)：方向键经过行首 line.from 时保持分割线卡片不卸载，进入内部 (> line.from) 时展开源码
       const hrMatch = trimmed.match(/^(\-{3,}|\*{3,}|_{3,})$/);
       if (hrMatch) {
-        const isCursorOnHr = isCaretOnly && cursorLine === lineNum;
-        if (!isCursorOnHr) {
+        const isEditingHr = isCaretOnly && cursorLine === lineNum && cursorHead > line.from;
+        if (!isEditingHr) {
           addDeco(
             line.from,
             line.to,
             Decoration.replace({
-              widget: new HorizontalRuleWidget(line.from),
+              widget: new HorizontalRuleWidget(line.from + 1),
             })
           );
           continue;
         }
       }
 
-      // 2.35 动态 [TOC] 目录树
+      // 2.35 动态 [TOC] 目录树：方向键经过行首 line.from 时保持目录卡片不卸载
       const tocMatch = trimmed.match(/^\[TOC\]$/i);
       if (tocMatch) {
-        const isCursorOnToc = isCaretOnly && cursorLine === lineNum;
-        if (!isCursorOnToc) {
+        const isEditingToc = isCaretOnly && cursorLine === lineNum && cursorHead > line.from;
+        if (!isEditingToc) {
           addDeco(
             line.from,
             line.to,
             Decoration.replace({
-              widget: new TocWidget(line.from, headingsSignature),
+              widget: new TocWidget(line.from + 1, headingsSignature),
             })
           );
           continue;
         }
       }
 
-      // 2.4 独立单行公式块 ($$ formula $$)
+      // 2.4 独立单行公式块 ($$ formula $$)：方向键经过行首/行尾边界时保持公式预览不跳变
       const blockMathMatch = trimmed.match(/^\$\$\s*(.+?)\s*\$\$$/);
       if (blockMathMatch) {
-        const isCursorInMath = isCaretOnly && cursorHead >= line.from && cursorHead <= line.to;
-        if (!isCursorInMath) {
+        const isEditingMath = isCaretOnly && cursorHead > line.from && cursorHead < line.to;
+        if (!isEditingMath) {
           addDeco(
             line.from,
             line.to,
@@ -2690,7 +2706,8 @@ function buildDecorations(view: EditorView): DecorationSet {
             addDeco(e - 2, e, Decoration.mark({ class: "cm-md-delimiter" }));
           }
         } else if (tok.type === "transclusion") {
-          if (!isCursorInside) {
+          const isEditingTransclusion = isCaretOnly && cursorHead > s && cursorHead < e;
+          if (!isEditingTransclusion) {
             addDeco(
               s,
               e,
@@ -2852,14 +2869,17 @@ function buildDecorations(view: EditorView): DecorationSet {
             !selection.empty &&
             selection.from >= s &&
             selection.to <= e;
+          // 当链接名称被删空 (textLen === 0，即 `[](url)`) 时，始终保持源码定界符展开态，
+          // 既防止 MarkDecoration 空区间崩溃，也避免光标离开后空名称链接被完全隐藏而无法点击 (Bug #1)
           const isCursorInUrlPart =
+            textLen === 0 ||
             isSelectionInsideThisLink ||
             (isCursorInside &&
               (!prefs.compactLinkExpansion ||
                 cursorHead <= s + 1 ||
                 cursorHead >= s + 1 + textLen));
 
-          if (!isCursorInUrlPart) {
+          if (!isCursorInUrlPart && textLen > 0) {
             addDeco(s, s + 1, Decoration.replace({}));
             addDeco(
               s + 1,
@@ -2872,20 +2892,31 @@ function buildDecorations(view: EditorView): DecorationSet {
             addDeco(s + 1 + textLen, e, Decoration.replace({}));
           } else {
             addDeco(s, s + 1, Decoration.mark({ class: "cm-md-delimiter" }));
-            addDeco(
-              s + 1,
-              s + 1 + textLen,
-              Decoration.mark({
-                class: "cm-link cm-link-active",
-                attributes: linkAttrs,
-              })
-            );
+            if (textLen > 0) {
+              addDeco(
+                s + 1,
+                s + 1 + textLen,
+                Decoration.mark({
+                  class: "cm-link cm-link-active",
+                  attributes: linkAttrs,
+                })
+              );
+            }
             addDeco(
               s + 1 + textLen,
               s + 1 + textLen + 2,
               Decoration.mark({ class: "cm-md-delimiter" })
             );
-            addDeco(s + 1 + textLen + 2, e - 1, Decoration.mark({ class: "cm-md-url" }));
+            if (e - 1 > s + 1 + textLen + 2) {
+              addDeco(
+                s + 1 + textLen + 2,
+                e - 1,
+                Decoration.mark({
+                  class: textLen === 0 ? "cm-link cm-link-active cm-md-url" : "cm-md-url",
+                  attributes: textLen === 0 ? linkAttrs : undefined,
+                })
+              );
+            }
             addDeco(e - 1, e, Decoration.mark({ class: "cm-md-delimiter" }));
           }
         } else if (tok.type === "math") {
@@ -2962,7 +2993,11 @@ export const livePreviewPlugin = ViewPlugin.fromClass(
         update.viewportChanged ||
         update.transactions.some((tr) => tr.effects.some((e) => e.is(forceRefreshEffect)))
       ) {
-        this.decorations = buildDecorations(update.view);
+        try {
+          this.decorations = buildDecorations(update.view);
+        } catch (err) {
+          console.error("buildDecorations error:", err);
+        }
       }
     }
 

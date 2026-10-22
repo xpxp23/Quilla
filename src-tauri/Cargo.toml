@@ -1,6 +1,6 @@
 [package]
 name = "quilla"
-version = "0.9.0"
+version = "0.9.1"
 description = "Quilla (羽墨) v0.9 - A lightweight, high-performance Markdown editor rewritten in Rust with Tauri v2"
 authors = ["Quilla Team"]
 edition = "2021"
