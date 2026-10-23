@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { showToast } from "./save-dialog";
+import { openThemeStudioModal } from "./theme-studio";
 
 export interface ImageBedPreferences {
   provider: "none" | "picgo" | "github" | "custom";
@@ -133,7 +134,9 @@ async function refreshFileAssociationStatus(modal: HTMLElement) {
 
   try {
     const status = await invoke<{
-      isRegistered: boolean;
+      isRegistered?: boolean;
+      isRegisteredProgid?: boolean;
+      isDefaultMd?: boolean;
       hasContextMenu: boolean;
       userChoiceProgId: string;
       platform: string;
@@ -143,7 +146,11 @@ async function refreshFileAssociationStatus(modal: HTMLElement) {
       contextCheck.checked = status.hasContextMenu;
     }
 
-    if (status.isRegistered) {
+    const registered = Boolean(
+      status.isDefaultMd || status.isRegisteredProgid || status.isRegistered
+    );
+
+    if (registered) {
       if (
         status.userChoiceProgId &&
         !status.userChoiceProgId.toLowerCase().includes("quilla") &&
@@ -190,6 +197,16 @@ export function openPreferencesModal() {
       <div class="pref-modal-body">
         <div class="pref-section">
           <div class="pref-section-title">排版与阅读视口</div>
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">主题与排版预设工作坊 (Theme Studio)</span>
+              <span class="pref-desc">深度微调字号缩放、段后呼吸间距、品牌强调色、代码卡片风格与长图水印签名，一键存为专属排版模板</span>
+            </div>
+            <div class="pref-control">
+              <button type="button" class="pref-action-btn" id="pref-open-theme-studio-btn">打开主题工作坊...</button>
+            </div>
+          </div>
+
           <div class="pref-row">
             <div class="pref-label-group">
               <span class="pref-label">正文字号大小</span>
@@ -450,6 +467,11 @@ export function openPreferencesModal() {
     if (e.target === prefModalEl) close();
   });
 
+  prefModalEl.querySelector("#pref-open-theme-studio-btn")?.addEventListener("click", () => {
+    close();
+    openThemeStudioModal();
+  });
+
   const fontSizeInput = prefModalEl.querySelector("#pref-font-size") as HTMLInputElement;
   const fontSizeVal = prefModalEl.querySelector("#pref-font-size-val") as HTMLElement;
   fontSizeInput.addEventListener("input", () => {
@@ -576,11 +598,14 @@ export function openPreferencesModal() {
     updatePreferences({ registerContextMenu: enabled });
     try {
       const msg = await invoke<string>("toggle_explorer_context_menu", {
+        enabled,
         enable: enabled,
         extensions: currentPrefs.fileAssociationExtensions,
       });
       showToast(msg, "success");
     } catch (err) {
+      contextMenuCheck.checked = !enabled;
+      updatePreferences({ registerContextMenu: !enabled });
       showToast(`更新右键菜单失败: ${err}`, "error");
     }
   });
@@ -595,6 +620,7 @@ export function openPreferencesModal() {
       const msg = await invoke<string>("register_default_markdown_app", {
         openSystemSettings: true,
         extensions: currentPrefs.fileAssociationExtensions,
+        enableContextMenu: currentPrefs.registerContextMenu,
         registerContextMenu: currentPrefs.registerContextMenu,
       });
       showToast(msg || "已注册 .md 文件关联", "success");

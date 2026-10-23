@@ -4,20 +4,30 @@ import {
   renderInlineASTSync,
   renderMarkdownDocumentToHtml,
   parseTableRowCells,
+  saveTableColumnWidthRatios,
+  getSavedTableColumnWidthRatios,
 } from "../src/editor/markdown-ast-renderer";
+import {
+  extractLineInlineTokens,
+  isValidSubOrSupPair,
+  isNumericRangeTildeAt,
+} from "../src/editor/inline-tokenizer";
 import {
   buildSmartMarkdownLink,
   isLikelyUrl,
 } from "../src/editor/extensions/inline-boundary-guard";
+import { computeLineDiff } from "../src/components/time-machine";
 
 /**
- * Quilla v0.9 自动化防回归测试套件 (Regression Test Suite)
+ * Quilla v0.10.0 自动化防回归测试套件 (Regression Test Suite)
  * 覆盖：
  * 1. Bug #4 & 同源表格 Bug：超链接、行内代码、数学公式、双链、#标签、带下划线变量与带括号 Wikipedia URL 导出绝不出现 EXP*PH*0_ 或 PH*0*
  * 2. 代码块导出结构：生成带 .exported-code-card 与 .exported-code-header 的完整卡片结构，支持 4 反引号与 ~~~ 波浪线嵌套围栏
  * 3. 多级列表渲染与 3 空格有序子列表、列表项内嵌套代码块/引用块
- * 4. GFM 表格单元格分割（支持转义竖线 \| 与行内代码内竖线 `a | b`）
+ * 4. GFM 表格单元格分割（支持转义竖线 \| 与行内代码内竖线 `a | b`）及列宽比例持久化导出
  * 5. Bug #7 智能网址转超链接：网址自动填入 (url) 链接栏并选中 [链接文字] 名称栏
+ * 6. [v0.10.0 Bug 5 & Phase 1.7] 统一内联词法解析器 `inline-tokenizer.ts` 与中文数值区间（1~2周...3~6个月）3 层边界守卫验证
+ * 7. [v0.10.0 瓶颈 4] 时间机器 Myers Diff 算法在 >500 行大文档首尾微调时绝不退化为整篇标红/标绿
  */
 
 export async function runAllRegressionTests(): Promise<void> {
@@ -113,10 +123,14 @@ export async function runAllRegressionTests(): Promise<void> {
     );
   }
 
-  // 4. 验证表格行解析支持转义竖线与行内代码内竖线
+  // 4. 验证表格行解析支持转义竖线、行内代码内竖线以及列宽权重比例持久化导出 (Phase 2.1)
   {
     const cells = parseTableRowCells("| `a | b` | 转义 \\| 竖线 | [链接](https://a.com/x_y) |");
     assert.deepEqual(cells, ["`a | b`", "转义 | 竖线", "[链接](https://a.com/x_y)"]);
+
+    saveTableColumnWidthRatios(["模块", "说明", "指标"], [25, 50, 25]);
+    const savedRatios = getSavedTableColumnWidthRatios(["模块", "说明", "指标"]);
+    assert.deepEqual(savedRatios, [25, 50, 25]);
   }
 
   // 5. 验证选中网址转超链接自动填入链接栏而非名称栏 (Bug #7)
@@ -137,5 +151,65 @@ export async function runAllRegressionTests(): Promise<void> {
     const fromText = buildSmartMarkdownLink("Quilla 官网");
     assert.equal(fromText.insertStr, "[Quilla 官网](https://)");
     assert.equal(fromText.isUrlInput, false);
+  }
+
+  // 6. [v0.10.0 Bug 5 & Phase 1.7] 验证统一词法解析器对 `1~2周...3~6个月` 与数学幂运算的边界守卫
+  {
+    const medicalSample =
+      "**下地时间**：由于主承重骨胫骨正常，若未伤及膝关节韧带，术后通常在伤口疼痛缓解后（数天至1~2周内）即可借助拐杖保护性下地部分负重，日常生活自理恢复较快；但剧烈运动需等待植骨逐步愈合（约3~6个月后根据复查X光决定）。";
+
+    const tokens = extractLineInlineTokens(medicalSample, []);
+    const subTokens = tokens.filter((t) => t.kind === "sub");
+    assert.equal(
+      subTokens.length,
+      0,
+      "编辑器实时预览词法器严禁将 `1~2周...3~6个月` 中间的正文误判为下标"
+    );
+
+    const exportedHtml = renderInlineASTSync(parseInlineAST(medicalSample), { mode: "export" });
+    assert.equal(
+      exportedHtml.includes("<sub>"),
+      false,
+      "导出 AST 渲染器严禁将 `1~2周...3~6个月` 渲染为 <sub>"
+    );
+    assert.equal(
+      exportedHtml.includes("1~2周内") && exportedHtml.includes("约3~6个月后"),
+      true,
+      "数值区间连接符应原样保留"
+    );
+
+    // 验证同源上标误匹配防护：两个幂运算或行尾 ^block-id
+    const mathPowerSample = "计算 2^10 与 2^20 的比值，复杂度 O(n^2) ^algo-block";
+    const powerHtml = renderInlineASTSync(parseInlineAST(mathPowerSample), { mode: "export" });
+    assert.equal(
+      powerHtml.includes("<sup>10 与 2</sup>"),
+      false,
+      "两个数学幂运算之间严禁跨空格误配对为上标"
+    );
+
+    // 验证合法化学式下标 H~2~O 与数学上标 x^2^ 在双端均正常解析
+    const validChemSample = "水分子式为 H~2~O，面积公式为 R^2^。";
+    const validTokens = extractLineInlineTokens(validChemSample, []);
+    assert.equal(validTokens.some((t) => t.kind === "sub"), true, "H~2~O 应正确识别为下标 Token");
+    assert.equal(validTokens.some((t) => t.kind === "sup"), true, "R^2^ 应正确识别为上标 Token");
+    const validHtml = renderInlineASTSync(parseInlineAST(validChemSample), { mode: "export" });
+    assert.equal(validHtml, "水分子式为 H<sub>2</sub>O，面积公式为 R<sup>2</sup>。");
+  }
+
+  // 7. [v0.10.0 瓶颈 4] 验证 Myers Diff 在 600 行大文档首尾微调时不退化
+  {
+    const linesA = Array.from({ length: 600 }, (_, i) => `第 ${i + 1} 行原始正文内容`);
+    const linesB = [...linesA];
+    linesB[1] = "第 2 行已修改内容";
+    linesB[598] = "第 599 行已修改内容";
+
+    const diff = computeLineDiff(linesA.join("\n"), linesB.join("\n"));
+    const equalCount = diff.filter((r) => r.type === "equal").length;
+    const addCount = diff.filter((r) => r.type === "add").length;
+    const delCount = diff.filter((r) => r.type === "del").length;
+
+    assert.equal(equalCount, 598, "600 行文档修改 2 行时应保留 598 行 equal，绝不退化为全篇删除重加");
+    assert.equal(addCount, 2);
+    assert.equal(delCount, 2);
   }
 }

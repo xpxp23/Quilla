@@ -62,7 +62,7 @@ function highlightKeywordInSnippet(text: string, keyword: string): string {
 }
 
 /**
- * 解析单行中的 [[文件名#标题|显示别名]] 双向链接与 ![[文件名#标题]] 块级嵌入（自动忽略行内代码反引号包裹区间）
+ * 解析单行中的 [[文件名#标题|显示别名]] 双向链接与 ![[文件名#标题]] / ![[文件名#^block-id]] 块级嵌入（自动忽略行内代码反引号包裹区间）
  */
 export function parseWikiLinksInLine(
   lineText: string,
@@ -146,25 +146,95 @@ export function clearTransclusionCache() {
 }
 
 /**
- * 异步读取 ![[文档#标题]] 或 ![[文档#^block-id]] 嵌入块的目标章节/段落文本（带内存缓存）
+ * 在内存中提取指定 Markdown 文本的章节或 `^block-id` 块内容（供当前未落盘文档实时嵌入同步使用）
+ */
+export function extractSectionOrBlockInMemory(fullMarkdown: string, heading?: string): string {
+  const lines = fullMarkdown.replace(/\r\n/g, "\n").split("\n");
+  let startIdx = 0;
+  if (lines.length >= 3 && lines[0].trim() === "---") {
+    for (let k = 1; k < Math.min(lines.length, 40); k++) {
+      if (lines[k].trim() === "---" || lines[k].trim() === "...") {
+        startIdx = k + 1;
+        break;
+      }
+    }
+  }
+  const query = (heading || "").trim().replace(/^#+/, "").trim();
+  if (!query) {
+    return lines.slice(startIdx).join("\n").trim();
+  }
+  if (query.startsWith("^")) {
+    const blockId = query.slice(1).toLowerCase();
+    const re = new RegExp(`^(.*?)\\s+\\^${blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i");
+    for (let i = startIdx; i < lines.length; i++) {
+      const m = lines[i].match(re);
+      if (m) {
+        return m[1].trim() || (i > startIdx ? lines[i - 1].trim() : "");
+      }
+      if (lines[i].trim().toLowerCase() === `^${blockId}` && i > startIdx) {
+        return lines[i - 1].trim();
+      }
+    }
+    return "";
+  }
+  const lowerQuery = query.toLowerCase();
+  let matchStart = -1;
+  let matchLevel = 0;
+  for (let i = startIdx; i < lines.length; i++) {
+    const hm = lines[i].match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
+    if (hm) {
+      const lvl = hm[1].length;
+      const cleanTitle = hm[2]
+        .replace(/\s+#+\s*$/, "")
+        .replace(/\s+\^[a-zA-Z0-9_\-]+$/, "")
+        .trim()
+        .toLowerCase();
+      if (matchStart === -1) {
+        if (cleanTitle === lowerQuery || cleanTitle.includes(lowerQuery)) {
+          matchStart = i;
+          matchLevel = lvl;
+        }
+      } else if (lvl <= matchLevel) {
+        return lines.slice(matchStart, i).join("\n").trim();
+      }
+    }
+  }
+  if (matchStart !== -1) {
+    return lines.slice(matchStart).join("\n").trim();
+  }
+  return "";
+}
+
+/**
+ * 异步读取 ![[文档#标题]] 或 ![[文档#^block-id]] 嵌入块的目标章节/段落文本（支持内存实时双向同步）
  */
 export async function fetchTransclusionSectionContent(
   targetDoc: string,
   heading?: string,
   currentDocFallback?: string
 ): Promise<{ found: boolean; filePath: string | null; content: string }> {
+  const targetName = (targetDoc || "").trim();
+  const headingName = (heading || "").trim();
+
   if (!workspaceProvider) {
     if (currentDocFallback) {
-      return { found: true, filePath: null, content: currentDocFallback.slice(0, 500) };
+      const extracted = extractSectionOrBlockInMemory(currentDocFallback, headingName);
+      return { found: Boolean(extracted), filePath: null, content: extracted };
     }
     return { found: false, filePath: null, content: "" };
   }
-  const targetName = (targetDoc || "").trim();
-  const headingName = (heading || "").trim();
+
   let targetPath: string | null = null;
+  const activePath = workspaceProvider.getActiveFilePath();
 
   if (!targetName) {
-    targetPath = workspaceProvider.getActiveFilePath();
+    targetPath = activePath;
+    if (currentDocFallback) {
+      const extracted = extractSectionOrBlockInMemory(currentDocFallback, headingName);
+      if (extracted) {
+        return { found: true, filePath: targetPath, content: extracted };
+      }
+    }
   } else {
     const files = await workspaceProvider.getWorkspaceMarkdownFiles();
     const matched = files.find(
@@ -176,6 +246,10 @@ export async function fetchTransclusionSectionContent(
   }
 
   if (!targetPath) {
+    if (!targetName && currentDocFallback) {
+      const extracted = extractSectionOrBlockInMemory(currentDocFallback, headingName);
+      return { found: Boolean(extracted), filePath: null, content: extracted };
+    }
     return { found: false, filePath: null, content: "" };
   }
 
@@ -195,6 +269,85 @@ export async function fetchTransclusionSectionContent(
     return { found: true, filePath: targetPath, content: trimmed };
   } catch {
     return { found: false, filePath: targetPath, content: "" };
+  }
+}
+
+/**
+ * 双向同步修改 ![[文档#标题]] 或 ![[文档#^block-id]] 源块内容并实时广播刷新 (Phase 3.1)
+ */
+export async function updateTransclusionSectionContent(
+  targetDoc: string,
+  heading: string | undefined,
+  newContent: string,
+  activeView?: EditorView
+): Promise<boolean> {
+  const targetName = (targetDoc || "").trim();
+  const headingName = (heading || "").trim();
+  const activePath = workspaceProvider?.getActiveFilePath() || null;
+
+  let targetPath: string | null = null;
+  if (!targetName) {
+    targetPath = activePath;
+  } else if (workspaceProvider) {
+    const files = await workspaceProvider.getWorkspaceMarkdownFiles();
+    const matched = files.find(
+      (f) =>
+        f.stem.toLowerCase() === targetName.toLowerCase() ||
+        f.name.toLowerCase() === targetName.toLowerCase()
+    );
+    if (matched) targetPath = matched.path;
+  }
+
+  // 若是当前正在编辑的同一篇文档（或未落盘内存文档），直接在 EditorView 中原位替换对应块/章节
+  const isSelfDoc =
+    !targetName ||
+    (targetPath &&
+      activePath &&
+      targetPath.replace(/\\/g, "/").toLowerCase() ===
+        activePath.replace(/\\/g, "/").toLowerCase());
+
+  if (isSelfDoc && activeView && headingName.startsWith("^")) {
+    const blockId = headingName.slice(1);
+    const doc = activeView.state.doc;
+    const re = new RegExp(`^(.*?)(\\s+\\^${blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)$`, "i");
+    for (let ln = 1; ln <= doc.lines; ln++) {
+      const lineObj = doc.line(ln);
+      const m = lineObj.text.match(re);
+      if (m) {
+        const updatedLine = `${newContent.replace(/\r?\n/g, " ").trim()}${m[2]}`;
+        activeView.dispatch({
+          changes: { from: lineObj.from, to: lineObj.to, insert: updatedLine },
+          userEvent: "input.transclusion.sync",
+        });
+        clearTransclusionCache();
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("quilla-transclusion-updated"));
+        }
+        return true;
+      }
+    }
+  }
+
+  if (!targetPath) return false;
+
+  try {
+    await invoke("update_heading_section", {
+      path: targetPath,
+      heading: headingName || null,
+      newContent,
+    });
+    clearTransclusionCache();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("quilla-transclusion-updated", {
+          detail: { path: targetPath, heading: headingName },
+        })
+      );
+    }
+    return true;
+  } catch (err) {
+    console.warn("双向同步写回源文档失败:", err);
+    return false;
   }
 }
 
@@ -316,7 +469,6 @@ export async function wikiLinkCompletionSource(
       let headings: Array<{ level: number; text: string; line: number; insertValue?: string }> = [];
 
       if (isCurrentActiveDoc) {
-        // 优先从当前编辑器实时 DocStructure AST 读取（支持尚未落盘保存的最新标题与 ^block-id）
         const struct = getDocStructure(context.state);
         for (const h of struct.headings) {
           headings.push({
@@ -612,7 +764,6 @@ export class BacklinksController {
       }
     });
 
-    // 在侧边栏「大纲」面板下方挂载联动反向链接折叠区
     this.mountOutlineBacklinksSection();
   }
 
@@ -682,8 +833,10 @@ export class BacklinksController {
       row.querySelector(".backlink-linkify-btn")?.addEventListener("click", async (e) => {
         e.stopPropagation();
         try {
+          // 修复 Tauri IPC 参数契约：Rust commands.rs 接收 line: usize（同时传递 line 与 lineNumber 双向兼容）
           await invoke("convert_unlinked_mention_to_wikilink", {
             filePath: item.file,
+            line: item.line,
             lineNumber: item.line,
             targetName: targetStem,
           });
@@ -731,10 +884,8 @@ export class BacklinksController {
       });
     }
 
-    // 原子替换子节点，彻底消除异步刷新期间先清空 innerHTML 导致的编辑区高度跳动 (Bug #4)
     this.listEl.replaceChildren(frag);
 
-    // 同步渲染大纲面板底部的联动反向链接区（合并展示已链接引用与未链接提及）
     if (this.outlineListEl && this.outlineSectionEl) {
       const outlineFrag = document.createDocumentFragment();
       if (this.lastLinkedItems.length === 0 && this.lastUnlinkedItems.length === 0) {
@@ -768,6 +919,9 @@ export class BacklinksController {
 
   public async refresh() {
     clearTransclusionCache();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("quilla-transclusion-updated"));
+    }
     if (!workspaceProvider) {
       this.panelEl.classList.add("hidden");
       this.outlineSectionEl?.classList.add("hidden");
@@ -810,7 +964,11 @@ export class BacklinksController {
       this.lastUnlinkedItems = overview.unlinked || [];
       if (this.lastLinkedItems.length === 0 && this.lastUnlinkedItems.length > 0) {
         this.activeTab = "unlinked";
-      } else if (this.lastLinkedItems.length > 0 && this.activeTab === "unlinked" && this.lastUnlinkedItems.length === 0) {
+      } else if (
+        this.lastLinkedItems.length > 0 &&
+        this.activeTab === "unlinked" &&
+        this.lastUnlinkedItems.length === 0
+      ) {
         this.activeTab = "linked";
       }
 

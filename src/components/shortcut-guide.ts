@@ -28,18 +28,19 @@ function getShortcutList(): ShortcutItem[] {
     { category: "常用操作", name: "打开文件", keys: [mod, "O"] },
     { category: "常用操作", name: "保存文档", keys: [mod, "S"] },
     { category: "常用操作", name: "另存为", keys: [mod, "Shift", "S"] },
-    { category: "常用操作", name: "版本历史 / 时间机器", keys: [mod, "Alt", "H"], desc: "可视 Diff 对比与一键回滚" },
+    { category: "常用操作", name: "版本历史 / 时间机器", keys: [mod, "Alt", "H"], desc: "Myers Diff 对比与一键回滚" },
     { category: "常用操作", name: "双链知识图谱", keys: [mod, "G"], desc: "可视化局部/全局笔记关系网络" },
+    { category: "常用操作", name: "主题与排版预设工作坊", keys: [mod, "Shift", "T"], desc: "字号缩放/段距/主题色/水印签名微调" },
     { category: "常用操作", name: "快速文件漫游", keys: [mod, "P"] },
     { category: "常用操作", name: "偏好设置中心", keys: [mod, ","] },
     { category: "常用操作", name: "撤销 / 重做", keys: [mod, "Z"], desc: `重做 ${mod}+Y` },
     { category: "常用操作", name: "查找 / 替换", keys: [mod, "F"], desc: `替换 ${mod}+H` },
-    { category: "常用操作", name: "打印 / 导出 PDF", keys: [mod, "Shift", "P"] },
+    { category: "常用操作", name: "打印 / 导出 PDF (带大纲书签)", keys: [mod, "Shift", "P"] },
 
     // 文本排版
     { category: "文本排版", name: "唤起斜杠命令面板", keys: ["/"], desc: "一键插入表格/流程图/Callout/公式" },
     { category: "文本排版", name: "双向链接补全", keys: ["[["], desc: "[[文档#标题]] 知识库双向引用" },
-    { category: "文本排版", name: "块级章节嵌入引用", keys: ["![["], desc: "![[文档#标题]] 实时嵌入卡片" },
+    { category: "文本排版", name: "块级章节/块 ID 双向嵌入", keys: ["![["], desc: "![[文档#^block-id]] 实时双向同步" },
     { category: "文本排版", name: "整块向上 / 向下移动", keys: ["Alt", "↑/↓"], desc: "自动识别完整代码块/表格/列表" },
     { category: "文本排版", name: "克隆当前段落或语义块", keys: [mod, "D"], desc: "在下方原样复制一份当前块" },
     { category: "文本排版", name: "加粗", keys: [mod, "B"], desc: "**文本** (支持智能反解)" },
@@ -49,7 +50,7 @@ function getShortcutList(): ShortcutItem[] {
     { category: "文本排版", name: "荧光高亮", keys: [mod, "Shift", "H"], desc: "==高亮==" },
     { category: "文本排版", name: "插入超链接", keys: [mod, "K"], desc: "[文字](链接) / 表格内同样支持" },
     { category: "文本排版", name: "插入图片", keys: [mod, "Shift", "I"], desc: "保留选中文本为说明" },
-    { category: "文本排版", name: "多级列表缩进 / 降级", keys: ["Tab"], desc: "Shift+Tab 降级 (自动重排多级序号)" },
+    { category: "文本排版", name: "多级列表缩进 / 降级", keys: ["Tab"], desc: "Shift+Tab 降级 (悬挂缩进+自动编号)" },
 
     // 标题层级
     { category: "标题层级", name: "一级标题 (H1)", keys: [mod, "1"], desc: `支持 ${mod}+Alt+1 · 光标自动落于右侧` },
@@ -61,15 +62,15 @@ function getShortcutList(): ShortcutItem[] {
     { category: "标题层级", name: "清除标题 (正文)", keys: [mod, "0"], desc: `支持 ${mod}+Alt+0` },
 
     // 表格与图表
-    { category: "表格与图表", name: "插入表格", keys: [mod, "Alt", "T"], desc: "支持拖拽行列换位与拖拽列宽" },
+    { category: "表格与图表", name: "插入表格", keys: [mod, "Alt", "T"], desc: "支持拖拽列宽且按比例同步导出" },
     { category: "表格与图表", name: "表格下方插入行", keys: [mod, "Enter"], desc: "末格 Tab/Enter 自动加行" },
     { category: "表格与图表", name: "表格删除当前行", keys: [mod, "Shift", "Backspace"], desc: "完美支持 Ctrl+Z 撤销" },
-    { category: "表格与图表", name: "单元格内换行", keys: ["Shift", "Enter"], desc: "自动插入安全 <br>" },
+    { category: "表格与图表", name: "单元格内多行软回车", keys: ["Shift", "Enter"], desc: "支持 Shift+Enter / Alt+Enter 直接换行" },
     { category: "表格与图表", name: "插入代码块", keys: [mod, "Shift", "K"], desc: "支持一键折叠/格式化/点击行号选行" },
     { category: "表格与图表", name: "插入数学公式块", keys: [mod, "Shift", "M"], desc: "$$ 独立公式块 $$" },
 
     // 视图与多标签
-    { category: "视图与多标签", name: "左右分屏对比编辑", keys: [mod, "\\"], desc: "双栏对照阅读与协同写作" },
+    { category: "视图与多标签", name: "左右分屏对比编辑", keys: [mod, "\\"], desc: "独立 StateField 多实例双栏协同" },
     { category: "视图与多标签", name: "切换下一个标签页", keys: [mod, "Tab"], desc: "保留独立 Undo 栈与滚动位置" },
     { category: "视图与多标签", name: "关闭当前标签页", keys: [mod, "W"], desc: "或鼠标中键点击标签" },
     { category: "视图与多标签", name: "打字机模式", keys: ["F9"], desc: "当前行平滑锁频居中" },
@@ -104,7 +105,7 @@ export function openShortcutGuide() {
         <div class="modal-title">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6.01" y2="8"></line><line x1="10" y1="8" x2="10.01" y2="8"></line><line x1="14" y1="8" x2="14.01" y2="8"></line><line x1="18" y1="8" x2="18.01" y2="8"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>
           <span>快捷键速查指南</span>
-          <span class="modal-badge">Quilla v0.9</span>
+          <span class="modal-badge">Quilla v0.10.0</span>
         </div>
         <button type="button" class="modal-close-btn" title="关闭 (Esc)">✕</button>
       </div>
@@ -120,7 +121,7 @@ export function openShortcutGuide() {
       <div class="shortcut-categories-container" id="shortcut-items-grid"></div>
 
       <div class="ty-modal-footer">
-        <span class="footer-tip">提示：输入 <kbd>/</kbd> 唤起斜杠命令，输入 <kbd>[[</kbd> 或 <kbd>![[</kbd> 引用笔记，按 <kbd>${mod}</kbd>+<kbd>G</kbd> 查看知识图谱</span>
+        <span class="footer-tip">提示：输入 <kbd>/</kbd> 唤起斜杠命令，输入 <kbd>[[</kbd> 或 <kbd>![[</kbd> 引用笔记，按 <kbd>${mod}</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> 打开主题工作坊</span>
         <button type="button" class="modal-confirm-btn">我知道了</button>
       </div>
     </div>

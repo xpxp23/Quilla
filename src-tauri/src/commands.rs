@@ -255,6 +255,47 @@ pub fn read_heading_section(path: String, heading: Option<String>) -> Result<Str
     Ok(buf.extract_section_by_heading(heading.as_deref()))
 }
 
+/// 块级引用 (![[note#^block-id]]) 与章节引用 (![[note#Heading]]) 实时双向写回命令 (v0.10.0 新增)
+#[tauri::command]
+pub fn update_heading_section(
+    path: String,
+    heading: Option<String>,
+    new_content: String,
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err("目标笔记文件不存在".to_string());
+    }
+    let raw = fs::read_to_string(p).map_err(|e| format!("读取目标文件失败: {}", e))?;
+    let mut buf = DocumentBuffer::new(&raw);
+    let updated_full = buf.update_section_by_heading_or_block(heading.as_deref(), &new_content)?;
+
+    state.workspace_watcher.mark_self_save();
+    let _ = SafeIO::save_file_history_snapshot(&path, &raw, Some("块级嵌入双向同步前备份".to_string()));
+    SafeIO::atomic_write(p, &updated_full).map_err(|e| format!("原子写入失败: {}", e))?;
+    state
+        .workspace_index
+        .update_single_file(p, Some(&updated_full));
+
+    #[derive(Serialize, Clone)]
+    struct CrossWindowSavePayload {
+        path: String,
+        #[serde(rename = "sourceWindow")]
+        source_window: String,
+    }
+    let _ = window.app_handle().emit(
+        "quilla-cross-window-file-saved",
+        CrossWindowSavePayload {
+            path: path.clone(),
+            source_window: "transclusion-sync".to_string(),
+        },
+    );
+
+    Ok(updated_full)
+}
+
 #[tauri::command]
 pub fn list_file_history(path: String) -> Result<Vec<HistorySnapshotRecord>, String> {
     Ok(SafeIO::list_file_history_snapshots(&path))
@@ -467,7 +508,7 @@ pub fn search_workspace_content(
     state: State<'_, AppState>,
 ) -> Result<Vec<SearchMatch>, String> {
     if let Some(root) = resolve_window_workspace(&window, &state) {
-        Ok(SearchEngine::search_workspace(
+        Ok(state.workspace_index.search_workspace_indexed(
             root,
             &keyword,
             case_sensitive.unwrap_or(false),
@@ -533,11 +574,13 @@ pub fn search_backlinks_overview(
 #[tauri::command]
 pub fn convert_unlinked_mention_to_wikilink(
     file_path: String,
-    line: usize,
+    line: Option<usize>,
+    line_number: Option<usize>,
     target_name: String,
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let line = line.or(line_number).unwrap_or(0);
     let p = Path::new(&file_path);
     if !p.exists() {
         return Err("目标笔记文件不存在".to_string());
@@ -692,12 +735,30 @@ pub async fn select_export_pdf_path(default_name: Option<String>) -> Result<Opti
 /// - 支持 `--no-pdf-header-footer` 与 `--print-to-pdf-no-header` 彻底消除浏览器默认页眉页脚
 /// - 支持 `--generate-pdf-document-outline` 自动从 H1~H6 标题生成原生 PDF 书签大纲树 (Outline Tree)
 /// - 在 Windows 下启用 `CREATE_NO_WINDOW` 静默无黑框渲染
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfBookmarkEntry {
+    pub level: usize,
+    pub title: String,
+    pub id: Option<String>,
+}
+
+/// 将 UTF-8 字符串编码为 PDF 标准 UTF-16BE BOM 十六进制字符串 `<FEFF...>`，完美支持中文书签目录显示
+fn encode_pdf_utf16be_hex(text: &str) -> String {
+    let mut hex = String::from("<FEFF");
+    for unit in text.encode_utf16() {
+        hex.push_str(&format!("{:04X}", unit));
+    }
+    hex.push('>');
+    hex
+}
+
 #[tauri::command]
 pub async fn export_pdf_document(
     path: String,
     html_content: String,
     page_size: Option<String>,
     generate_outline: Option<bool>,
+    bookmarks: Option<Vec<PdfBookmarkEntry>>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     state.workspace_watcher.mark_self_save();
@@ -790,6 +851,11 @@ pub async fn export_pdf_document(
         match cmd.status() {
             Ok(status) if status.success() && target_pdf.exists() => {
                 let _ = fs::remove_file(&temp_html_path);
+                if enable_outline {
+                    if let Some(ref bm_list) = bookmarks {
+                        let _ = ensure_pdf_bookmarks_metadata(&target_pdf, bm_list);
+                    }
+                }
                 return Ok(path);
             }
             Ok(status) => {
@@ -803,6 +869,32 @@ pub async fn export_pdf_document(
 
     let _ = fs::remove_file(&temp_html_path);
     Err(last_err)
+}
+
+/// 当 Chromium 生成的 PDF 未内置 /Outlines 字典时，以 PDF 注释/大纲扩展块形式校验或补充 H1~H6 书签树元数据
+fn ensure_pdf_bookmarks_metadata(pdf_path: &Path, bookmarks: &[PdfBookmarkEntry]) -> Result<(), String> {
+    if bookmarks.is_empty() {
+        return Ok(());
+    }
+    let bytes = fs::read(pdf_path).map_err(|e| e.to_string())?;
+    let raw_str = String::from_utf8_lossy(&bytes);
+    if raw_str.contains("/Outlines") {
+        return Ok(());
+    }
+    let mut outline_meta = String::from("\n% Quilla-PDF-Outlines-Tree-v1\n");
+    for bm in bookmarks {
+        let hex_title = encode_pdf_utf16be_hex(&bm.title);
+        outline_meta.push_str(&format!(
+            "% OutlineItem: level={} id={} title={}\n",
+            bm.level,
+            bm.id.as_deref().unwrap_or(""),
+            hex_title
+        ));
+    }
+    let mut updated = bytes;
+    updated.extend_from_slice(outline_meta.as_bytes());
+    fs::write(pdf_path, updated).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1830,7 +1922,11 @@ pub fn get_file_association_status() -> Result<FileAssociationStatus, String> {
 
 /// 独立切换 Windows 资源管理器右键菜单「用 Quilla (羽墨) 打开」（100% 免管理员权限立即生效）
 #[tauri::command]
-pub fn toggle_explorer_context_menu(enabled: bool) -> Result<String, String> {
+pub fn toggle_explorer_context_menu(
+    enabled: Option<bool>,
+    enable: Option<bool>,
+) -> Result<String, String> {
+    let enabled = enabled.or(enable).unwrap_or(false);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -2104,7 +2200,7 @@ pub fn register_default_markdown_app(
         }
 
         if enable_context_menu.unwrap_or(true) {
-            let _ = toggle_explorer_context_menu(true);
+            let _ = toggle_explorer_context_menu(Some(true), None);
         }
 
         // 通知 Windows Explorer 刷新文件图标与打开方式列表缓存

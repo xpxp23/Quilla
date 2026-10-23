@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import { openShortcutGuide, formatModKey } from "./shortcut-guide";
 import { openPreferencesModal } from "./preferences";
+import { openThemeStudioModal } from "./theme-studio";
 import { getRecentFiles, clearRecentFiles } from "./quick-open";
 import { handleOpenLink } from "../editor/index";
 import { smartToggleFormat } from "../editor/extensions/formatting-keymap";
@@ -32,6 +33,7 @@ export interface MenuActions {
   onCopyWeChatHtml?: () => void;
   onOpenTimeMachine?: () => void;
   onOpenKnowledgeGraph?: () => void;
+  onOpenThemeStudio?: () => void;
   onPrint?: () => void;
   onQuickOpen?: () => void;
   getActiveView?: () => EditorView;
@@ -58,6 +60,7 @@ const SVG = {
   print: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>`,
   globe: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>`,
   sparkles: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3z"></path></svg>`,
+  palette: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path></svg>`,
   image: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`,
   undo: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>`,
   redo: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`,
@@ -129,10 +132,10 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
         <div class="menu-item-left"><span class="m-icon">${SVG.file}</span><span>导出为 Word 文档 (.doc)...</span></div>
       </div>
       <div class="menu-item" data-action="export-poster">
-        <div class="menu-item-left"><span class="m-icon">${SVG.image}</span><span>导出为社交长图卡片 (.png)...</span></div>
+        <div class="menu-item-left"><span class="m-icon">${SVG.image}</span><span>导出为长图 / 小红书多图卡片...</span></div>
       </div>
       <div class="menu-item" data-action="print">
-        <div class="menu-item-left"><span class="m-icon">${SVG.print}</span><span>打印 / 导出为 PDF...</span></div>
+        <div class="menu-item-left"><span class="m-icon">${SVG.print}</span><span>打印 / 导出为 PDF (含书签)...</span></div>
         <span class="shortcut">${mod}+Shift+P</span>
       </div>
     </div>
@@ -149,6 +152,10 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
       <div class="menu-item" data-action="knowledge-graph">
         <div class="menu-item-left"><span class="m-icon">${SVG.graph}</span><span>双链知识图谱...</span></div>
         <span class="shortcut">${mod}+G</span>
+      </div>
+      <div class="menu-item" data-action="theme-studio">
+        <div class="menu-item-left"><span class="m-icon">${SVG.palette}</span><span>主题与排版工作坊...</span></div>
+        <span class="shortcut">${mod}+Shift+T</span>
       </div>
       <div class="menu-item" data-action="quick-open">
         <div class="menu-item-left"><span class="m-icon">${SVG.search}</span><span>快速漫游...</span></div>
@@ -254,6 +261,8 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
     else if (action === "save-as") actions.onSaveFileAs?.();
     else if (action === "time-machine") actions.onOpenTimeMachine?.();
     else if (action === "knowledge-graph") actions.onOpenKnowledgeGraph?.();
+    else if (action === "theme-studio")
+      actions.onOpenThemeStudio ? actions.onOpenThemeStudio() : openThemeStudioModal();
     else if (action === "copy-wechat") actions.onCopyWeChatHtml?.();
     else if (action === "export-html") actions.onExportHtml();
     else if (action === "export-word") actions.onExportWordDoc?.();
@@ -308,6 +317,8 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
           <div class="menu-item" data-action="tbl-add-row-below"><div class="menu-item-left"><span class="m-icon">↓</span><span>下方插入行</span></div><span class="shortcut">${mod}+Enter</span></div>
           <div class="menu-item" data-action="tbl-add-col-left"><div class="menu-item-left"><span class="m-icon">←</span><span>左侧插入列</span></div></div>
           <div class="menu-item" data-action="tbl-add-col-right"><div class="menu-item-left"><span class="m-icon">→</span><span>右侧插入列</span></div></div>
+          <div class="menu-item" data-action="tbl-soft-break"><div class="menu-item-left"><span class="m-icon">↵</span><span>单元格内软回车换行</span></div><span class="shortcut">Shift+Enter</span></div>
+          <div class="menu-item" data-action="tbl-reset-col-widths"><div class="menu-item-left"><span class="m-icon">⇔</span><span>均分重置列宽比例</span></div></div>
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
@@ -513,7 +524,7 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
       }
     } else if (act === "link-open" && currentContextTarget?.element) {
       const href = currentContextTarget.element.dataset.href;
-      if (href) handleOpenLink(href, actions.onOpenFileByPath);
+      if (href) handleOpenLink(href, actions.onOpenFileByPath, view);
     } else if (act === "link-copy" && currentContextTarget?.element) {
       const href = currentContextTarget.element.dataset.href;
       if (href) navigator.clipboard.writeText(href);

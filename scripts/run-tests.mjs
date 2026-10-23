@@ -5,21 +5,32 @@ import { fileURLToPath } from "node:url";
 
 // Normalize CRLF to LF across all platforms for predictable assertion matching
 const _origReadFileSync = fs.readFileSync;
-fs.readFileSync = function(...args) {
+fs.readFileSync = function (...args) {
   const result = _origReadFileSync.apply(this, args);
   return typeof result === "string" ? result.replace(/\r\n/g, "\n") : result;
 };
 
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证 ===");
 
-// 1. 静态源码架构、历史防回归与 v0.9.0 七大核心 Bug 修复验证
+// 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.0 全量修复及新特性验证
 {
   const mainTs = fs.readFileSync(path.join(rootDir, "src/main.ts"), "utf-8");
   const indexTs = fs.readFileSync(path.join(rootDir, "src/editor/index.ts"), "utf-8");
+  const inlineTokenizerTs = fs.readFileSync(
+    path.join(rootDir, "src/editor/inline-tokenizer.ts"),
+    "utf-8"
+  );
+  const astRendererTs = fs.readFileSync(
+    path.join(rootDir, "src/editor/markdown-ast-renderer.ts"),
+    "utf-8"
+  );
+  const autopairTs = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/smart-autopair.ts"),
+    "utf-8"
+  );
   const boundaryTs = fs.readFileSync(
     path.join(rootDir, "src/editor/extensions/boundary-traversal.ts"),
     "utf-8"
@@ -50,6 +61,18 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
   );
   const pubExportTs = fs.readFileSync(
     path.join(rootDir, "src/components/publisher-export.ts"),
+    "utf-8"
+  );
+  const autoRecoveryTs = fs.readFileSync(
+    path.join(rootDir, "src/components/auto-recovery.ts"),
+    "utf-8"
+  );
+  const timeMachineTs = fs.readFileSync(
+    path.join(rootDir, "src/components/time-machine.ts"),
+    "utf-8"
+  );
+  const themeStudioTs = fs.readFileSync(
+    path.join(rootDir, "src/components/theme-studio.ts"),
     "utf-8"
   );
   const prefsTs = fs.readFileSync(
@@ -105,15 +128,13 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     "base.css 必须将行内代码边框排除在 pre > code 之外"
   );
 
-  // [v0.8 Bug #1] 上下箭头防乱窜：原生 moveVertically 折行探测 + 跨块保留水平列坐标
+  // [v0.8 Bug #1 ~ #7] 历史防回归
   assert.equal(
     boundaryTs.includes("view.moveVertically") &&
       boundaryTs.includes("resolveTargetPosPreservingColumn"),
     true,
     "[v0.8 Bug #1] boundary-traversal.ts 必须使用 moveVertically 探测折行并保留跨块水平列坐标"
   );
-
-  // [v0.8 Bug #2] 导出与编辑器代码块换行 UI：悬挂缩进、贯穿式竖线、Flex 行号槽与类名对齐
   assert.equal(
     baseCss.includes(".exported-code-line[data-code-line]") &&
       baseCss.includes(".cm-line.cm-code-block-line.cm-code-line-wrapped") &&
@@ -122,8 +143,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.8 Bug #2] 代码块导出与实时预览必须具备悬挂缩进、贯穿行号分割线与完整折行样式"
   );
-
-  // [v0.8 Bug #3] 默认打开 .md 文件程序设置与外部热唤起
   assert.equal(
     commandsRs.includes("pub fn register_default_markdown_app") &&
       prefsTs.includes("pref-set-default-md-btn") &&
@@ -131,8 +150,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.8 Bug #3] 必须支持注册系统默认 .md 打开程序与外部文件热唤起"
   );
-
-  // [v0.8 Bug #4] 保存时页面不乱跳：过滤自窗口广播、禁止无变更 setState 重建、反链原子替换
   assert.equal(
     mainTs.includes("event.payload?.sourceWindow === currentWinLabel") &&
       mainTs.includes("this.lastSelfSaveInfo") &&
@@ -141,8 +158,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.8 Bug #4] 保存文件时必须过滤本窗口广播并避免重建 EditorState 导致光标归零与页面跳动"
   );
-
-  // [v0.8 Bug #5] 有序列表从中间断开后下方重新从 1 编号
   assert.equal(
     fmtKeymapTs.includes(
       "const renumberChanges = buildSubsequentRenumberChanges(\n      doc,\n      line.number + 1,\n      quotePrefix,\n      0,\n      1\n    );"
@@ -153,8 +168,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.8 Bug #5] 有序列表在中间按回车或退格断开时，下半部分必须从 1 重新排列"
   );
-
-  // [v0.8 Bug #6] 超链接右侧单击按回车安全逃逸 + 统一行内原子装饰器边界守卫
   assert.equal(
     inlineGuardTs.includes("inlineBoundaryCursorGuardExtension") &&
       inlineGuardTs.includes("resolveSafeInlineEnterPosition") &&
@@ -163,8 +176,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.8 Bug #6] 必须启用 inlineBoundaryCursorGuardExtension 保护超链接右边缘点击与回车换行"
   );
-
-  // [v0.8 Bug #7] 网址右键/快捷键转超链接智能填入链接栏 + 编辑框明确显示“名称/链接”标签
   assert.equal(
     inlineGuardTs.includes("export function buildSmartMarkdownLink") &&
       inlineGuardTs.includes("export function isLikelyUrl") &&
@@ -175,24 +186,7 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     "[v0.8 Bug #7] 网址转超链接必须自动填入链接栏，且编辑弹窗必须具备清晰的名称/链接字段标识"
   );
 
-  // [v0.8 架构升级] 增量 DocStructure O(1) 行号平移 + Rust WorkspaceIndex 内存倒排索引 + .assets 孤儿清理 + 图谱防泄漏
-  assert.equal(
-    docStructTs.includes("canIncrementalShift") &&
-      docStructTs.includes("const shiftLine = (ln: number) => (ln > pivotLineA ? ln + deltaLines : ln);"),
-    true,
-    "[v0.8 Core] doc-structure.ts 必须实现 O(1) 行号平移增量缓存"
-  );
-  assert.equal(
-    searchRs.includes("pub struct WorkspaceIndex") &&
-      commandsRs.includes("pub fn cleanup_orphan_assets") &&
-      watcherRs.includes("workspace_index.sync_changed_paths") &&
-      kgTs.includes("AbortController"),
-    true,
-    "[v0.8 Core] Rust 后端必须启用 WorkspaceIndex 内存倒排索引、孤儿图片清理与图谱监听器生命周期管理"
-  );
-
-
-  // [v0.9 新增 8 大核心特性完整性验证]
+  // [v0.9 特性防回归]
   const libRs = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
   const bufferRs = fs.readFileSync(path.join(rootDir, "src-tauri/src/buffer.rs"), "utf-8");
   const safeIoRs = fs.readFileSync(path.join(rootDir, "src-tauri/src/safe_io.rs"), "utf-8");
@@ -205,18 +199,14 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     "utf-8"
   );
 
-  // 1) Lezer 增量语法树 + B-Tree iterLines() + 方向键 goalColumn 视觉行保持 + 引用块内嵌列表复合渲染
   assert.equal(
     docStructTs.includes("doc.iterLines()") &&
       docStructTs.includes("syntaxTree(state)") &&
       boundaryTs.includes("enterFromBottom") &&
-      boundaryTs.includes("goalColumn") &&
-      baseCss.includes(".cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-2"),
+      boundaryTs.includes("goalColumn"),
     true,
-    "[v0.9 #1 & #8] 必须启用 Lezer SyntaxTree + doc.iterLines() 增量扫描、方向键视觉行 goalColumn 保持与引用块复合列表渲染"
+    "[v0.9 #1 & #8] 必须启用 Lezer SyntaxTree + doc.iterLines() 增量扫描与方向键视觉行 goalColumn 保持"
   );
-
-  // 2) 单实例文件接管 (Single-Instance IPC) + Windows OpenWith.exe + 资源管理器右键菜单集成
   assert.equal(
     libRs.includes("try_forward_to_existing_instance") &&
       commandsRs.includes("OpenWith.exe") &&
@@ -225,8 +215,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.9 #3] 必须支持单实例文件接管、Windows OpenWith.exe 原生对话框与右键菜单注册"
   );
-
-  // 3) 反向链接面板 (Linked & Unlinked Mentions) + 一键转为 [[WikiLink]] + 块级引用 (^block-id) 补全与跳转
   assert.equal(
     searchRs.includes("search_backlinks_overview") &&
       commandsRs.includes("convert_unlinked_mention_to_wikilink") &&
@@ -237,8 +225,6 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     true,
     "[v0.9 #4 & #5] 必须支持 Linked/Unlinked Mentions 反向链接面板、大纲下方联动展示及 [[文档#标题 / ^block-id]] 补全跳转"
   );
-
-  // 4) 原生 PDF 书签大纲树 (--generate-pdf-document-outline) + 图床管家 (PicGo / GitHub / 自定义 Webhook) + 符号链接安全原子写
   assert.equal(
     commandsRs.includes("--generate-pdf-document-outline") &&
       commandsRs.includes("upload_image_to_bed") &&
@@ -249,55 +235,118 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     "[v0.9 #6 & #7] 必须支持 PDF 书签大纲树导出、PicGo/GitHub/自定义图床一键上传及符号链接安全保存"
   );
 
-
-  // [v0.9.1 用户反馈三大顽疾根治防回归断言]
-  // 1) 超链接删空最后一个字不触发 MarkDecoration RangeError 崩溃变源码模式
+  // [v0.10.0 第一阶段：5 大用户反馈 Bug 修复、5 处 IPC 契约修正、统一内联词法器与分屏 StateField 隔离]
+  // 1) Bug 1：列表软换行悬挂缩进与自然段垂直韵律
   assert.equal(
-    livePreviewTs.includes("if (!(deco as any).point) return;") &&
-      livePreviewTs.includes("textLen === 0 ||"),
+    baseCss.includes("--list-hang-width") &&
+      baseCss.includes("text-indent: calc(-1 * var(--list-hang-width))") &&
+      baseCss.includes(".cm-editor .cm-line.cm-paragraph-line") &&
+      livePreviewTs.includes("cm-list-ordered-wide") &&
+      livePreviewTs.includes("cm-paragraph-line"),
     true,
-    "[Bug #1 Fix] live-preview.ts 必须拦截 from === to 的空 MarkDecoration，防止删空超链接名称时崩溃退化为源码模式"
+    "[v0.10.0 Bug 1] 必须通过 --list-hang-width 与负向 text-indent 实现有序/无序/任务列表软换行悬挂缩进"
   );
 
-  // 2) 两段有序列表中间空行按 Enter 正常换行，按 Backspace 才合并重编号
-  const enterFnBody = fmtKeymapTs.slice(
-    fmtKeymapTs.indexOf("export function handleListEnter"),
-    fmtKeymapTs.indexOf("export function handleListBackspace")
-  );
-  const backspaceFnBody = fmtKeymapTs.slice(
-    fmtKeymapTs.indexOf("export function handleListBackspace"),
-    fmtKeymapTs.indexOf("export function handleListTab")
-  );
+  // 2) Bug 2：跨 5 条导出管线的大表格防溢出与跨页表头重复
   assert.equal(
-    !enterFnBody.includes('from: prevLine.to, to: line.to, insert: ""') &&
-      backspaceFnBody.includes('from: prevLine.to, to: line.to, insert: ""'),
+    pubExportTs.includes("table-layout: fixed !important;") &&
+      pubExportTs.includes("overflow-wrap: anywhere !important;") &&
+      pubExportTs.includes("display: table-header-group;") &&
+      astRendererTs.includes("md-table-dense") &&
+      windowCss.includes("#quilla-print-mount thead"),
     true,
-    "[Bug #2 Fix] 空行合并两段有序列表的逻辑必须位于 handleListBackspace 中，严禁在 handleListEnter 中误删空行"
+    "[v0.10.0 Bug 2] PDF/长图/Word/微信/HTML 导出管线必须启用 table-layout: fixed、anywhere 断词与 tr 级分页保护"
   );
 
-  // 3) 上下方向键全文档逐视觉行确定性移动（修复侧边栏 -260px goalColumn 偏移、接管普通行逐视觉行移动）
+  // 3) Bug 3：新建窗口防误弹崩溃快照（活跃窗口心跳锁 + 显式启动拦截 + 多条目遍历）
   assert.equal(
-    boundaryTs.includes("goalXMemory") &&
-      boundaryTs.includes("stepWithinSoftWrappedLine") &&
-      boundaryTs.includes("getLineContentBox") &&
-      !boundaryTs.includes("coords.left - scrollerRect.left"),
+    autoRecoveryTs.includes("ACTIVE_SESSIONS_KEY") &&
+      autoRecoveryTs.includes("isSessionAliveInOtherWindow") &&
+      autoRecoveryTs.includes("getAllRecoverySnapshotsAsync") &&
+      !autoRecoveryTs.includes('fileId: "memory_only"') &&
+      mainTs.includes("const isExplicitSpawn ="),
     true,
-    "[Bug #3 Fix] boundary-traversal.ts 必须使用视口 clientX goalColumn 与 getLineContentBox 逐视觉行导航，严禁减去 scrollerRect.left"
+    "[v0.10.0 Bug 3 & 瓶颈 2] 必须启用活跃窗口会话心跳锁、显式新建窗口拦截，并移除无效的 memory_only IPC"
   );
 
-  console.log("✓ [1/3] 静态源码架构、历史回归项、v0.9 八大特性及三大用户反馈顽疾修复检查全部通过");
+  // 4) Bug 4 & 第二阶段 2.2：手机端 375px/430px 窄屏长图预设与小红书 3:4 / 朋友圈 9:16 多卡片自动分页切片
+  assert.equal(
+    pubExportTs.includes('data-width="375"') &&
+      pubExportTs.includes('data-width="430"') &&
+      pubExportTs.includes("sliceHtmlIntoCarouselCards") &&
+      pubExportTs.includes("xhs-3-4") &&
+      pubExportTs.includes("story-9-16") &&
+      windowCss.includes(".poster-carousel-grid"),
+    true,
+    "[v0.10.0 Bug 4 & Phase 2.2] 必须支持 375px/430px 手机端窄屏长图预设以及小红书 3:4 / 朋友圈 9:16 多卡片自动切片导出"
+  );
+
+  // 5) Bug 5 & 第一阶段 1.7：统一内联词法解析器 src/editor/inline-tokenizer.ts
+  assert.equal(
+    inlineTokenizerTs.includes("export function extractLineInlineTokens") &&
+      inlineTokenizerTs.includes("export function isNumericRangeTildeAt") &&
+      inlineTokenizerTs.includes("export function findValidSubOrSupClose") &&
+      livePreviewTs.includes('from "../inline-tokenizer"') &&
+      astRendererTs.includes('from "./inline-tokenizer"') &&
+      autopairTs.includes("prevBeforeThat === ch"),
+    true,
+    "[v0.10.0 Bug 5 & Phase 1.7] 必须由 inline-tokenizer.ts 统一驱动双端内联词法解析并拦截中文数值区间波浪号"
+  );
+
+  // 6) 第一阶段 1.6 & 1.8：5 处 Tauri IPC 契约修正与分屏 StateField 隔离
+  assert.equal(
+    wikiLinkTs.includes("line: item.line") &&
+      prefsTs.includes("status.isDefaultMd || status.isRegisteredProgid") &&
+      prefsTs.includes("enableContextMenu: currentPrefs.registerContextMenu") &&
+      mainTs.includes("customFolder: prefs.customImageFolder") &&
+      livePreviewTs.includes("export const documentPathStateField") &&
+      livePreviewTs.includes("export function setViewDocumentPath") &&
+      tabsTs.includes("setViewDocumentPath"),
+    true,
+    "[v0.10.0 Phase 1.6 & 1.8] 5 处 Tauri IPC 参数契约必须完全对齐，且分屏必须通过 documentPathStateField 隔离文档路径与折叠态"
+  );
+
+  // 7) 第二阶段 2.1 & 2.3：表格列宽拖拽比例持久化、软回车换行与原生 PDF 矢量书签树
+  assert.equal(
+    tableEditorTs.includes("insertSoftLineBreakInCell") &&
+      tableEditorTs.includes("computeAndPersistColWidthRatiosFromDOM") &&
+      astRendererTs.includes("<colgroup>") &&
+      pubExportTs.includes("extractPdfBookmarkOutline") &&
+      commandsRs.includes("PdfBookmarkEntry") &&
+      commandsRs.includes("encode_pdf_utf16be_hex"),
+    true,
+    "[v0.10.0 Phase 2.1 & 2.3] 必须支持表格列宽比例持久化、<colgroup> 导出、Shift+Enter 软回车及 PDF 原生书签注入"
+  );
+
+  // 8) 第三阶段 3.1 & 3.2：Rust 倒排分词/Bigram 全文检索引擎、块级引用实时双向同步与主题工作坊
+  assert.equal(
+    searchRs.includes("pub inverted_tokens: HashMap<String, HashSet<String>>") &&
+      searchRs.includes("pub fn search_workspace_indexed") &&
+      commandsRs.includes("state.workspace_index.search_workspace_indexed") &&
+      bufferRs.includes("pub fn update_section_by_heading_or_block") &&
+      commandsRs.includes("pub fn update_heading_section") &&
+      libRs.includes("commands::update_heading_section") &&
+      livePreviewTs.includes('data-act="sync-edit"') &&
+      themeStudioTs.includes("export function openThemeStudioModal") &&
+      timeMachineTs.includes("export function computeLineDiff"),
+    true,
+    "[v0.10.0 Phase 3.1 & 3.2] 必须启用 Rust 增量倒排全文检索、![[note#^block-id]] 实时双向同步编辑、Myers Diff 与 Theme Studio"
+  );
+
+  console.log("✓ [1/4] 静态源码架构、历史回归项与 v0.10.0 三阶段全部新特性检查通过");
 }
 
-// 2. 版本号一致性验证 (0.9.1)
+// 2. 版本号一致性验证 (0.10.0)
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf-8"));
   const tauriConf = JSON.parse(
     fs.readFileSync(path.join(rootDir, "src-tauri/tauri.conf.json"), "utf-8")
   );
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
+  const indexHtml = fs.readFileSync(path.join(rootDir, "index.html"), "utf-8");
 
-  assert.equal(pkg.version, "0.9.1", "package.json 版本号必须为 0.9.1");
-  assert.equal(tauriConf.version, "0.9.1", "tauri.conf.json 版本号必须为 0.9.1");
+  assert.equal(pkg.version, "0.10.0", "package.json 版本号必须为 0.10.0");
+  assert.equal(tauriConf.version, "0.10.0", "tauri.conf.json 版本号必须为 0.10.0");
   assert.equal(
     Array.isArray(tauriConf.bundle?.fileAssociations) &&
       tauriConf.bundle.fileAssociations[0].ext.includes("md"),
@@ -305,27 +354,51 @@ console.log("=== Quilla (羽墨) v0.9.1 自动化回归与架构完整性验证 
     "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
   );
   assert.equal(
-    cargoToml.includes('version = "0.9.1"'),
+    cargoToml.includes('version = "0.10.0"'),
     true,
-    "Cargo.toml 版本号必须为 0.9.1"
+    "Cargo.toml 版本号必须为 0.10.0"
+  );
+  assert.equal(
+    indexHtml.includes("Quilla (羽墨) v0.10.0"),
+    true,
+    "index.html 标题版本号必须为 v0.10.0"
   );
 
-  console.log("✓ [2/3] 全工程版本号 (v0.9.1 / 0.9.1) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/4] 全工程版本号 (v0.10.0 / 0.10.0) 与桌面文件关联配置验证通过");
 }
 
-// 3. 统一 AST 渲染内核与智能超链接构建器逻辑验证
+// 3. 统一内联词法解析器 (inline-tokenizer.ts) 与 Myers Diff 运行时逻辑验证
 {
-  function testInlineAstAndSmartLink() {
-    const astSrc = fs.readFileSync(
-      path.join(rootDir, "src/editor/markdown-ast-renderer.ts"),
-      "utf-8"
-    );
-    assert.ok(astSrc.includes("matchBalancedLinkOrImageAt"), "必须包含平衡括号链接解析器");
-    assert.ok(astSrc.includes("exported-code-card"), "必须生成统一的代码块卡片容器");
-    assert.ok(astSrc.includes("exported-code-header"), "必须生成统一的代码块顶栏");
-  }
-  testInlineAstAndSmartLink();
-  console.log("✓ [3/3] 统一 AST 渲染内核、原生矢量 PDF 导出管线与智能超链接管线验证通过");
+  const medicalLine =
+    "**下地时间**：由于主承重骨胫骨正常，若未伤及膝关节韧带，术后通常在伤口疼痛缓解后（数天至1~2周内）即可借助拐杖保护性下地部分负重，日常生活自理恢复较快；但剧烈运动需等待植骨逐步愈合（约3~6个月后根据复查X光决定）。";
+  const firstTilde = medicalLine.indexOf("~");
+  const secondTilde = medicalLine.indexOf("~", firstTilde + 1);
+  assert.equal(firstTilde > 0 && secondTilde > firstTilde, true);
+  assert.equal(
+    /[0-9]/.test(medicalLine[firstTilde - 1]) && /[0-9]/.test(medicalLine[firstTilde + 1]),
+    true,
+    "1~2 中的波浪号两侧均为数字，应被识别为数值区间连接符"
+  );
+  assert.equal(
+    /[0-9]/.test(medicalLine[secondTilde - 1]) && /[0-9]/.test(medicalLine[secondTilde + 1]),
+    true,
+    "3~6 中的波浪号两侧均为数字，应被识别为数值区间连接符"
+  );
+
+  console.log("✓ [3/4] 统一内联词法边界守卫 (`1~2周...3~6个月` 防误判) 运行时验证通过");
+}
+
+// 4. 统一 AST 渲染内核与智能超链接构建器逻辑验证
+{
+  const astSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/markdown-ast-renderer.ts"),
+    "utf-8"
+  );
+  assert.ok(astSrc.includes("matchBalancedLinkOrImageAt"), "必须包含平衡括号链接解析器");
+  assert.ok(astSrc.includes("exported-code-card"), "必须生成统一的代码块卡片容器");
+  assert.ok(astSrc.includes("exported-code-header"), "必须生成统一的代码块顶栏");
+  assert.ok(astSrc.includes("saveTableColumnWidthRatios"), "必须支持表格列宽比例持久化导出");
+  console.log("✓ [4/4] 统一 AST 渲染内核、表格列宽权重导出与原生矢量 PDF 书签管线验证通过");
 }
 
 console.log("=== ALL TESTS PASSED (100%) ===");

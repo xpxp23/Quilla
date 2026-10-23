@@ -372,4 +372,119 @@ impl DocumentBuffer {
         }
         out.trim().to_string()
     }
+
+    /// 块级引用 (`![[note#^block-id]]`) 与章节引用 (`![[note#Heading]]`) 原位双向同步写回引擎 (v0.10.0 新增)
+    pub fn update_section_by_heading_or_block(
+        &mut self,
+        heading_query: Option<&str>,
+        new_section_content: &str,
+    ) -> Result<String, String> {
+        let full_text = self.rope.to_string();
+        let mut lines: Vec<String> = full_text.lines().map(|s| s.to_string()).collect();
+        let total_lines = lines.len();
+
+        let mut start_line_idx = 0;
+        if total_lines >= 3 && lines[0].trim() == "---" {
+            let limit = total_lines.min(40);
+            for k in 1..limit {
+                let trimmed = lines[k].trim();
+                if trimmed == "---" || trimmed == "..." {
+                    start_line_idx = k + 1;
+                    break;
+                }
+            }
+        }
+
+        let query_clean = heading_query
+            .map(|q| q.trim().trim_start_matches('#').trim().to_lowercase())
+            .unwrap_or_default();
+
+        if query_clean.is_empty() {
+            let mut updated_lines = lines[..start_line_idx].to_vec();
+            for l in new_section_content.lines() {
+                updated_lines.push(l.to_string());
+            }
+            let updated_doc = updated_lines.join("\n");
+            self.set_text(&updated_doc);
+            return Ok(updated_doc);
+        }
+
+        // 1. 匹配 `^block-id` 块级锚点并双向写回
+        if let Some(target_block_id) = query_clean.strip_prefix('^') {
+            let target_id_clean = target_block_id
+                .split_whitespace()
+                .next()
+                .unwrap_or(target_block_id)
+                .trim();
+
+            for idx in start_line_idx..total_lines {
+                if let Some((bid, preview_text)) = extract_trailing_block_id(&lines[idx]) {
+                    if bid.to_lowercase() == target_id_clean {
+                        let cleaned_new = new_section_content
+                            .trim()
+                            .trim_end_matches(&format!("^{}", bid))
+                            .trim();
+                        if !preview_text.is_empty() {
+                            lines[idx] = format!("{} ^{}", cleaned_new, bid);
+                        } else if idx > start_line_idx {
+                            let mut blk_start = idx - 1;
+                            while blk_start > start_line_idx {
+                                if lines[blk_start - 1].trim().is_empty() {
+                                    break;
+                                }
+                                blk_start -= 1;
+                            }
+                            let replacement: Vec<String> =
+                                cleaned_new.lines().map(|s| s.to_string()).collect();
+                            lines.splice(blk_start..idx, replacement);
+                        } else {
+                            lines[idx] = format!("{} ^{}", cleaned_new, bid);
+                        }
+                        let updated_doc = lines.join("\n");
+                        self.set_text(&updated_doc);
+                        return Ok(updated_doc);
+                    }
+                }
+            }
+            return Err(format!("未找到块级引用锚点 ^{}", target_id_clean));
+        }
+
+        // 2. 匹配 `#Heading` 标题章节并双向写回
+        let headings = self.extract_headings();
+        let target_idx = headings.iter().position(|h| {
+            let h_low = h.text.to_lowercase();
+            h_low == query_clean || h_low.contains(&query_clean)
+        });
+
+        if let Some(t_idx) = target_idx {
+            let target_h = &headings[t_idx];
+            let sec_start = target_h.line.saturating_sub(1);
+            let mut sec_end = total_lines;
+            for next_h in &headings[t_idx + 1..] {
+                if next_h.level <= target_h.level {
+                    sec_end = next_h.line.saturating_sub(1);
+                    break;
+                }
+            }
+
+            let trimmed_new = new_section_content.trim();
+            let mut replacement: Vec<String> = Vec::new();
+            if !trimmed_new.starts_with('#') && sec_start < lines.len() {
+                replacement.push(lines[sec_start].clone());
+            }
+            for l in trimmed_new.lines() {
+                replacement.push(l.to_string());
+            }
+            if sec_end < total_lines {
+                replacement.push(String::new());
+            }
+
+            lines.splice(sec_start..sec_end.min(total_lines), replacement);
+            let updated_doc = lines.join("\n");
+            self.set_text(&updated_doc);
+            return Ok(updated_doc);
+        }
+
+        Err(format!("未找到章节标题: {}", query_clean))
+    }
 }

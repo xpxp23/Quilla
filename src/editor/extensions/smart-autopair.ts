@@ -16,10 +16,10 @@ const markdownCloseBracketsConfig = markdownLanguage.data.of({
 });
 
 /**
- * Typora 风格成对标点与选区自动包裹扩展 (v0.9 增强版)
+ * Typora 风格成对标点与选区自动包裹扩展 (v0.10.0 增强版)
  * - 支持英文与中文全角成对符号（（）、【】、《》、""、''）选区包裹
  * - 支持光标紧邻中文字符时的 ( / [ / { / " / ** / ~~ / == 自动配对
- * - 修复行首输入 *** 水平分割线或列表符号时被误扩展为 **** 的逻辑异常
+ * - 修复行首输入 *** 水平分割线或行内连续输入第 3 个 * / ~ / = 时被误扩展为 5 个符号的逻辑异常
  */
 const markdownSurroundHandler = EditorView.domEventHandlers({
   keydown: (event: KeyboardEvent, view: EditorView) => {
@@ -147,10 +147,14 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
       const line = view.state.doc.lineAt(pos);
       const beforeInLine = line.text.slice(0, pos - line.from);
       const prevChar = view.state.sliceDoc(Math.max(0, pos - 1), pos);
+      const prevBeforeThat = pos >= 2 ? view.state.sliceDoc(pos - 2, pos - 1) : "";
       const nextTwo = view.state.sliceDoc(pos, pos + 2);
 
-      // 若在行首连续输入 *** 或 ~~~（准备输入分割线或代码块围栏），不自动补齐成对后缀
-      if ((ch === "*" || ch === "~") && /^[*~]{2,}$/.test(beforeInLine.trim())) {
+      // 若在行首连续输入 *** 或 ~~~（准备输入分割线或代码块围栏），或前面已有两个及以上相同符号，不自动补齐成对后缀
+      if (
+        ((ch === "*" || ch === "~") && /^[*~]{2,}$/.test(beforeInLine.trim())) ||
+        prevBeforeThat === ch
+      ) {
         return false;
       }
 
@@ -159,7 +163,7 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
         view.dispatch({ selection: { anchor: pos + 1 } });
         return true;
       }
-      if (prevChar === ch && nextChar !== ch && isNextCjkOrPunct) {
+      if (prevChar === ch && prevBeforeThat !== ch && nextChar !== ch && isNextCjkOrPunct) {
         event.preventDefault();
         view.dispatch({
           changes: { from: pos, to: pos, insert: ch + ch + ch },
@@ -212,7 +216,7 @@ export function smartAutopairExtension(): Extension[] {
   return [
     markdownCloseBracketsConfig,
     closeBrackets(),
-    markdownSurroundHandler,
-    Prec.high(keymap.of(closeBracketsKeymap)),
+    Prec.high(markdownSurroundHandler),
+    keymap.of(closeBracketsKeymap),
   ];
 }

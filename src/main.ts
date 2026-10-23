@@ -40,10 +40,16 @@ import {
   onPreferencesChange,
   openPreferencesModal,
 } from "./components/preferences";
+import {
+  applyThemeStudioToDOM,
+  openThemeStudioModal,
+  buildThemeStudioExportVariablesCss,
+} from "./components/theme-studio";
 import { initFloatingToolbars } from "./editor/extensions/floating-toolbars";
 import { initSmartPaste } from "./editor/extensions/smart-paste";
 import {
   setActiveDocumentPath,
+  setViewDocumentPath,
   clearImageCache,
   stripInlineMarkdown,
   restoreFoldState,
@@ -88,41 +94,41 @@ import { renderMarkdownDocumentToHtml } from "./editor/markdown-ast-renderer";
 import { quillaPluginRegistry } from "./editor/plugin-system";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.9 全景工作台指南
+title: Quilla (羽墨) v0.10.0 全景工作台指南
 author: Quilla Studio
 tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.9.0
+version: 0.10.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.9
+# 欢迎使用 Quilla (羽墨) v0.10.0
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
-> [!TIP] Quilla v0.9 全景深度精进与架构升级
-> - **第一阶段 · 块级与大纲深度操控**：左侧 6 点抓手采用真实 DOM 几何与悬停桥接锁，点击或右键唤起 **块级命令菜单（Turn Into / 克隆 / 移动 / 章节折叠）**；侧边栏大纲支持右键 **单标题升降级、带子标题整体升级/降级（思源笔记风格）、复制章节双链与整章操作**。
-> - **第二阶段 · 块级嵌入与知识图谱**：支持 \`![[文档#标题]]\` 块级/章节实时嵌入卡片、YAML Front Matter 可视化属性面板、多级 \`#父标签/子标签\` 胶囊检索，以及按 \`Ctrl+G\` 唤起 **交互式双链知识图谱**。
-> - **第三阶段 · 时间机器与多渠道发布**：按 \`Ctrl+Alt+H\` 打开 **本地版本历史（Time Machine）** 进行逐行 Diff 对比与一键无损回滚；支持 **一键复制微信公众号/知乎内联富文本**、导出 **Word (\`.doc\`)** 及 **社交长图分享卡片 (\`.png\`)**。
+> [!TIP] Quilla v0.10.0 核心演进与生产力跃升
+> - **第一阶段 · 统一词法与独立多实例分屏**：全新 \`inline-tokenizer.ts\` 统一双端内联词法解析并内置中文数字区间（如 1~2周、3~6个月）3 层边界守卫；分屏状态与文档路径迁入 CodeMirror \`StateField\` 实现真正的多实例隔离。
+> - **第二阶段 · 表格深层增强、多卡自动切片与 PDF 矢量书签**：支持表格列宽拖拽比例持久化与 \`Shift+Enter\` 可视化多行软回车；海报长图新增 ` + "`375px / 430px`" + ` 手机视口及 **小红书 3:4 / 朋友圈 9:16 多卡片自动分页切片**；PDF 导出自动注入 H1~H6 原生可折叠目录书签。
+> - **第三阶段 · 增量全文检索引擎、块级双向同步与主题工作坊**：Rust 倒排分词与 Bigram 增量检索引擎实现毫秒级检索与 \`#标签\` 组合过滤；支持 \`![[笔记#^block-id]]\` 块级嵌入原位双向同步编辑；内置 **主题与排版预设工作坊（Theme Studio）**。
 
 ---
 
-## 体验 1：章节折叠、块级嵌入与多级列表
+## 体验 1：章节折叠、块级双向同步嵌入与悬挂缩进列表
 
-点击任意标题右侧的折叠图标（或通过大纲右键菜单）即可收起整章正文。您还可以使用 \`![[#体验 4：一体式代码块卡片与数学公式]]\` 在任意位置实时嵌入其他章节或笔记内容：
+点击任意标题右侧的折叠图标（或通过大纲右键菜单）即可收起整章正文。您还可以使用 \`![[#体验 4：一体式代码块卡片与数学公式]]\` 或块 ID \`![[#^core-arch]]\` 在任意位置实时嵌入并双向同步编辑内容：
 
 ![[#体验 4：一体式代码块卡片与数学公式]]
 
-1. 一级核心架构：Rust Ropey 增量缓冲 + CodeMirror 6 Lezer 语法树
+1. 一级核心架构：Rust Ropey 增量缓冲 + CodeMirror 6 Lezer 语法树，支持多行自动换行后的完美悬挂缩进对齐 ^core-arch
 2. 多级列表智能编号（在任意层级按 \`Tab\` / \`Shift+Tab\` 自动归零并重排后续序号，光标始终精准落于文本右侧）：
-   1. 子级列表项自动从 \`1.\` 独立起算
+   1. 子级列表项自动从 \`1.\` 独立起算，软换行时文字左边缘严格对齐首行正文起点
    2. 按 \`Alt + ↑/↓\` 可整块上下移动，按 \`Ctrl + D\` 一键克隆当前块
-3. 可视化交互表格（支持拖拽行列换位、拖拽列边缘调宽与 \`Ctrl+K\` 插入超链接）：
+3. 可视化交互表格（支持拖拽列宽按比例同步导出、拖拽行列换位与 \`Shift+Enter\` 单元格内直接多行换行）：
 
 | 模块名称 | 核心技术 | 关键特性 | 性能指标 |
 | :--- | :---: | :--- | ---: |
-| Lezer AST Engine | CodeMirror 6 | 增量语法树与单趟结构缓存 | < 0.5ms |
-| Block & Outline | Real DOM Geometry | 抓手右键菜单 + 思源式子树整体升降级 | 零偏移 |
-| Knowledge Graph | Force SVG + Rayon | \`[[双链]]\` / \`![[嵌入块]]\` / 交互式力导向图谱 | 60 FPS |
-| Time Machine | LCS Visual Diff | 本地历史版本时间轴对比与一键回滚 | 零丢失 |
+| Unified Tokenizer | 3-Layer Lexical Guard | 根除 \`1~2周...3~6个月\` 误判与双端差异 | 100% 一致 |
+| Carousel & PDF | 3:4 / 9:16 Slicer + Outlines | 小红书多图自动切片 + PDF 原生目录书签 | 出版级 |
+| Incremental FTS | Inverted Bigram + Block Sync | 毫秒级增量检索 + \`![[#^block-id]]\` 双向同步 | < 1ms |
+| Theme Studio | Live CSS Variables | 字号缩放 / 段距 / 主题色 / 水印签名微调 | 实时预览 |
 
 ---
 
@@ -131,8 +137,8 @@ version: 0.9.0
 > [!NOTE] 笔记与提示 (Note / Tip / Important / Warning / Caution)
 > 光标移出时自动渲染为带四周边框、矢量图标与主题色的精致卡片，点击头部或移入首行即可原位修改类型与标题。
 
-> [!WARNING] 多渠道一键发布提示
-> 点击左上角主菜单或编辑器右键菜单中的 **「复制为公众号 / 知乎富文本」**，即可将全文转化为带内联样式的精美排版，直接粘贴至微信公众号后台！
+> [!WARNING] 多渠道一键发布与主题工作坊
+> 按 \`Ctrl+Shift+T\` 打开 **「主题与排版预设工作坊」** 定制专属模板，或点击主菜单导出 **手机窄屏长图 / 小红书多图卡片**！
 
 ---
 
@@ -140,9 +146,9 @@ version: 0.9.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.9"] --> Phase1["块手柄菜单 & 思源式大纲右键"]
-    Start --> Phase2["![[块级嵌入]] & 双链知识图谱"]
-    Start --> Phase3["时间机器 Diff & 公众号/长图发布"]
+    Start["Quilla v0.10.0"] --> Phase1["统一词法解析 & 独立多实例分屏"]
+    Start --> Phase2["表格列宽持久化 & 小红书多卡切片 & PDF书签"]
+    Start --> Phase3["增量全文检索 & 块级双向同步 & 主题工作坊"]
 \`\`\`
 
 ---
@@ -151,13 +157,13 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.9!");
+    println!("Hello, Quilla (羽墨) v0.10.0!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
 \`\`\`
 
-- 质能方程：$E = mc^2$，欧拉恒等式：$e^{i\\pi} + 1 = 0$
+- 质能方程：$E = mc^2$，欧拉恒等式：$e^{i\\pi} + 1 = 0$，化学分子式：$\text{H}_2\text{O}$（或下标 H~2~O 与上标 x^2^）
 - 高斯正态分布积分公式：
 $$
 \\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}
@@ -192,6 +198,7 @@ class App {
 
   async init() {
     applyPreferencesToDOM();
+    applyThemeStudioToDOM();
     themeLoader.init();
 
     initTitlebar({
@@ -391,7 +398,7 @@ class App {
     initFloatingToolbars(this.editorView, (filePath) => this.loadFile(filePath));
     initSmartPaste(this.editorView);
 
-    // 监听偏好设置变更并实时刷新编辑器装饰器与自动保存策略
+    // 监听偏好设置与主题工作坊变更并实时刷新编辑器装饰器与自动保存策略
     onPreferencesChange(() => {
       if (this.editorView) {
         this.editorView.dispatch({
@@ -407,6 +414,19 @@ class App {
       this.setupAutoSaveTimer();
     });
     window.addEventListener("app-theme-changed", () => {
+      if (this.editorView) {
+        this.editorView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
+      }
+      const secView = this.tabsManager?.getSecondaryView();
+      if (secView) {
+        secView.dispatch({
+          effects: forceRefreshEffect.of(true),
+        });
+      }
+    });
+    window.addEventListener("quilla-theme-studio-changed", () => {
       if (this.editorView) {
         this.editorView.dispatch({
           effects: forceRefreshEffect.of(true),
@@ -607,6 +627,9 @@ class App {
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") {
         e.preventDefault();
         document.body.classList.toggle("pin-outline");
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        openThemeStudioModal();
       } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
         e.preventDefault();
         this.openKnowledgeGraph();
@@ -690,6 +713,7 @@ class App {
       onSaveFileAs: () => this.saveFileAs(),
       onOpenTimeMachine: () => this.openTimeMachine(),
       onOpenKnowledgeGraph: () => this.openKnowledgeGraph(),
+      onOpenThemeStudio: () => openThemeStudioModal(),
       onCopyWeChatHtml: () => this.handleCopyWeChatHtml(),
       onExportWordDoc: () => this.handleExportWordDoc(),
       onExportSharePoster: () => this.handleExportSharePoster(),
@@ -770,12 +794,13 @@ class App {
             active.savedContent = payload.savedContent ?? "";
             active.isModified = Boolean(payload.isModified);
             active.foldSnapshot = payload.foldSnapshot;
-            restoreFoldState(active.foldSnapshot);
+            restoreFoldState(active.foldSnapshot, this.editorView);
             active.editorState = createEditorStateForView(
               this.editorView,
               payload.content ?? ""
             );
             this.editorView.setState(active.editorState);
+            setViewDocumentPath(this.editorView, active.filePath);
             this.tabsManager?.renderTabs();
             this.syncFromActiveTab(active);
           }
@@ -805,6 +830,7 @@ class App {
         active.isModified = false;
         active.editorState = createEditorStateForView(this.editorView, "");
         this.editorView.setState(active.editorState);
+        setViewDocumentPath(this.editorView, null);
         this.tabsManager?.renderTabs();
         this.syncFromActiveTab(active);
       } else {
@@ -827,10 +853,12 @@ class App {
         if (!loaded) {
           localStorage.removeItem("typora_last_file");
           setActiveDocumentPath(null);
+          if (this.editorView) setViewDocumentPath(this.editorView, null);
           updateWindowTitle("未命名.md", false);
         }
       } else {
         setActiveDocumentPath(null);
+        if (this.editorView) setViewDocumentPath(this.editorView, null);
         updateWindowTitle("未命名.md", false);
       }
     }
@@ -838,42 +866,56 @@ class App {
     // 刷新侧边栏标签云
     this.refreshSidebarTags();
 
-    await checkAndPromptRecovery(async (snapshot) => {
-      this.currentFilePath = snapshot.filePath;
-      setActiveDocumentPath(snapshot.filePath);
-      if (snapshot.filePath) {
-        try {
-          this.savedContent = await invoke<string>("read_file_content", {
-            path: snapshot.filePath,
-          });
-        } catch {
+    // 当窗口由“新建独立窗口”、“标签页拖拽拆分”或“命令行打开指定文件”启动时，跳过全局崩溃快照弹窗 (Bug 3 修复)
+    const isExplicitSpawn =
+      isNewWin ||
+      urlNew === "1" ||
+      Boolean(urlTransfer) ||
+      Boolean(cliFile) ||
+      Boolean(urlOpen);
+
+    if (!isExplicitSpawn) {
+      await checkAndPromptRecovery(async (snapshot) => {
+        this.currentFilePath = snapshot.filePath;
+        setActiveDocumentPath(snapshot.filePath);
+        if (this.editorView) {
+          setViewDocumentPath(this.editorView, snapshot.filePath);
+        }
+        if (snapshot.filePath) {
+          try {
+            this.savedContent = await invoke<string>("read_file_content", {
+              path: snapshot.filePath,
+            });
+          } catch {
+            this.savedContent = "";
+          }
+        } else {
           this.savedContent = "";
         }
-      } else {
-        this.savedContent = "";
-      }
-      if (this.editorView) {
-        resetEditorDocument(this.editorView, snapshot.content);
-        this.editorView.focus();
-      }
-      if (this.tabsManager) {
-        const active = this.tabsManager.getActiveTab();
-        if (active && this.editorView) {
-          active.filePath = snapshot.filePath;
-          active.title =
-            snapshot.title ||
-            (snapshot.filePath ? snapshot.filePath.split(/[\\/]/).pop()! : "未命名.md");
-          active.savedContent = this.savedContent;
-          active.editorState = this.editorView.state;
-          active.isModified = true;
-          this.tabsManager.renderTabs();
+        if (this.editorView) {
+          resetEditorDocument(this.editorView, snapshot.content);
+          setViewDocumentPath(this.editorView, snapshot.filePath);
+          this.editorView.focus();
         }
-      }
-      const treeContainer = document.getElementById("file-library-tree");
-      syncActiveTreeItem(treeContainer, snapshot.filePath);
-      this.handleContentChange(snapshot.content);
-      showToast("已恢复未保存的文档草稿", "success");
-    });
+        if (this.tabsManager) {
+          const active = this.tabsManager.getActiveTab();
+          if (active && this.editorView) {
+            active.filePath = snapshot.filePath;
+            active.title =
+              snapshot.title ||
+              (snapshot.filePath ? snapshot.filePath.split(/[\\/]/).pop()! : "未命名.md");
+            active.savedContent = this.savedContent;
+            active.editorState = this.editorView.state;
+            active.isModified = true;
+            this.tabsManager.renderTabs();
+          }
+        }
+        const treeContainer = document.getElementById("file-library-tree");
+        syncActiveTreeItem(treeContainer, snapshot.filePath);
+        this.handleContentChange(snapshot.content);
+        showToast("已恢复未保存的文档草稿", "success");
+      });
+    }
   }
 
   private refreshSidebarTags() {
@@ -952,34 +994,40 @@ class App {
 
   private async handleCopyWeChatHtml() {
     const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
     if (!targetView) return;
     const docText = targetView.state.doc.toString();
-    const title = this.currentFilePath
-      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
-      : "羽墨笔记";
-    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const docPath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const title = docPath
+      ? docPath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : focusedTab?.title.replace(/\.(md|markdown|txt)$/i, "") || "羽墨笔记";
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText, docPath);
     await copyForWeChatOrZhihu(bodyHtml, title);
   }
 
   private async handleExportWordDoc() {
     const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
     if (!targetView) return;
     const docText = targetView.state.doc.toString();
-    const title = this.currentFilePath
-      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
-      : "document-export";
-    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const docPath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const title = docPath
+      ? docPath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : focusedTab?.title.replace(/\.(md|markdown|txt)$/i, "") || "document-export";
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText, docPath);
     await exportWordDocument(bodyHtml, title);
   }
 
   private async handleExportSharePoster() {
     const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
     if (!targetView) return;
     const docText = targetView.state.doc.toString();
-    const title = this.currentFilePath
-      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
-      : "羽墨分享卡片";
-    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const docPath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const title = docPath
+      ? docPath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : focusedTab?.title.replace(/\.(md|markdown|txt)$/i, "") || "羽墨分享卡片";
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText, docPath);
     const words = countMixedWords(docText);
     openSharePosterModal({
       bodyHtml,
@@ -998,6 +1046,9 @@ class App {
     this.isModified = tab.isModified;
     clearImageCache();
     setActiveDocumentPath(tab.filePath);
+    if (this.editorView) {
+      setViewDocumentPath(this.editorView, tab.filePath);
+    }
     if (tab.filePath) {
       localStorage.setItem("typora_last_file", tab.filePath);
     }
@@ -1388,18 +1439,20 @@ class App {
       const targetPath = selectedPath.trim();
       let content = this.editorView ? this.editorView.state.doc.toString() : this.savedContent;
 
-      // 若原先是未保存文档且粘贴过临时目录图片 (quilla-unsaved)，自动迁移至新文档配置的 assets 目录
+      // 若原先是未保存文档且粘贴过临时目录图片 (quilla-unsaved)，自动迁移至新文档配置的 assets 目录 (含 customFolder 与 namingMode)
       if (!this.currentFilePath && content.includes("quilla-unsaved")) {
         const tempImgRegex = /(!\[[^\]]*\]\()([^)\n]*quilla-unsaved[^)\n]*)(\))/g;
         const matches = Array.from(content.matchAll(tempImgRegex));
-        const folderMode = getPreferences().imageFolderMode;
+        const prefs = getPreferences();
         for (const m of matches) {
           const oldTempPath = m[2];
           try {
             const newRelPath = await invoke<string>("copy_image_to_assets", {
               docPath: targetPath,
               sourcePath: oldTempPath,
-              folderMode,
+              folderMode: prefs.imageFolderMode,
+              customFolder: prefs.customImageFolder,
+              namingMode: prefs.imageNamingMode,
             });
             content = content.split(oldTempPath).join(newRelPath);
           } catch {
@@ -1429,6 +1482,9 @@ class App {
       this.isModified = false;
       clearImageCache();
       setActiveDocumentPath(targetPath);
+      if (this.editorView) {
+        setViewDocumentPath(this.editorView, targetPath);
+      }
       addRecentFile(targetPath);
       localStorage.setItem("typora_last_file", targetPath);
       clearRecoverySnapshot(oldPath);
@@ -1498,6 +1554,7 @@ class App {
 
     if (this.editorView) {
       resetEditorDocument(this.editorView, initialText);
+      setViewDocumentPath(this.editorView, null);
       this.editorView.focus();
     }
 
@@ -1567,8 +1624,13 @@ class App {
    * 支持：连续段落合并、引用块内递归块级语法、GitHub 风格 Callout 高亮卡片、[[Wiki Links]] 双链胶囊、
    * ![[文档#标题]] 块级嵌入卡片、#多级标签、标准 W3C 嵌套列表树、Mermaid 矢量 SVG、KaTeX 公式及内联 Base64 图片。
    */
-  private async renderMarkdownToHtmlBody(md: string): Promise<string> {
+  private async renderMarkdownToHtmlBody(
+    md: string,
+    overrideDocPath?: string | null
+  ): Promise<string> {
     const inlineImages = getPreferences().inlineExportImages !== false;
+    const effectiveDocPath =
+      overrideDocPath !== undefined ? overrideDocPath : this.currentFilePath;
     const resolveImgSrc = async (rawSrc: string): Promise<string> => {
       if (
         !inlineImages ||
@@ -1580,7 +1642,7 @@ class App {
       }
       try {
         return await invoke<string>("read_image_base64", {
-          docPath: this.currentFilePath,
+          docPath: effectiveDocPath,
           relPath: rawSrc,
         });
       } catch {
@@ -1606,13 +1668,15 @@ class App {
    */
   private async printDocument() {
     const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
     if (!targetView) return;
     const docText = targetView.state.doc.toString();
-    const title = this.currentFilePath
-      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
-      : this.tabsManager?.getActiveTab()?.title.replace(/\.(md|markdown|txt)$/i, "") ||
+    const docPath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const title = docPath
+      ? docPath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : focusedTab?.title.replace(/\.(md|markdown|txt)$/i, "") ||
         "document-export";
-    const rawBodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const rawBodyHtml = await this.renderMarkdownToHtmlBody(docText, docPath);
     const bodyHtml = quillaPluginRegistry.runExportHtmlTransformers(rawBodyHtml, "pdf");
     const themeMeta = themeLoader.getThemeMeta();
 
@@ -1653,16 +1717,20 @@ class App {
   }
 
   private async exportHtml() {
-    if (!this.editorView) return;
-    const docText = this.editorView.state.doc.toString();
-    const title = this.currentFilePath
-      ? this.currentFilePath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
-      : "document-export";
+    const targetView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
+    if (!targetView) return;
+    const docText = targetView.state.doc.toString();
+    const docPath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const title = docPath
+      ? docPath.split(/[\\/]/).pop()!.replace(/\.(md|markdown|txt)$/i, "")
+      : focusedTab?.title.replace(/\.(md|markdown|txt)$/i, "") || "document-export";
     const themeMeta = themeLoader.getThemeMeta();
     const themeCss = themeMeta.css;
+    const studioCss = buildThemeStudioExportVariablesCss();
     const isNight = themeMeta.id === "night";
     const bodyClass = isNight ? `theme-${themeMeta.id} theme-night` : `theme-${themeMeta.id}`;
-    const bodyHtml = await this.renderMarkdownToHtmlBody(docText);
+    const bodyHtml = await this.renderMarkdownToHtmlBody(docText, docPath);
 
     const fullHtml = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1672,10 +1740,14 @@ class App {
   <title>${this.escapeHtml(title)}</title>
   <style>
     ${themeCss}
-    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; background-color: var(--bg-color, #ffffff); color: var(--text-color, #24292f); }
-    table.md-table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; }
-    table.md-table th, table.md-table td { border: 1px solid var(--border-color, #dfe2e5); padding: 8px 14px; }
+    ${studioCss}
+    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: var(--editor-line-height, 1.75); background-color: var(--bg-color, #ffffff); color: var(--text-color, #24292f); }
+    table.md-table { border-collapse: collapse; width: 100%; max-width: 100%; table-layout: fixed; margin: 1.2rem 0; }
+    table.md-table th, table.md-table td { border: 1px solid var(--border-color, #dfe2e5); padding: 8px 12px; min-width: 0 !important; word-break: break-word; overflow-wrap: anywhere; vertical-align: top; }
+    table.md-table.md-table-dense th, table.md-table.md-table-dense td { font-size: 12.5px; padding: 6px 8px; }
+    table.md-table.md-table-ultra-dense th, table.md-table.md-table-ultra-dense td { font-size: 11.5px; padding: 4px 6px; }
     table.md-table th { background-color: rgba(127, 127, 127, 0.06); font-weight: 600; }
+    table.md-table th code, table.md-table td code { white-space: pre-wrap; word-break: break-all; }
     .exported-code-card { margin: 1.2rem 0; border-radius: 8px; background: rgba(127, 127, 127, 0.06); border: 1px solid var(--border-color, #dfe2e5); overflow: hidden; }
     .exported-code-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; background: rgba(127, 127, 127, 0.08); border-bottom: 1px solid var(--border-color, #dfe2e5); font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif; font-size: 12px; color: var(--control-text-color, #57606a); }
     .exported-code-dots { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; }
@@ -1933,6 +2005,7 @@ ${bodyHtml}
     if (normCur === normOld) {
       this.currentFilePath = newPath;
       setActiveDocumentPath(newPath);
+      if (this.editorView) setViewDocumentPath(this.editorView, newPath);
       localStorage.setItem("typora_last_file", newPath);
       const fileName = newPath.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, this.isModified);
@@ -1941,6 +2014,7 @@ ${bodyHtml}
       const updated = newPath + rest;
       this.currentFilePath = updated;
       setActiveDocumentPath(updated);
+      if (this.editorView) setViewDocumentPath(this.editorView, updated);
       localStorage.setItem("typora_last_file", updated);
       const fileName = updated.split(/[\\/]/).pop() || "未命名.md";
       updateWindowTitle(fileName, this.isModified);
@@ -1958,6 +2032,7 @@ ${bodyHtml}
     if (normCur === normDel || normCur.startsWith(normDel + "/")) {
       this.currentFilePath = null;
       setActiveDocumentPath(null);
+      if (this.editorView) setViewDocumentPath(this.editorView, null);
       localStorage.removeItem("typora_last_file");
       updateWindowTitle("未命名.md", this.isModified);
       const treeContainer = document.getElementById("file-library-tree");
@@ -1998,6 +2073,7 @@ ${bodyHtml}
       this.isModified = false;
       clearImageCache();
       setActiveDocumentPath(filePath);
+      if (this.editorView) setViewDocumentPath(this.editorView, filePath);
       addRecentFile(filePath);
       localStorage.setItem("typora_last_file", filePath);
       saveFallbackLocalHistorySnapshot(filePath, content, "打开文件初始快照");
@@ -2014,6 +2090,7 @@ ${bodyHtml}
         }
         if (this.editorView) {
           resetEditorDocument(this.editorView, content);
+          setViewDocumentPath(this.editorView, filePath);
         }
         const treeContainer = document.getElementById("file-library-tree");
         syncActiveTreeItem(treeContainer, filePath);
@@ -2041,8 +2118,13 @@ ${bodyHtml}
 
   private highlightKeywordHtml(text: string, keyword: string): string {
     if (!keyword) return this.escapeHtml(text);
-    const escapedKw = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`(${escapedKw})`, this.searchCaseSensitive ? "g" : "gi");
+    const terms = keyword
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    if (terms.length === 0) return this.escapeHtml(text);
+    const re = new RegExp(`(${terms.join("|")})`, this.searchCaseSensitive ? "g" : "gi");
     const parts = text.split(re);
     return parts
       .map((part, idx) =>
@@ -2074,15 +2156,17 @@ ${bodyHtml}
       );
       resultsContainer.innerHTML = "";
       if (matches.length === 0) {
-        // 若未打开工作区但在当前文档中有匹配，展示当前文档内匹配行
+        // 若未打开工作区但在当前文档中有匹配，展示当前文档内匹配行（支持多分词与 #标签 组合匹配）
         const localDoc = this.editorView?.state.doc;
         const localHits: Array<{ line: number; text: string }> = [];
         if (localDoc) {
-          const kwCmp = this.searchCaseSensitive ? keyword : keyword.toLowerCase();
+          const terms = (this.searchCaseSensitive ? keyword : keyword.toLowerCase())
+            .split(/\s+/)
+            .filter(Boolean);
           for (let i = 1; i <= localDoc.lines; i++) {
             const lText = localDoc.line(i).text;
             const hay = this.searchCaseSensitive ? lText : lText.toLowerCase();
-            if (hay.includes(kwCmp)) {
+            if (terms.every((t) => hay.includes(t))) {
               localHits.push({ line: i, text: lText.trim() });
             }
           }
@@ -2104,7 +2188,7 @@ ${bodyHtml}
           `;
           item.addEventListener("click", () => {
             if (this.editorView) {
-              pulseSearchMatch(this.editorView, h.line, keyword);
+              pulseSearchMatch(this.editorView, h.line, keyword.split(/\s+/)[0] || keyword);
             }
           });
           resultsContainer.appendChild(item);
@@ -2121,6 +2205,7 @@ ${bodyHtml}
         metaEl.classList.remove("hidden");
       }
 
+      const primaryTerm = keyword.trim().split(/\s+/)[0] || keyword;
       matches.forEach((m) => {
         const item = document.createElement("div");
         item.className = "search-result-item";
@@ -2132,7 +2217,7 @@ ${bodyHtml}
         item.addEventListener("click", () => {
           this.loadFile(m.file).then(() => {
             if (this.editorView) {
-              pulseSearchMatch(this.editorView, m.line, keyword);
+              pulseSearchMatch(this.editorView, m.line, primaryTerm);
             }
           });
         });
@@ -2153,7 +2238,13 @@ ${bodyHtml}
 
       picker.addEventListener("click", (evt) => {
         const item = (evt.target as HTMLElement).closest(".menu-item") as HTMLElement;
-        if (!item || !item.dataset.theme) return;
+        if (!item) return;
+        if (item.dataset.action === "open-theme-studio") {
+          picker?.classList.add("hidden");
+          openThemeStudioModal();
+          return;
+        }
+        if (!item.dataset.theme) return;
         themeLoader.setTheme(item.dataset.theme);
         picker?.classList.add("hidden");
       });
@@ -2179,6 +2270,13 @@ ${bodyHtml}
         `
           )
           .join("")}
+        <div class="menu-divider"></div>
+        <div class="menu-item" data-action="open-theme-studio">
+          <div class="menu-item-left">
+            <span class="m-icon">🎨</span>
+            <span>主题与排版工作坊...</span>
+          </div>
+        </div>
       </div>
     `;
 

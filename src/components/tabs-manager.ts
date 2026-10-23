@@ -13,6 +13,7 @@ import {
   TabFoldSnapshot,
   snapshotFoldState,
   restoreFoldState,
+  setViewDocumentPath,
 } from "../editor/extensions/live-preview";
 import { initFloatingToolbars } from "../editor/extensions/floating-toolbars";
 import { initSmartPaste } from "../editor/extensions/smart-paste";
@@ -106,9 +107,9 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.9
- * - 新增顶部标签右键菜单（保存、另存为/重命名、在右侧分屏打开、独立窗口打开、复制路径/文件名、定位文件夹、关闭其他/右侧/已保存标签）(Bug #2)
- * - 修复非激活脏标签关闭时的保存逻辑 (Homologous Bug #9)
+ * 多标签页（Tabs）与左右分屏对比编辑（Split View）控制器 v0.10.0
+ * - 新增每个 EditorView 独立的 documentPathStateField 与折叠状态隔离（彻底修复分屏副面板相对路径图片裂图与折叠串扰）
+ * - 支持顶部标签右键菜单与非激活脏标签关闭时的保存逻辑
  */
 export class TabsManager {
   private tabs: DocumentTab[] = [];
@@ -147,6 +148,8 @@ export class TabsManager {
 
     const primaryView = this.callbacks.getPrimaryView();
     if (!primaryView) return;
+
+    setViewDocumentPath(primaryView, initialFilePath);
 
     primaryView.dom.addEventListener("focusin", () => {
       this.lastFocusedPane = "primary";
@@ -356,12 +359,13 @@ export class TabsManager {
     if (primaryView && activeTab) {
       activeTab.editorState = primaryView.state;
       activeTab.scrollTop = primaryView.scrollDOM.scrollTop;
-      activeTab.foldSnapshot = snapshotFoldState();
+      activeTab.foldSnapshot = snapshotFoldState(primaryView);
     }
     if (this.splitActive && this.secondaryView && this.secondaryTabId) {
       const secTab = this.getSecondaryTab();
       if (secTab && secTab.id !== activeTab?.id) {
         secTab.editorState = this.secondaryView.state;
+        secTab.foldSnapshot = snapshotFoldState(this.secondaryView);
       }
     }
   }
@@ -440,6 +444,7 @@ export class TabsManager {
       active.savedContent = content;
       active.isModified = false;
       active.scrollTop = 0;
+      active.foldSnapshot = undefined;
       active.editorState = createEditorStateForView(primaryView, content);
       this.applyTabToPrimaryView(active);
       this.renderTabs();
@@ -508,8 +513,10 @@ export class TabsManager {
     const wasTW = isTypewriterModeActive(primaryView);
     const wasFC = isFocusModeActive(primaryView);
 
-    restoreFoldState(tab.foldSnapshot);
+    restoreFoldState(tab.foldSnapshot, primaryView);
     primaryView.setState(tab.editorState);
+    setViewDocumentPath(primaryView, tab.filePath);
+    tab.editorState = primaryView.state;
 
     if (wasTW) toggleTypewriterMode(primaryView, true);
     if (wasFC) toggleFocusMode(primaryView, true);
@@ -549,6 +556,7 @@ export class TabsManager {
       tab.savedContent = "";
       tab.isModified = false;
       tab.scrollTop = 0;
+      tab.foldSnapshot = undefined;
       tab.editorState = createEditorStateForView(primaryView, "");
       this.applyTabToPrimaryView(tab);
       this.renderTabs();
@@ -711,6 +719,16 @@ export class TabsManager {
     target.title = title;
     target.savedContent = savedContent;
     target.isModified = false;
+
+    const primaryView = this.callbacks.getPrimaryView();
+    if (primaryView && target.id === this.activeTabId) {
+      setViewDocumentPath(primaryView, filePath);
+      target.editorState = primaryView.state;
+    }
+    if (this.secondaryView && target.id === this.secondaryTabId) {
+      setViewDocumentPath(this.secondaryView, filePath);
+    }
+
     this.renderTabs();
   }
 
@@ -722,6 +740,8 @@ export class TabsManager {
 
   public handleFileRenamed(oldPath: string, newPath: string) {
     const normOld = oldPath.replace(/\\/g, "/").toLowerCase();
+    const primaryView = this.callbacks.getPrimaryView();
+
     for (const tab of this.tabs) {
       if (!tab.filePath) continue;
       const normTab = tab.filePath.replace(/\\/g, "/").toLowerCase();
@@ -732,6 +752,15 @@ export class TabsManager {
         const rest = tab.filePath.slice(oldPath.length);
         tab.filePath = newPath + rest;
         tab.title = tab.filePath.split(/[\\/]/).pop() || "未命名.md";
+      } else {
+        continue;
+      }
+
+      if (primaryView && tab.id === this.activeTabId) {
+        setViewDocumentPath(primaryView, tab.filePath);
+      }
+      if (this.secondaryView && tab.id === this.secondaryTabId) {
+        setViewDocumentPath(this.secondaryView, tab.filePath);
       }
     }
     this.renderTabs();
@@ -739,12 +768,20 @@ export class TabsManager {
 
   public handleFileDeleted(deletedPath: string) {
     const normDel = deletedPath.replace(/\\/g, "/").toLowerCase();
+    const primaryView = this.callbacks.getPrimaryView();
+
     for (const tab of this.tabs) {
       if (!tab.filePath) continue;
       const normTab = tab.filePath.replace(/\\/g, "/").toLowerCase();
       if (normTab === normDel || normTab.startsWith(normDel + "/")) {
         tab.filePath = null;
         tab.isModified = true;
+        if (primaryView && tab.id === this.activeTabId) {
+          setViewDocumentPath(primaryView, null);
+        }
+        if (this.secondaryView && tab.id === this.secondaryTabId) {
+          setViewDocumentPath(this.secondaryView, null);
+        }
       }
     }
     this.renderTabs();
@@ -845,6 +882,11 @@ export class TabsManager {
       onOpenFile: (filePath) => this.callbacks.onOpenFileRequest(filePath),
     });
 
+    if (secTab) {
+      restoreFoldState(secTab.foldSnapshot, this.secondaryView);
+      setViewDocumentPath(this.secondaryView, secTab.filePath);
+    }
+
     initFloatingToolbars(this.secondaryView, (filePath) =>
       this.callbacks.onOpenFileRequest(filePath)
     );
@@ -886,6 +928,14 @@ export class TabsManager {
   public setSecondaryTab(tabId: string) {
     const target = this.tabs.find((t) => t.id === tabId);
     if (!target) return;
+
+    if (this.secondaryView && this.secondaryTabId && this.secondaryTabId !== tabId) {
+      const prevSec = this.tabs.find((t) => t.id === this.secondaryTabId);
+      if (prevSec && prevSec.id !== this.activeTabId) {
+        prevSec.foldSnapshot = snapshotFoldState(this.secondaryView);
+      }
+    }
+
     this.secondaryTabId = target.id;
 
     if (this.secondaryView) {
@@ -896,9 +946,11 @@ export class TabsManager {
             ? this.callbacks.getPrimaryView()?.state.doc.toString() ||
               target.editorState.doc.toString()
             : target.editorState.doc.toString();
+        restoreFoldState(target.foldSnapshot, this.secondaryView);
         this.secondaryView.setState(
           createEditorStateForView(this.secondaryView, docText)
         );
+        setViewDocumentPath(this.secondaryView, target.filePath);
       } finally {
         this.isSyncingDualDoc = false;
       }

@@ -99,6 +99,11 @@ html, body {
   padding: 1px 0 !important;
 }
 
+/* 自然段垂直韵律间距 (Vertical Rhythm)：无需手动敲空行即可区分相邻自然段 */
+.cm-editor .cm-line.cm-paragraph-line {
+  padding-bottom: var(--paragraph-spacing, 0.38em) !important;
+}
+
 /* 章节折叠时隐藏被收起的正文行 */
 .cm-editor .cm-line.cm-folded-section-line {
   display: none !important;
@@ -200,30 +205,81 @@ html, body {
   border-color: rgba(9, 105, 218, 0.25);
 }
 
-/* 多级嵌套列表缩进引导线与排版级圆点/有序编号符号 */
-.cm-line.cm-list-item {
+/* 多级嵌套列表缩进引导线与悬挂缩进 (Hanging Indent, Bug 1 彻底修复) */
+.cm-editor .cm-line.cm-list-item {
   position: relative;
+  --list-base-indent: 0px;
+  --list-hang-width: 24px;
+  padding-left: calc(var(--list-base-indent) + var(--list-hang-width)) !important;
+  text-indent: calc(-1 * var(--list-hang-width)) !important;
+}
+
+.cm-editor .cm-line.cm-list-item.cm-list-ordered-wide {
+  --list-hang-width: 30px;
+}
+
+.cm-editor .cm-line.cm-list-item.cm-list-type-task {
+  --list-hang-width: 26px;
+}
+
+.cm-editor .cm-line.cm-list-level-1 {
+  --list-base-indent: 0px;
+}
+
+.cm-editor .cm-line.cm-list-level-2 {
+  --list-base-indent: 24px;
+}
+
+.cm-editor .cm-line.cm-list-level-3 {
+  --list-base-indent: 48px;
+}
+
+.cm-editor .cm-line.cm-list-level-4 {
+  --list-base-indent: 72px;
 }
 
 .md-list-bullet {
   display: inline-block;
-  width: 16px;
+  width: 20px;
+  margin-right: 4px;
   text-align: center;
+  text-indent: 0 !important;
   color: var(--primary-color, #0969da);
   font-weight: 700;
   user-select: none;
   cursor: pointer;
 }
 
-.md-list-ordered {
+.md-list-ordered,
+.md-ordered-marker {
   display: inline-block;
-  min-width: 18px;
+  width: 20px;
+  min-width: 20px;
   margin-right: 4px;
+  text-align: right;
+  text-indent: 0 !important;
   color: var(--primary-color, #0969da);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   user-select: none;
   cursor: pointer;
+}
+
+.cm-list-ordered-wide .md-list-ordered,
+.cm-list-ordered-wide .md-ordered-marker {
+  width: 26px;
+  min-width: 26px;
+  margin-right: 4px;
+}
+
+.task-list-item-prefix {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 26px;
+  margin-right: 0;
+  text-indent: 0 !important;
+  vertical-align: middle;
 }
 
 .md-list-bullet-l2 {
@@ -235,7 +291,6 @@ html, body {
 }
 
 .cm-line.cm-list-level-2:not(.cm-blockquote) {
-  padding-left: 22px !important;
   background-image: linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px);
   background-size: 24px 100%;
   background-position: 8px 0;
@@ -243,23 +298,21 @@ html, body {
 }
 
 .cm-line.cm-list-level-3:not(.cm-blockquote) {
-  padding-left: 42px !important;
   background-image:
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px),
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px);
   background-size: 24px 100%;
-  background-position: 8px 0, 30px 0;
+  background-position: 8px 0, 32px 0;
   background-repeat: no-repeat;
 }
 
 .cm-line.cm-list-level-4:not(.cm-blockquote) {
-  padding-left: 62px !important;
   background-image:
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px),
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px),
     linear-gradient(to right, var(--border-color, #e1e4e8) 1px, transparent 1px);
   background-size: 24px 100%;
-  background-position: 8px 0, 30px 0, 52px 0;
+  background-position: 8px 0, 32px 0, 56px 0;
   background-repeat: no-repeat;
 }
 
@@ -440,44 +493,19 @@ body.theme-night .cm-callout-header-caution { color: #f85149; }
   min-height: 1.45em;
 }
 
-/* 引用块内部嵌套列表分级缩进（完美叠加多层引用块竖线与多级列表缩进，修复复合嵌套重叠） */
-.cm-line.cm-blockquote.cm-list-level-1 {
-  padding-left: 18px !important;
-}
-.cm-line.cm-blockquote.cm-list-level-2 {
-  padding-left: 38px !important;
-}
-.cm-line.cm-blockquote.cm-list-level-3 {
-  padding-left: 58px !important;
-}
-.cm-line.cm-blockquote.cm-list-level-4 {
-  padding-left: 78px !important;
+/* 引用块内部嵌套列表分级悬挂缩进（完美叠加多层引用块竖线、列表层级缩进与软换行悬挂缩进） */
+.cm-editor .cm-line.cm-blockquote.cm-list-item {
+  --quote-base-pad: 18px;
+  padding-left: calc(var(--quote-base-pad) + var(--list-base-indent, 0px) + var(--list-hang-width, 24px)) !important;
+  text-indent: calc(-1 * var(--list-hang-width, 24px)) !important;
 }
 
-.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-1 {
-  padding-left: 30px !important;
-}
-.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-2 {
-  padding-left: 50px !important;
-}
-.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-3 {
-  padding-left: 70px !important;
-}
-.cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-level-4 {
-  padding-left: 90px !important;
+.cm-editor .cm-line.cm-blockquote.cm-blockquote-level-2.cm-list-item {
+  --quote-base-pad: 30px;
 }
 
-.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-1 {
-  padding-left: 42px !important;
-}
-.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-2 {
-  padding-left: 62px !important;
-}
-.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-3 {
-  padding-left: 82px !important;
-}
-.cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-level-4 {
-  padding-left: 102px !important;
+.cm-editor .cm-line.cm-blockquote.cm-blockquote-level-3.cm-list-item {
+  --quote-base-pad: 42px;
 }
 
 /* 水平分割线 (--- / *** / ___) */
@@ -1319,6 +1347,23 @@ table.md-table td {
   line-height: 1.6;
   outline: none;
   min-width: 48px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+table.md-table.md-table-dense th,
+table.md-table.md-table-dense td {
+  font-size: 12.5px;
+  padding: 5px 8px;
+  min-width: 0 !important;
+}
+
+table.md-table.md-table-ultra-dense th,
+table.md-table.md-table-ultra-dense td {
+  font-size: 11.5px;
+  padding: 4px 6px;
+  min-width: 0 !important;
 }
 
 table.md-table th {
@@ -2189,4 +2234,156 @@ body.theme-night .cm-search-match-selected {
 .fm-prop-text:hover {
   background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
   color: var(--primary-color, #0969da);
+}
+
+/* ================= v0.10.0 块级引用双向同步编辑、块 ID 徽章与主题工作坊变量支持 ================= */
+.cm-block-id-badge {
+  display: inline-block;
+  font-family: var(--monospace);
+  font-size: 11px;
+  color: var(--control-text-color);
+  background-color: rgba(127, 127, 127, 0.08);
+  border: 1px dashed rgba(127, 127, 127, 0.25);
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-left: 4px;
+  opacity: 0.65;
+  vertical-align: middle;
+  transition: opacity 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.cm-block-id-badge:hover {
+  opacity: 1;
+  color: var(--primary-color, #0969da);
+  border-color: var(--primary-color, #0969da);
+}
+
+.transclusion-sync-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: rgba(26, 127, 55, 0.12);
+  color: #1a7f37;
+  margin-left: 4px;
+}
+
+.transclusion-edit-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid rgba(9, 105, 218, 0.28);
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.1));
+  color: var(--primary-color, #0969da);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.transclusion-edit-btn:hover {
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+}
+
+.transclusion-rich-preview {
+  font-size: 13.5px;
+  line-height: 1.68;
+  color: var(--text-color);
+}
+
+.transclusion-rich-preview > *:first-child {
+  margin-top: 0 !important;
+}
+
+.transclusion-rich-preview > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.transclusion-inline-editor {
+  padding: 10px 14px;
+  border-top: 1px dashed rgba(9, 105, 218, 0.25);
+  background-color: rgba(9, 105, 218, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transclusion-inline-editor.hidden {
+  display: none !important;
+}
+
+.transclusion-edit-textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(9, 105, 218, 0.35);
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  font-family: var(--monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.transclusion-edit-textarea:focus {
+  border-color: var(--primary-color, #0969da);
+  box-shadow: 0 0 0 2px var(--primary-bg-subtle);
+}
+
+.transclusion-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.transclusion-edit-hint {
+  font-size: 11px;
+  color: var(--control-text-color);
+}
+
+.transclusion-edit-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.transclusion-save-btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--primary-color, #0969da);
+  background-color: var(--primary-color, #0969da);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.transclusion-cancel-btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+  color: var(--control-text-color);
+  cursor: pointer;
+}
+
+/* 主题工作坊：代码块风格切换支持 */
+html[data-studio-code-style="dark"] .cm-line.cm-code-block-first-line,
+html[data-studio-code-style="dark"] .cm-line.cm-code-block-line,
+html[data-studio-code-style="dark"] .cm-line.cm-code-block-last-line,
+html[data-studio-code-style="dark"] .exported-code-card {
+  background-color: #1e222a !important;
+  color: #e6edf3 !important;
+  border-color: #30363d !important;
+}
+
+html[data-studio-code-style="mac-glass"] .cm-line.cm-code-block-first-line,
+html[data-studio-code-style="mac-glass"] .exported-code-card {
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
 }

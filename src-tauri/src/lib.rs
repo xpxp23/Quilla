@@ -168,6 +168,7 @@ pub fn run() {
             commands::sync_document_buffer,
             commands::extract_file_headings,
             commands::read_heading_section,
+            commands::update_heading_section,
             commands::list_file_history,
             commands::create_file_history_snapshot,
             commands::delete_file_history_item,

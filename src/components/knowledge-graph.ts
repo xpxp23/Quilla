@@ -158,6 +158,8 @@ export async function openKnowledgeGraphModal(options: {
 
   let currentScope: "local-1" | "local-2" | "global" = options.hasWorkspace ? "local-2" : "global";
   let filterKeyword = "";
+  let cachedGraphData: KnowledgeGraphData | null = null;
+  let filterDebounceTimer: any = null;
 
   graphModalEl.classList.remove("hidden");
   graphModalEl.innerHTML = `
@@ -197,6 +199,10 @@ export async function openKnowledgeGraphModal(options: {
   `;
 
   const closeModal = () => {
+    if (filterDebounceTimer) {
+      clearTimeout(filterDebounceTimer);
+      filterDebounceTimer = null;
+    }
     if (animFrameId !== null) {
       cancelAnimationFrame(animFrameId);
       animFrameId = null;
@@ -210,10 +216,41 @@ export async function openKnowledgeGraphModal(options: {
     if (e.target === graphModalEl) closeModal();
   });
 
-  const loadAndSimulate = async () => {
+  const applyFilterAndSimulate = (graphData: KnowledgeGraphData) => {
     if (animFrameId !== null) {
       cancelAnimationFrame(animFrameId);
       animFrameId = null;
+    }
+    const kw = filterKeyword.trim().toLowerCase();
+    let filteredNodes = graphData.nodes;
+    let filteredEdges = graphData.edges;
+    if (kw) {
+      const matchedIds = new Set(
+        graphData.nodes
+          .filter((n) => n.label.toLowerCase().includes(kw) || n.is_active)
+          .map((n) => n.id)
+      );
+      filteredEdges = graphData.edges.filter(
+        (e) => matchedIds.has(e.source) && matchedIds.has(e.target)
+      );
+      filteredNodes = graphData.nodes.filter((n) => matchedIds.has(n.id));
+    }
+
+    const statsEl = graphModalEl?.querySelector("#graph-stats-text");
+    if (statsEl) {
+      statsEl.textContent = `共 ${filteredNodes.length} 个节点 · ${filteredEdges.length} 条双向引用`;
+    }
+
+    renderInteractiveSvgGraph(filteredNodes, filteredEdges, (node) => {
+      closeModal();
+      options.onOpenNote(node.path || node.label, node.exists);
+    });
+  };
+
+  const loadAndSimulate = async (forceReloadFromBackend = true) => {
+    if (!forceReloadFromBackend && cachedGraphData) {
+      applyFilterAndSimulate(cachedGraphData);
+      return;
     }
 
     let graphData: KnowledgeGraphData;
@@ -249,30 +286,8 @@ export async function openKnowledgeGraphModal(options: {
       );
     }
 
-    const kw = filterKeyword.trim().toLowerCase();
-    let filteredNodes = graphData.nodes;
-    let filteredEdges = graphData.edges;
-    if (kw) {
-      const matchedIds = new Set(
-        graphData.nodes
-          .filter((n) => n.label.toLowerCase().includes(kw) || n.is_active)
-          .map((n) => n.id)
-      );
-      filteredEdges = graphData.edges.filter(
-        (e) => matchedIds.has(e.source) && matchedIds.has(e.target)
-      );
-      filteredNodes = graphData.nodes.filter((n) => matchedIds.has(n.id));
-    }
-
-    const statsEl = graphModalEl?.querySelector("#graph-stats-text");
-    if (statsEl) {
-      statsEl.textContent = `共 ${filteredNodes.length} 个节点 · ${filteredEdges.length} 条双向引用`;
-    }
-
-    renderInteractiveSvgGraph(filteredNodes, filteredEdges, (node) => {
-      closeModal();
-      options.onOpenNote(node.path || node.label, node.exists);
-    });
+    cachedGraphData = graphData;
+    applyFilterAndSimulate(graphData);
   };
 
   graphModalEl.querySelectorAll<HTMLElement>(".graph-scope-btn").forEach((btn) => {
@@ -281,17 +296,20 @@ export async function openKnowledgeGraphModal(options: {
       graphModalEl
         ?.querySelectorAll(".graph-scope-btn")
         .forEach((b) => b.classList.toggle("active", b === btn));
-      loadAndSimulate();
+      loadAndSimulate(true);
     });
   });
 
   const filterInput = graphModalEl.querySelector("#graph-node-filter") as HTMLInputElement | null;
   filterInput?.addEventListener("input", () => {
     filterKeyword = filterInput.value;
-    loadAndSimulate();
+    if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(() => {
+      loadAndSimulate(false);
+    }, 180);
   });
 
-  await loadAndSimulate();
+  await loadAndSimulate(true);
 }
 
 function renderInteractiveSvgGraph(

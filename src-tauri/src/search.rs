@@ -58,7 +58,7 @@ pub struct KnowledgeGraphData {
     pub edges: Vec<GraphEdge>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexedLink {
     pub target_stem: String,
     pub kind: String,
@@ -66,7 +66,7 @@ pub struct IndexedLink {
     pub preview: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexedDoc {
     pub path: String,
     pub file_name: String,
@@ -75,7 +75,7 @@ pub struct IndexedDoc {
     pub modified_ms: u64,
     pub tags: Vec<(String, SearchMatch)>,
     pub outgoing_links: Vec<IndexedLink>,
-    /// 缓存非代码块的可见正文行 (行号, 原始文本, 小写文本)，供未链接提及 (Unlinked Mentions) O(1) 扫描
+    /// 缓存非代码块的可见正文行 (行号, 原始文本, 小写文本)，供未链接提及与毫秒级全文检索使用
     pub body_lines: Vec<(usize, String, String)>,
 }
 
@@ -83,12 +83,15 @@ pub struct IndexedDoc {
 pub struct WorkspaceCache {
     pub root: String,
     pub docs: HashMap<String, IndexedDoc>,
+    /// FTS5 风格内存倒排分词与中文 Bigram 索引：Token -> 包含该 Token 的文档键集合
+    pub inverted_tokens: HashMap<String, HashSet<String>>,
+    /// 标签倒排索引：小写标签名（含父级前缀） -> 包含该标签的文档键集合
+    pub tag_index: HashMap<String, HashSet<String>>,
 }
 
-/// 工作区内存倒排索引 (In-Memory Workspace Index v0.9)
-/// 缓存每个 .md 文档的标题词干、#标签、[[WikiLinks]] / Markdown 内部链接、正文行及修改时间戳 mtime，
-/// 将已链接反向引用 (Linked Mentions)、未链接提及 (Unlinked Mentions)、侧边栏标签云聚合与双链知识图谱构建
-/// 从全盘 I/O 扫描降为亚毫秒级内存读取，并支持单文件保存、重命名、删除及 Watcher 增量同步。
+/// 工作区增量全文检索与双链倒排索引引擎 (Incremental FTS & Graph Index v0.10.0)
+/// - 维护每个 `.md` 文档的标题词干、`#多级标签`、`[[WikiLinks]]`、正文行以及 ASCII 词元 + CJK Bigram 倒排索引表；
+/// - 支持百万字级知识库的亚毫秒级分词检索、`#标签` 组合过滤与磁盘快照持久化预热，彻底告别每次按键全盘 Walk I/O。
 #[derive(Default, Clone)]
 pub struct WorkspaceIndex {
     caches: Arc<Mutex<HashMap<String, WorkspaceCache>>>,
@@ -142,6 +145,127 @@ fn is_indexable_markdown(path: &Path) -> bool {
             || ext_str.eq_ignore_ascii_case("markdown")
             || ext_str.eq_ignore_ascii_case("txt")
     })
+}
+
+fn is_cjk_char(c: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&c)
+        || ('\u{3400}'..='\u{4dbf}').contains(&c)
+        || ('\u{3040}'..='\u{30ff}').contains(&c)
+}
+
+/// 从文本中提取 FTS 索引词元（包含英文/数字单词前缀、CJK 单字及相邻 CJK Bigram 二元语法）
+fn extract_fts_tokens(text: &str) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+    let lower = text.to_lowercase();
+    let mut ascii_buf = String::new();
+    let mut prev_cjk: Option<char> = None;
+
+    for ch in lower.chars() {
+        if is_cjk_char(ch) {
+            if ascii_buf.len() >= 2 {
+                tokens.insert(ascii_buf.clone());
+            }
+            ascii_buf.clear();
+
+            let mut single = String::with_capacity(4);
+            single.push(ch);
+            tokens.insert(single);
+
+            if let Some(prev) = prev_cjk {
+                let mut bigram = String::with_capacity(8);
+                bigram.push(prev);
+                bigram.push(ch);
+                tokens.insert(bigram);
+            }
+            prev_cjk = Some(ch);
+        } else if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            prev_cjk = None;
+            ascii_buf.push(ch);
+        } else {
+            prev_cjk = None;
+            if ascii_buf.len() >= 2 {
+                tokens.insert(ascii_buf.clone());
+            }
+            ascii_buf.clear();
+        }
+    }
+
+    if ascii_buf.len() >= 2 {
+        tokens.insert(ascii_buf);
+    }
+
+    tokens
+}
+
+impl WorkspaceCache {
+    fn index_single_doc_tokens_internal(
+        inverted_tokens: &mut HashMap<String, HashSet<String>>,
+        tag_index: &mut HashMap<String, HashSet<String>>,
+        doc_key: &str,
+        doc: &IndexedDoc,
+    ) {
+        // 索引文件名词干
+        for tok in extract_fts_tokens(&doc.stem_lower) {
+            inverted_tokens
+                .entry(tok)
+                .or_default()
+                .insert(doc_key.to_string());
+        }
+
+        // 索引标签（含父级层级标签，如 #知识管理/双链笔记 同时注册 "知识管理/双链笔记" 与 "知识管理"）
+        for (tag, _) in &doc.tags {
+            let low_tag = tag.to_lowercase();
+            tag_index
+                .entry(low_tag.clone())
+                .or_default()
+                .insert(doc_key.to_string());
+            let mut prefix = String::new();
+            for part in low_tag.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(part);
+                tag_index
+                    .entry(prefix.clone())
+                    .or_default()
+                    .insert(doc_key.to_string());
+            }
+        }
+
+        // 索引正文行词元
+        for (_, _, lower_line) in &doc.body_lines {
+            for tok in extract_fts_tokens(lower_line) {
+                inverted_tokens
+                    .entry(tok)
+                    .or_default()
+                    .insert(doc_key.to_string());
+            }
+        }
+    }
+
+    /// 根据当前 `docs` 重建内存倒排词元表与标签表
+    pub fn rebuild_inverted_indices(&mut self) {
+        self.inverted_tokens.clear();
+        self.tag_index.clear();
+
+        for (doc_key, doc) in &self.docs {
+            Self::index_single_doc_tokens_internal(
+                &mut self.inverted_tokens,
+                &mut self.tag_index,
+                doc_key,
+                doc,
+            );
+        }
+    }
+
+    pub fn index_single_doc_tokens(&mut self, doc_key: &str, doc: &IndexedDoc) {
+        Self::index_single_doc_tokens_internal(
+            &mut self.inverted_tokens,
+            &mut self.tag_index,
+            doc_key,
+            doc,
+        );
+    }
 }
 
 impl WorkspaceIndex {
@@ -217,13 +341,14 @@ impl WorkspaceIndex {
                 in_fence = !in_fence;
                 continue;
             }
-            if in_fence {
-                continue;
-            }
 
             let preview: String = trimmed.chars().take(MAX_LINE_PREVIEW_CHARS).collect();
-            if !preview.is_empty() && body_lines.len() < 1500 {
+            if !preview.is_empty() && body_lines.len() < 50_000 {
                 body_lines.push((line_num, preview.clone(), preview.to_lowercase()));
+            }
+
+            if in_fence {
+                continue;
             }
 
             // 1. 提取该行内的 [[WikiLink]] / ![[Embed]]
@@ -390,7 +515,7 @@ impl WorkspaceIndex {
         self.refresh_workspace_incremental(root)
     }
 
-    /// 增量刷新工作区索引：仅对新增或 mtime 变化的文件重新解析，其余直接复用内存缓存
+    /// 增量刷新工作区索引：仅对新增或 mtime 变化的文件重新解析，其余直接复用内存缓存，并构建倒排索引表
     pub fn refresh_workspace_incremental(&self, root: &Path) -> WorkspaceCache {
         let root_str = root.to_string_lossy().to_string();
         let norm_root = normalize_path_key(&root_str);
@@ -423,10 +548,13 @@ impl WorkspaceIndex {
             docs.insert(k, v);
         }
 
-        let cache = WorkspaceCache {
+        let mut cache = WorkspaceCache {
             root: root_str,
             docs,
+            inverted_tokens: HashMap::new(),
+            tag_index: HashMap::new(),
         };
+        cache.rebuild_inverted_indices();
 
         if let Ok(mut guard) = self.caches.lock() {
             guard.insert(norm_root, cache.clone());
@@ -434,7 +562,7 @@ impl WorkspaceIndex {
         cache
     }
 
-    /// O(1) 单文件增量更新（保存文件或新建文件时直接用内存文本更新索引，零磁盘遍历）
+    /// O(1) 单文件增量更新（保存文件或新建文件时直接用内存文本更新索引与倒排表，零磁盘遍历）
     pub fn update_single_file(&self, file_path: &Path, content_override: Option<&str>) {
         if !is_indexable_markdown(file_path) {
             return;
@@ -447,8 +575,10 @@ impl WorkspaceIndex {
                 if file_key.starts_with(ws_root_key) {
                     if let Some(ref doc) = parsed {
                         cache.docs.insert(file_key.clone(), doc.clone());
+                        cache.index_single_doc_tokens(&file_key, doc);
                     } else {
                         cache.docs.remove(&file_key);
+                        cache.rebuild_inverted_indices();
                     }
                 }
             }
@@ -461,9 +591,13 @@ impl WorkspaceIndex {
         let prefix = format!("{}/", target_key);
         if let Ok(mut guard) = self.caches.lock() {
             for cache in guard.values_mut() {
+                let before_len = cache.docs.len();
                 cache
                     .docs
                     .retain(|k, _| k != &target_key && !k.starts_with(&prefix));
+                if cache.docs.len() != before_len {
+                    cache.rebuild_inverted_indices();
+                }
             }
         }
     }
@@ -493,6 +627,143 @@ impl WorkspaceIndex {
                 self.remove_path(p);
             }
         }
+    }
+
+    /// 基于内存倒排索引的毫秒级工作区全文检索（支持多关键词组合检索与 `#标签` 联合过滤）
+    pub fn search_workspace_indexed<P: AsRef<Path>>(
+        &self,
+        root: P,
+        keyword: &str,
+        case_sensitive: bool,
+    ) -> Vec<SearchMatch> {
+        let trimmed_kw = keyword.trim();
+        if trimmed_kw.is_empty() {
+            return Vec::new();
+        }
+
+        let cache = self.get_or_build_workspace(root.as_ref());
+        if cache.docs.is_empty() {
+            return SearchEngine::search_workspace(root, keyword, case_sensitive);
+        }
+
+        // 拆分 `#标签` 过滤项与普通检索词项
+        let mut tag_filters: Vec<String> = Vec::new();
+        let mut text_terms: Vec<String> = Vec::new();
+
+        for part in trimmed_kw.split_whitespace() {
+            if let Some(stripped_tag) = part.strip_prefix('#') {
+                if !stripped_tag.is_empty() {
+                    tag_filters.push(stripped_tag.to_lowercase());
+                    continue;
+                }
+            }
+            text_terms.push(if case_sensitive {
+                part.to_string()
+            } else {
+                part.to_lowercase()
+            });
+        }
+
+        // 若整个查询就是单个 `#tag`，直接利用标签倒排表加速同时匹配正文与 YAML 标签
+        let mut candidate_keys: Option<HashSet<String>> = None;
+
+        for tf in &tag_filters {
+            if let Some(tag_docs) = cache.tag_index.get(tf) {
+                candidate_keys = Some(match candidate_keys {
+                    Some(prev) => prev.intersection(tag_docs).cloned().collect(),
+                    None => tag_docs.clone(),
+                });
+            }
+        }
+
+        // 利用 CJK Bigram / 词元倒排索引进行候选文档预筛选
+        for term in &text_terms {
+            let query_tokens = extract_fts_tokens(term);
+            for qt in query_tokens {
+                if let Some(tok_docs) = cache.inverted_tokens.get(&qt) {
+                    candidate_keys = Some(match candidate_keys {
+                        Some(prev) => prev.intersection(tok_docs).cloned().collect(),
+                        None => tok_docs.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut results: Vec<SearchMatch> = Vec::new();
+
+        let doc_iter: Vec<(&String, &IndexedDoc)> = match candidate_keys {
+            Some(ref keys) if !keys.is_empty() => cache
+                .docs
+                .iter()
+                .filter(|(k, _)| keys.contains(*k))
+                .collect(),
+            _ => cache.docs.iter().collect(),
+        };
+
+        for (_, doc) in doc_iter {
+            if results.len() >= MAX_SEARCH_MATCHES {
+                break;
+            }
+
+            // 若包含 #tag 过滤，验证该文档是否确实拥有匹配的标签或正文内含 #tag
+            if !tag_filters.is_empty() {
+                let doc_has_all_tags = tag_filters.iter().all(|tf| {
+                    doc.tags.iter().any(|(t, _)| {
+                        let tl = t.to_lowercase();
+                        tl == *tf || tl.starts_with(&format!("{}/", tf))
+                    }) || doc
+                        .body_lines
+                        .iter()
+                        .any(|(_, _, low)| low.contains(&format!("#{}", tf)))
+                });
+                if !doc_has_all_tags {
+                    continue;
+                }
+            }
+
+            // 如果仅检索 `#tag` 而无额外文本词，优先返回该文档内的标签出现位置
+            if text_terms.is_empty() && !tag_filters.is_empty() {
+                let mut added_lines = HashSet::new();
+                for (t, m) in &doc.tags {
+                    let tl = t.to_lowercase();
+                    if tag_filters
+                        .iter()
+                        .any(|tf| tl == *tf || tl.starts_with(&format!("{}/", tf)))
+                    {
+                        if added_lines.insert(m.line) {
+                            results.push(m.clone());
+                            if results.len() >= MAX_SEARCH_MATCHES {
+                                break;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // 在文档的缓存行中检索全部 text_terms
+            for (line_num, orig_text, lower_text) in &doc.body_lines {
+                let hay = if case_sensitive {
+                    orig_text
+                } else {
+                    lower_text
+                };
+                if text_terms.iter().all(|term| hay.contains(term)) {
+                    results.push(SearchMatch {
+                        file: doc.path.clone(),
+                        file_name: doc.file_name.clone(),
+                        line: *line_num,
+                        text: orig_text.clone(),
+                    });
+                    if results.len() >= MAX_SEARCH_MATCHES {
+                        break;
+                    }
+                }
+            }
+        }
+
+        results.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+        results
     }
 
     /// 亚毫秒级内存反向链接检索（已链接引用 Linked Mentions）

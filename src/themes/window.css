@@ -3248,13 +3248,37 @@ body.theme-night .ty-recovery-banner {
     color: #000000 !important;
   }
 
-  #quilla-print-mount table,
+  #quilla-print-mount table {
+    width: 100% !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+    break-inside: auto !important;
+  }
+
+  #quilla-print-mount thead {
+    display: table-header-group !important;
+  }
+
+  #quilla-print-mount tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  #quilla-print-mount th,
+  #quilla-print-mount td {
+    min-width: 0 !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+  }
+
   #quilla-print-mount .md-math-block-preview,
   #quilla-print-mount .md-mermaid-card,
   #quilla-print-mount blockquote,
   #quilla-print-mount .cm-callout-export,
   #quilla-print-mount img,
-  #quilla-print-mount figure {
+  #quilla-print-mount figure:not(.table-figure) {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }
@@ -3548,4 +3572,371 @@ body.theme-night .ty-recovery-banner {
 .pref-bed-field .pref-text-input {
   width: 100%;
   box-sizing: border-box;
+}
+
+/* ================= v0.10.0 双层导出工具栏、手机窄屏海报、小红书多图切片与主题工作坊样式 ================= */
+.modal-header-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-toolbar-ribbon {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 8px 18px;
+  background-color: rgba(127, 127, 127, 0.045);
+  border-bottom: 1px solid var(--border-color);
+  user-select: none;
+}
+
+.ribbon-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ribbon-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--control-text-color);
+  white-space: nowrap;
+}
+
+.ribbon-divider {
+  width: 1px;
+  height: 16px;
+  background-color: var(--border-color);
+}
+
+/* 海报长图内大表格防溢出与移动端窄宽预设 */
+.poster-modal-card {
+  width: 880px !important;
+  max-width: 94vw !important;
+  height: 680px !important;
+  max-height: 90vh !important;
+}
+
+.poster-card-stage.is-mobile-narrow {
+  padding: 24px 20px !important;
+  border-radius: 12px;
+}
+
+.poster-card-stage.is-mobile-narrow .poster-doc-main-title {
+  font-size: 1.38rem;
+}
+
+.poster-card-body table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+  margin: 12px 0 !important;
+}
+
+.poster-card-body th,
+.poster-card-body td {
+  min-width: 0 !important;
+  padding: 6px 8px !important;
+  font-size: 12.5px !important;
+  line-height: 1.5 !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  vertical-align: top !important;
+  border: 1px solid rgba(127, 127, 127, 0.25) !important;
+}
+
+.poster-card-body table.md-table-dense th,
+.poster-card-body table.md-table-dense td {
+  font-size: 11px !important;
+  padding: 4px 5px !important;
+}
+
+.poster-card-body table.md-table-ultra-dense th,
+.poster-card-body table.md-table-ultra-dense td {
+  font-size: 10px !important;
+  padding: 3px 4px !important;
+}
+
+.poster-card-body th code,
+.poster-card-body td code {
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+}
+
+/* 小红书 3:4 / 朋友圈 9:16 多卡片自动分页切片画廊 */
+.poster-carousel-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 20px;
+  width: 100%;
+}
+
+.poster-card-stage.is-carousel-slice {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.poster-card-stage.is-carousel-slice .poster-card-body {
+  flex: 1;
+  overflow: hidden;
+}
+
+.poster-slice-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px dashed rgba(127, 127, 127, 0.25);
+  font-size: 11.5px;
+}
+
+.poster-slice-cont-title {
+  font-weight: 600;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 72%;
+}
+
+.poster-slice-page-pill {
+  font-family: var(--monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background-color: rgba(127, 127, 127, 0.14);
+}
+
+/* ================= 主题与排版预设工作坊 (Theme Studio Modal) ================= */
+.studio-modal-card {
+  width: 860px !important;
+  max-width: 94vw !important;
+  height: 620px !important;
+  max-height: 90vh !important;
+}
+
+.studio-workspace-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  overflow: hidden;
+}
+
+.studio-controls-pane {
+  padding: 16px 20px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.studio-preview-pane {
+  padding: 16px 20px;
+  background-color: rgba(127, 127, 127, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.studio-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.studio-section:last-child {
+  border-bottom: none;
+}
+
+.studio-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-color);
+  letter-spacing: 0.2px;
+}
+
+.studio-preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.studio-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-color);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.studio-preset-chip:hover {
+  border-color: var(--primary-color, #0969da);
+}
+
+.studio-preset-chip.active {
+  background-color: var(--primary-bg-subtle, rgba(9, 105, 218, 0.12));
+  border-color: var(--primary-color, #0969da);
+  color: var(--primary-color, #0969da);
+  font-weight: 600;
+}
+
+.studio-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.studio-chip-del {
+  font-size: 10px;
+  opacity: 0.6;
+  padding: 0 2px;
+}
+
+.studio-chip-del:hover {
+  opacity: 1;
+  color: #cf222e;
+}
+
+.studio-save-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.studio-save-preset-bar .pref-text-input {
+  flex: 1;
+}
+
+.studio-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.studio-label {
+  font-size: 12px;
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+.studio-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.studio-color-swatches {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.studio-color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.studio-color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.studio-color-swatch.active {
+  border-color: var(--text-color);
+  box-shadow: 0 0 0 2px var(--bg-color);
+}
+
+.studio-color-picker {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.studio-live-preview-card {
+  flex: 1;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 18px 20px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.studio-preview-h2 {
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  font-weight: 700;
+}
+
+.studio-preview-p {
+  margin: 0;
+  color: var(--text-color);
+}
+
+.studio-preview-quote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  background-color: rgba(127, 127, 127, 0.05);
+  border-radius: 4px;
+  font-size: 0.92em;
+  color: var(--control-text-color);
+}
+
+.studio-preview-code {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: rgba(127, 127, 127, 0.08);
+  border: 1px solid var(--border-color);
+  font-family: var(--monospace);
+  font-size: 12px;
+}
+
+.studio-preview-code.code-style-dark {
+  background-color: #1e222a;
+  color: #e6edf3;
+  border-color: #30363d;
+}
+
+.studio-preview-watermark {
+  margin-top: 14px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+  font-size: 11px;
+  color: var(--control-text-color);
+  text-align: right;
+  font-family: var(--monospace);
 }

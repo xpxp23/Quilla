@@ -1,14 +1,90 @@
 import katex from "katex";
 import mermaid from "mermaid";
 import { parseWikiLinksInLine } from "./extensions/wiki-link";
+import { findValidSubOrSupClose } from "./inline-tokenizer";
 
 /**
- * Quilla v0.9 统一 Markdown AST 解析与渲染内核 (Unified Markdown AST Kernel)
- * - 彻底取代分散在 main.ts 与 table-editor.ts 中的多套手写正则+占位符替换管线
- * - 采用单遍词法扫描 + 递归 AST 节点构建，从根源上杜绝 `\u0000EXP_PH_0_\u0000` / `\u0000PH_0_\u0000` 被斜体 `_..._` 正则腐蚀的 Bug
- * - 严格实现 CommonMark 词内下划线边界规则（snake_case_variable 绝不会误触发斜体）
- * - 支持平衡括号 URL（如 Wikipedia 带括号链接）、4+ 反引号/波浪线围栏代码块、列表内嵌套代码块/引用块、3 空格有序子列表等完整语法
+ * Quilla v0.10.0 统一 Markdown AST 解析与渲染内核 (Unified Markdown AST Kernel)
+ * - 与 `src/editor/inline-tokenizer.ts` 共享三层上下标与词法边界守卫，彻底根除 `1~2周...3~6个月` 误判为下标及 `2^10 与 2^20` 误判为上标的 Bug
+ * - 支持表格列宽比例持久化 (`tableColumnWidthsRegistry`) 与多列宽表自适应紧凑排版 (`md-table-dense` / `md-table-ultra-dense`)
+ * - 支持块级嵌入引用 (`![[note#^block-id]]` 与 `![[note#Heading]]`) 递归富文本 AST 渲染
+ * - 为所有 H1~H6 标题生成稳定、确定性的语义锚点 ID 与层级元数据，赋能原生 PDF 矢量书签树 (PDF Outline Bookmarks)
  */
+
+const TABLE_COL_WIDTHS_STORAGE_KEY = "quilla_table_col_widths_v1";
+const memoryTableColWidths = new Map<string, number[]>();
+
+function buildTableColSignature(headers: string[]): string {
+  return headers.map((h) => h.trim().toLowerCase()).join("||");
+}
+
+/**
+ * 保存指定表格（按表头签名索引）的列宽百分比权重（总和 100%）
+ */
+export function saveTableColumnWidthRatios(headers: string[], ratios: number[] | null): void {
+  const sig = buildTableColSignature(headers);
+  if (!sig) return;
+  if (!ratios || ratios.length === 0) {
+    memoryTableColWidths.delete(sig);
+  } else {
+    memoryTableColWidths.set(sig, ratios);
+  }
+  if (typeof localStorage !== "undefined") {
+    try {
+      const raw = localStorage.getItem(TABLE_COL_WIDTHS_STORAGE_KEY);
+      const map: Record<string, number[]> = raw ? JSON.parse(raw) : {};
+      if (!ratios || ratios.length === 0) {
+        delete map[sig];
+      } else {
+        map[sig] = ratios;
+      }
+      localStorage.setItem(TABLE_COL_WIDTHS_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+      // ignore storage quota errors
+    }
+  }
+}
+
+/**
+ * 读取指定表格已保存的列宽百分比权重（若未手动调整则返回 null）
+ */
+export function getSavedTableColumnWidthRatios(
+  headers: string[],
+  delimParts?: string[]
+): number[] | null {
+  const sig = buildTableColSignature(headers);
+  if (sig && memoryTableColWidths.has(sig)) {
+    const hit = memoryTableColWidths.get(sig)!;
+    if (hit.length === headers.length) return hit;
+  }
+  if (sig && typeof localStorage !== "undefined") {
+    try {
+      const raw = localStorage.getItem(TABLE_COL_WIDTHS_STORAGE_KEY);
+      if (raw) {
+        const map: Record<string, number[]> = JSON.parse(raw);
+        if (Array.isArray(map[sig]) && map[sig].length === headers.length) {
+          memoryTableColWidths.set(sig, map[sig]);
+          return map[sig];
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  // 兼容从分隔行显式长破折号比例推断列宽（当某列破折号数 >= 12 且存在显著比例差异时）
+  if (delimParts && delimParts.length === headers.length && headers.length >= 2) {
+    const dashCounts = delimParts.map((d) => (d.match(/-/g) || []).length);
+    const maxDash = Math.max(...dashCounts);
+    const minDash = Math.min(...dashCounts);
+    if (maxDash >= 12 && maxDash >= minDash * 2 && minDash >= 3) {
+      const total = dashCounts.reduce((a, b) => a + b, 0);
+      if (total > 0) {
+        return dashCounts.map((c) => Math.max(8, Math.round((c / total) * 100)));
+      }
+    }
+  }
+  return null;
+}
 
 export type InlineAstNode =
   | { type: "text"; value: string }
@@ -75,6 +151,7 @@ export type BlockAstNode =
       headers: string[];
       aligns: Array<"left" | "center" | "right">;
       rows: string[][];
+      colWidthRatios?: number[] | null;
     }
   | { type: "hr" }
   | { type: "heading"; level: number; text: string; id: string }
@@ -321,7 +398,10 @@ export function parseInlineAST(input: string): InlineAstNode[] {
     }
 
     // 5. 双向链接 [[WikiLink]] 或 ![[Embed]]
-    if ((ch === "[" && input[i + 1] === "[") || (ch === "!" && input[i + 1] === "[" && input[i + 2] === "[")) {
+    if (
+      (ch === "[" && input[i + 1] === "[") ||
+      (ch === "!" && input[i + 1] === "[" && input[i + 2] === "[")
+    ) {
       const isEmbed = ch === "!";
       const startBr = isEmbed ? i + 2 : i + 1;
       const closeIdx = input.indexOf("]]", startBr + 1);
@@ -468,7 +548,7 @@ export function parseInlineAST(input: string): InlineAstNode[] {
       continue;
     }
 
-    // 10. 删除线 ~~text~~ 与 下标 ~text~
+    // 10. 删除线 ~~text~~ 与 下标 ~text~（共享 inline-tokenizer 三层词法边界守卫，彻底免疫 1~2周...3~6个月）
     if (ch === "~") {
       if (input[i + 1] === "~" && input[i + 2] !== "~") {
         const closeIdx = input.indexOf("~~", i + 2);
@@ -481,18 +561,8 @@ export function parseInlineAST(input: string): InlineAstNode[] {
           i = closeIdx + 2;
           continue;
         }
-      } else if (input[i + 1] !== "~" && i + 1 < len && !/\s/.test(input[i + 1])) {
-        let searchPos = i + 1;
-        let closeIdx = -1;
-        while (searchPos < len) {
-          const cand = input.indexOf("~", searchPos);
-          if (cand === -1 || input.slice(i + 1, cand).includes("\n")) break;
-          if (input[cand - 1] !== "\\" && !/\s/.test(input[cand - 1]) && input[cand + 1] !== "~") {
-            closeIdx = cand;
-            break;
-          }
-          searchPos = cand + 1;
-        }
+      } else if (input[i + 1] !== "~" && (i === 0 || input[i - 1] !== "~")) {
+        const closeIdx = findValidSubOrSupClose(input, i, "~");
         if (closeIdx > i + 1) {
           flushText();
           nodes.push({
@@ -519,19 +589,9 @@ export function parseInlineAST(input: string): InlineAstNode[] {
       }
     }
 
-    // 12. 上标 ^text^
-    if (ch === "^" && i + 1 < len && !/\s/.test(input[i + 1])) {
-      let searchPos = i + 1;
-      let closeIdx = -1;
-      while (searchPos < len) {
-        const cand = input.indexOf("^", searchPos);
-        if (cand === -1 || input.slice(i + 1, cand).includes("\n")) break;
-        if (input[cand - 1] !== "\\" && !/\s/.test(input[cand - 1])) {
-          closeIdx = cand;
-          break;
-        }
-        searchPos = cand + 1;
-      }
+    // 12. 上标 ^text^（共享 inline-tokenizer 三层词法边界守卫，彻底免疫 2^10 与 2^20 及行尾 ^block-id）
+    if (ch === "^" && (i === 0 || input[i - 1] !== "\\")) {
+      const closeIdx = findValidSubOrSupClose(input, i, "^");
       if (closeIdx > i + 1) {
         flushText();
         nodes.push({
@@ -814,7 +874,7 @@ const CALLOUT_LABELS: Record<string, string> = {
 };
 
 /**
- * 将完整 Markdown 文档解析并渲染为导出级 HTML Body（支持嵌套列表内代码块/引用、代码块精致卡片顶栏等）
+ * 将完整 Markdown 文档解析并渲染为导出级 HTML Body（支持嵌套列表内代码块/引用、代码块精致卡片顶栏、表格列宽权重与防溢出紧凑布局等）
  */
 export async function renderMarkdownDocumentToHtml(
   markdown: string,
@@ -857,7 +917,7 @@ export async function renderMarkdownDocumentToHtml(
       if (inF) continue;
       const hm = rawLines[k].match(/^\s*(?:>\s*)*(#{1,6})\s+(.*)$/);
       if (hm) {
-        const clean = stripInlineMarkdownText(hm[2].replace(/\s+#+\s*$/, ""));
+        const clean = stripInlineMarkdownText(hm[2].replace(/\s+#+\s*$/, "").replace(/\s+\^[a-zA-Z0-9_\-]+$/, ""));
         const id = `heading-${k}-${clean.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-")}`;
         allDocHeadings.push({ level: hm[1].length, text: clean, id });
       }
@@ -877,6 +937,17 @@ export async function renderMarkdownDocumentToHtml(
   }
 
   const renderInline = async (raw: string): Promise<string> => {
+    // 自动剥离行尾块引用锚点 ^block-id 并渲染为优雅微标
+    const blockIdMatch = raw.match(/^(.*?)\s+(\^[a-zA-Z0-9_\-]+)\s*$/);
+    if (blockIdMatch) {
+      const mainAst = parseInlineAST(blockIdMatch[1]);
+      const mainHtml = await renderInlineASTAsync(mainAst, {
+        mode: "export",
+        resolveImageSrc: ctx.resolveImageSrc,
+      });
+      const anchorId = blockIdMatch[2].slice(1);
+      return `${mainHtml} <span class="cm-block-id-badge" id="block-${escapeHtml(anchorId)}">${escapeHtml(blockIdMatch[2])}</span>`;
+    }
     const ast = parseInlineAST(raw);
     return renderInlineASTAsync(ast, {
       mode: "export",
@@ -920,7 +991,7 @@ export async function renderMarkdownDocumentToHtml(
     )}">${highlightedHtml}</code></pre></div>`;
   };
 
-  const renderBlocks = async (lines: string[]): Promise<string> => {
+  const renderBlocks = async (lines: string[], transclusionDepth: number = 0): Promise<string> => {
     const out: string[] = [];
     let i = 0;
 
@@ -933,9 +1004,9 @@ export async function renderMarkdownDocumentToHtml(
         continue;
       }
 
-      // 1. 块级嵌入引用 ![[文档#标题]]
+      // 1. 块级嵌入引用 ![[文档#标题]] 或 ![[文档#^block-id]]（支持递归 Markdown 富文本 AST 渲染）
       const embedMatch = trimmed.match(/^!\[\[([^\[\]\n]+)\]\]$/);
-      if (embedMatch && ctx.fetchTransclusionContent) {
+      if (embedMatch && ctx.fetchTransclusionContent && transclusionDepth < 3) {
         const parsedLinks = parseWikiLinksInLine(trimmed);
         if (parsedLinks.length === 1 && parsedLinks[0].isEmbed) {
           const wl = parsedLinks[0];
@@ -947,16 +1018,17 @@ export async function renderMarkdownDocumentToHtml(
           const titleLabel = wl.alias
             ? wl.alias
             : wl.target && wl.heading
-            ? `${wl.target} › #${wl.heading}`
+            ? `${wl.target} › ${wl.heading.startsWith("^") ? wl.heading : "#" + wl.heading}`
             : wl.heading
-            ? `本篇 › #${wl.heading}`
+            ? `本篇 › ${wl.heading.startsWith("^") ? wl.heading : "#" + wl.heading}`
             : wl.target;
+          const renderedInner = res.found
+            ? await renderBlocks(res.content.split("\n"), transclusionDepth + 1)
+            : `<p class="cm-transclusion-missing">未找到嵌入目标：${escapeHtml(titleLabel)}</p>`;
           out.push(
-            `<blockquote><strong>🔗 嵌入引用 · ${escapeHtml(
+            `<blockquote class="cm-transclusion-export"><div class="cm-transclusion-export-title"><strong>🔗 嵌入引用 · ${escapeHtml(
               titleLabel
-            )}</strong><pre style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(
-              res.content
-            )}</pre></blockquote>`
+            )}</strong></div><div class="cm-transclusion-export-body">${renderedInner}</div></blockquote>`
           );
           i++;
           continue;
@@ -1054,10 +1126,12 @@ export async function renderMarkdownDocumentToHtml(
         continue;
       }
 
-      // 6. GFM 表格块
+      // 6. GFM 表格块（支持列宽百分比权重保留与宽表防溢出紧凑自适应 Bug #2 & Phase 2.1）
       if (trimmed.includes("|") && i + 1 < lines.length && isTableDelimiterLine(lines[i + 1])) {
         const headers = parseTableRowCells(lines[i]);
         const delimParts = parseTableRowCells(lines[i + 1]);
+        const colCount = headers.length;
+        const colRatios = getSavedTableColumnWidthRatios(headers, delimParts);
         const aligns = headers.map((_h, idx) => {
           const d = delimParts[idx] || "";
           if (d.startsWith(":") && d.endsWith(":")) return "center";
@@ -1070,24 +1144,42 @@ export async function renderMarkdownDocumentToHtml(
           bodyRows.push(parseTableRowCells(lines[i]));
           i++;
         }
+
+        const colgroupHtml = colRatios
+          ? `<colgroup>${colRatios
+              .map((w) => `<col style="width:${w}%;" />`)
+              .join("")}</colgroup>`
+          : "";
+
         const thRendered = await Promise.all(
-          headers.map(
-            async (h, idx) =>
-              `<th style="text-align:${aligns[idx]}">${await renderInline(h)}</th>`
-          )
+          headers.map(async (h, idx) => {
+            const widthStyle = colRatios ? `;width:${colRatios[idx]}%` : "";
+            return `<th style="text-align:${aligns[idx]}${widthStyle}">${await renderInline(h)}</th>`;
+          })
         );
         const tbodyRowsRendered: string[] = [];
         for (const r of bodyRows) {
           const tds = await Promise.all(
-            headers.map(
-              async (_h, idx) =>
-                `<td style="text-align:${aligns[idx]}">${await renderInline(r[idx] || "")}</td>`
-            )
+            headers.map(async (_h, idx) => {
+              const widthStyle = colRatios ? `;width:${colRatios[idx]}%` : "";
+              return `<td style="text-align:${aligns[idx]}${widthStyle}">${await renderInline(
+                r[idx] || ""
+              )}</td>`;
+            })
           );
           tbodyRowsRendered.push(`<tr>${tds.join("")}</tr>`);
         }
+
+        const densityClass =
+          colCount >= 8
+            ? " md-table-ultra-dense"
+            : colCount >= 5
+            ? " md-table-dense"
+            : "";
         out.push(
-          `<table class="md-table"><thead><tr>${thRendered.join("")}</tr></thead><tbody>${tbodyRowsRendered.join("")}</tbody></table>`
+          `<table class="md-table${densityClass}" data-col-count="${colCount}">${colgroupHtml}<thead><tr>${thRendered.join(
+            ""
+          )}</tr></thead><tbody>${tbodyRowsRendered.join("")}</tbody></table>`
         );
         continue;
       }
@@ -1104,7 +1196,7 @@ export async function renderMarkdownDocumentToHtml(
       if (hMatch) {
         const lvl = hMatch[1].length;
         const hMeta = allDocHeadings[headingCursor++];
-        const idAttr = hMeta ? ` id="${hMeta.id}"` : "";
+        const idAttr = hMeta ? ` id="${hMeta.id}" data-heading-level="${lvl}"` : ` data-heading-level="${lvl}"`;
         const cleanHeading = hMatch[2].trim().replace(/\s+#+\s*$/, "");
         out.push(`<h${lvl}${idAttr}>${await renderInline(cleanHeading)}</h${lvl}>`);
         i++;
@@ -1138,14 +1230,14 @@ export async function renderMarkdownDocumentToHtml(
           const cType = calloutMatch[1].toLowerCase();
           const customTitle =
             calloutMatch[2].trim() || CALLOUT_LABELS[cType] || cType.toUpperCase();
-          const bodyHtml = await renderBlocks(innerQuoteLines.slice(1));
+          const bodyHtml = await renderBlocks(innerQuoteLines.slice(1), transclusionDepth);
           out.push(
             `<div class="cm-callout-export cm-callout-${cType}"><div class="cm-callout-header-widget cm-callout-header-${cType}"><span class="cm-callout-title">${escapeHtml(
               customTitle
             )}</span></div><div class="cm-callout-body">${bodyHtml}</div></div>`
           );
         } else {
-          const innerHtml = await renderBlocks(innerQuoteLines);
+          const innerHtml = await renderBlocks(innerQuoteLines, transclusionDepth);
           out.push(`<blockquote>${innerHtml}</blockquote>`);
         }
         continue;
@@ -1232,7 +1324,9 @@ export async function renderMarkdownDocumentToHtml(
                 i++;
                 while (i < lines.length) {
                   const subCur = lines[i].replace(/\t/g, "  ");
-                  const subUnindented = subCur.slice(Math.min(subCur.match(/^\s*/)?.[0].length || 0, stripIndent));
+                  const subUnindented = subCur.slice(
+                    Math.min(subCur.match(/^\s*/)?.[0].length || 0, stripIndent)
+                  );
                   entry.nestedBlocksLines.push(subUnindented);
                   const closeSub = subUnindented.trim().match(/^(`{3,}|~{3,})\s*$/);
                   i++;
@@ -1275,7 +1369,7 @@ export async function renderMarkdownDocumentToHtml(
             const liClass = item.isTask ? ` class="task-list-item"` : "";
             let extraHtml = "";
             if (item.nestedBlocksLines.length > 0) {
-              extraHtml = "\n" + (await renderBlocks(item.nestedBlocksLines));
+              extraHtml = "\n" + (await renderBlocks(item.nestedBlocksLines, transclusionDepth));
             }
             html += `<li${liClass}>${item.bodyHtml}${extraHtml}`;
             k++;
@@ -1321,5 +1415,5 @@ export async function renderMarkdownDocumentToHtml(
     return out.join("\n");
   };
 
-  return renderBlocks(rawLines.slice(startIdx));
+  return renderBlocks(rawLines.slice(startIdx), 0);
 }

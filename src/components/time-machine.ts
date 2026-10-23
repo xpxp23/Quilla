@@ -101,7 +101,7 @@ function deleteFallbackLocalHistorySnapshot(docKey: string, snapshotId: string) 
   return list;
 }
 
-interface DiffRow {
+export interface DiffRow {
   type: "equal" | "add" | "del";
   oldLine?: number;
   newLine?: number;
@@ -109,9 +109,10 @@ interface DiffRow {
 }
 
 /**
- * 计算旧快照（Snapshot）与当前文档（Current）之间的行级 LCS Diff
+ * 基于 Myers O((M+N)D) 最短编辑路径算法与唯一锚点分治的行级差异计算器：
+ * 彻底解决原朴素二维 DP 在 M*N > 250,000（如长文首尾微调）时直接退化为“全文整段标红删除+整段标绿新增”及主线程卡顿的问题 (瓶颈 4 修复)。
  */
-function computeLineDiff(snapshotText: string, currentText: string): DiffRow[] {
+export function computeLineDiff(snapshotText: string, currentText: string): DiffRow[] {
   const a = snapshotText.replace(/\r\n/g, "\n").split("\n");
   const b = currentText.replace(/\r\n/g, "\n").split("\n");
 
@@ -134,60 +135,119 @@ function computeLineDiff(snapshotText: string, currentText: string): DiffRow[] {
   const midA = a.slice(start, endA + 1);
   const midB = b.slice(start, endB + 1);
 
-  if (midA.length * midB.length <= 250000) {
+  if (midA.length > 0 || midB.length > 0) {
     const m = midA.length;
     const n = midB.length;
-    const dp: Uint16Array[] = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
-    for (let i = m - 1; i >= 0; i--) {
-      for (let j = n - 1; j >= 0; j--) {
-        if (midA[i] === midB[j]) {
-          dp[i][j] = dp[i + 1][j + 1] + 1;
+    const maxD = Math.min(m + n, 2400);
+
+    // Myers Diff 算法正向搜索最短编辑轨迹
+    const offset = m + n + 2;
+    const v = new Int32Array(offset * 2 + 2);
+    const trace: Int32Array[] = [];
+    let foundD = -1;
+
+    outer: for (let d = 0; d <= maxD; d++) {
+      for (let k = -d; k <= d; k += 2) {
+        const kIdx = k + offset;
+        let x: number;
+        if (k === -d || (k !== d && v[kIdx - 1] < v[kIdx + 1])) {
+          x = v[kIdx + 1];
         } else {
-          dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+          x = v[kIdx - 1] + 1;
+        }
+        let y = x - k;
+        while (x < m && y < n && midA[x] === midB[y]) {
+          x++;
+          y++;
+        }
+        v[kIdx] = x;
+        if (x >= m && y >= n) {
+          foundD = d;
+          const snap = new Int32Array(d * 2 + 3);
+          for (let s = -d; s <= d; s += 2) {
+            snap[s + d] = v[s + offset];
+          }
+          trace.push(snap);
+          break outer;
         }
       }
-    }
-    let i = 0;
-    let j = 0;
-    while (i < m && j < n) {
-      if (midA[i] === midB[j]) {
-        rows.push({
-          type: "equal",
-          oldLine: start + i + 1,
-          newLine: start + j + 1,
-          text: midA[i],
-        });
-        i++;
-        j++;
-      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-        rows.push({
-          type: "del",
-          oldLine: start + i + 1,
-          text: midA[i],
-        });
-        i++;
-      } else {
-        rows.push({
-          type: "add",
-          newLine: start + j + 1,
-          text: midB[j],
-        });
-        j++;
+      const snap = new Int32Array(d * 2 + 3);
+      for (let s = -d; s <= d; s += 2) {
+        snap[s + d] = v[s + offset];
       }
+      trace.push(snap);
     }
-    while (i < m) {
-      rows.push({ type: "del", oldLine: start + i + 1, text: midA[i++] });
+
+    if (foundD !== -1) {
+      let x = m;
+      let y = n;
+      const midOps: DiffRow[] = [];
+
+      for (let d = foundD; d > 0; d--) {
+        const k = x - y;
+        const prevSnap = trace[d - 1];
+        const prevD = d - 1;
+        const getPrevV = (prevK: number) => prevSnap[prevK + prevD];
+
+        let prevK: number;
+        if (k === -d || (k !== d && getPrevV(k - 1) < getPrevV(k + 1))) {
+          prevK = k + 1;
+        } else {
+          prevK = k - 1;
+        }
+
+        const prevX = getPrevV(prevK);
+        const prevY = prevX - prevK;
+
+        while (x > prevX && y > prevY) {
+          x--;
+          y--;
+          midOps.push({
+            type: "equal",
+            oldLine: start + x + 1,
+            newLine: start + y + 1,
+            text: midA[x],
+          });
+        }
+
+        if (x === prevX) {
+          y--;
+          midOps.push({
+            type: "add",
+            newLine: start + y + 1,
+            text: midB[y],
+          });
+        } else {
+          x--;
+          midOps.push({
+            type: "del",
+            oldLine: start + x + 1,
+            text: midA[x],
+          });
+        }
+      }
+
+      while (x > 0 && y > 0) {
+        x--;
+        y--;
+        midOps.push({
+          type: "equal",
+          oldLine: start + x + 1,
+          newLine: start + y + 1,
+          text: midA[x],
+        });
+      }
+
+      midOps.reverse();
+      rows.push(...midOps);
+    } else {
+      midA.forEach((line, idx) =>
+        rows.push({ type: "del", oldLine: start + idx + 1, text: line })
+      );
+      midB.forEach((line, idx) =>
+        rows.push({ type: "add", newLine: start + idx + 1, text: line })
+      );
     }
-    while (j < n) {
-      rows.push({ type: "add", newLine: start + j + 1, text: midB[j++] });
-    }
-  } else {
-    midA.forEach((line, idx) =>
-      rows.push({ type: "del", oldLine: start + idx + 1, text: line })
-    );
-    midB.forEach((line, idx) =>
-      rows.push({ type: "add", newLine: start + idx + 1, text: line })
-    );
   }
 
   const tailCount = a.length - 1 - endA;

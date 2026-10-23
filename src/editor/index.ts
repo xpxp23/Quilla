@@ -6,6 +6,8 @@ import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import {
   livePreviewPlugin,
   activeDocumentPath,
+  documentPathStateField,
+  getViewDocumentPath,
   stripInlineMarkdown,
   toggleHeadingFoldAtLine,
   isHeadingFoldedAtLine,
@@ -98,7 +100,11 @@ function resolveRelativeFilePath(baseDocPath: string | null, relHref: string): s
   return baseParts.join(sep);
 }
 
-export function handleOpenLink(href: string, onOpenFile?: (filePath: string) => void) {
+export function handleOpenLink(
+  href: string,
+  onOpenFile?: (filePath: string) => void,
+  view?: EditorView | null
+) {
   const trimmed = href.trim();
   if (!trimmed) return;
 
@@ -120,7 +126,8 @@ export function handleOpenLink(href: string, onOpenFile?: (filePath: string) => 
       window.open(fullUrl, "_blank");
     });
   } else if (onOpenFile) {
-    const resolved = resolveRelativeFilePath(activeDocumentPath, trimmed);
+    const docPath = view ? getViewDocumentPath(view) : activeDocumentPath;
+    const resolved = resolveRelativeFilePath(docPath, trimmed);
     onOpenFile(resolved);
   }
 }
@@ -223,6 +230,7 @@ export function createEditorStateForView(view: EditorView, newContent: string): 
 export function resetEditorDocument(view: EditorView, newContent: string) {
   const wasTW = isTypewriterModeActive(view);
   const wasFC = isFocusModeActive(view);
+  const prevDocPath = getViewDocumentPath(view);
   const extensions: Extension[] = (view as any)._quillaExtensions || [];
   if (extensions.length > 0) {
     view.setState(
@@ -231,6 +239,10 @@ export function resetEditorDocument(view: EditorView, newContent: string) {
         extensions,
       })
     );
+    if (prevDocPath) {
+      // 保留该视图绑定的文档路径
+      (view as any)._quillaDocPath = prevDocPath;
+    }
     if (wasTW) toggleTypewriterMode(view, true);
     if (wasFC) toggleFocusMode(view, true);
   } else {
@@ -354,6 +366,7 @@ export function createEditor(
     cleanFocusTheme,
     history(),
     markdown({ addKeymap: false }),
+    documentPathStateField,
     docStructureField,
     inlineBoundaryCursorGuardExtension,
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
@@ -426,7 +439,7 @@ export function createEditor(
           if (event.ctrlKey || event.metaKey) {
             event.preventDefault();
             event.stopPropagation();
-            handleOpenLink(href, callbacks.onOpenFile);
+            handleOpenLink(href, callbacks.onOpenFile, view);
             return true;
           }
         }

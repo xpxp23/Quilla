@@ -24,9 +24,67 @@ interface DiskDraftRecord {
 
 const STORAGE_KEY = "typora_auto_recovery_snapshots_v2";
 const LEGACY_KEY = "typora_auto_recovery_snapshot";
+const ACTIVE_SESSIONS_KEY = "quilla_active_sessions_v1";
 
 // 当前窗口实例唯一会话 ID，确保多窗口并发编辑不同文件时快照互不覆盖
 const CURRENT_SESSION_ID = `win-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+/**
+ * 维护活跃窗口会话心跳锁，防止新建独立窗口时误将原窗口正在活跃编辑的文档当成崩溃快照弹出提示 (Bug 3 修复)
+ */
+function initActiveSessionHeartbeat() {
+  if (typeof window === "undefined") return;
+
+  const beat = () => {
+    try {
+      const raw = localStorage.getItem(ACTIVE_SESSIONS_KEY);
+      const map: Record<string, number> = raw ? JSON.parse(raw) : {};
+      const now = Date.now();
+      for (const [sid, ts] of Object.entries(map)) {
+        if (now - ts > 12000) {
+          delete map[sid];
+        }
+      }
+      map[CURRENT_SESSION_ID] = now;
+      localStorage.setItem(ACTIVE_SESSIONS_KEY, JSON.stringify(map));
+    } catch {
+      // ignore storage quota errors
+    }
+  };
+
+  beat();
+  window.setInterval(beat, 3000);
+  window.addEventListener("focus", beat);
+  window.addEventListener("beforeunload", () => {
+    try {
+      const raw = localStorage.getItem(ACTIVE_SESSIONS_KEY);
+      if (raw) {
+        const map: Record<string, number> = JSON.parse(raw);
+        delete map[CURRENT_SESSION_ID];
+        localStorage.setItem(ACTIVE_SESSIONS_KEY, JSON.stringify(map));
+      }
+    } catch {
+      // ignore
+    }
+  });
+}
+
+export function isSessionAliveInOtherWindow(sessionId?: string): boolean {
+  if (!sessionId || sessionId === CURRENT_SESSION_ID || sessionId === "legacy" || sessionId === "disk-recovery") {
+    return false;
+  }
+  try {
+    const raw = localStorage.getItem(ACTIVE_SESSIONS_KEY);
+    if (!raw) return false;
+    const map: Record<string, number> = JSON.parse(raw);
+    const lastSeen = map[sessionId];
+    return typeof lastSeen === "number" && Date.now() - lastSeen < 9000;
+  } catch {
+    return false;
+  }
+}
+
+initActiveSessionHeartbeat();
 
 function escapeHtml(str: string): string {
   return str
@@ -91,6 +149,7 @@ let pendingSnapshotData: {
   content: string;
   title: string;
 } | null = null;
+const initializedRopeKeys = new Set<string>();
 
 function flushPendingRecoverySnapshot() {
   if (pendingPersistTimer) {
@@ -110,6 +169,8 @@ function flushPendingRecoverySnapshot() {
     title,
   };
   writeSnapshotMap(map);
+
+  initializedRopeKeys.add(bucketKey);
 
   // 同步至 Rust Ropey 缓冲区与磁盘级快照文件
   invoke("sync_document_buffer", {
@@ -132,7 +193,7 @@ if (typeof window !== "undefined") {
 
 /**
  * 实时在后台按当前窗口会话与文件路径保存脏内容快照（采用 1500ms 闲置防抖与失焦立即刷盘，
- * 彻底解耦高频打字与 localStorage / 磁盘 I/O 序列化）
+ * 彻底解耦高频打字与 localStorage / 磁盘 I/O 序列化，并使用统一的 bucketKey 驱动 Ropey 增量同步）
  */
 export function saveRecoverySnapshot(
   filePath: string | null,
@@ -147,11 +208,12 @@ export function saveRecoverySnapshot(
     ? `${CURRENT_SESSION_ID}::${tabId}`
     : CURRENT_SESSION_ID;
 
-  // 若携带增量字符区间变更，先轻量更新内存 Ropey 缓冲区
-  if (deltas && deltas.length > 0) {
+  // 若携带增量字符区间变更且该 bucketKey 已在 Rust Ropey 中初始化，则按同一键名轻量更新内存 Rope
+  if (deltas && deltas.length > 0 && initializedRopeKeys.has(bucketKey)) {
     invoke("sync_document_buffer", {
       deltas,
-      fileId: "memory_only",
+      fileId: bucketKey,
+      filePath,
     }).catch(() => {});
   }
 
@@ -198,12 +260,14 @@ export function clearRecoverySnapshot(filePath?: string | null, tabId?: string) 
 }
 
 /**
- * 合并读取 localStorage 与 Rust 磁盘兜底快照，返回最新的一份有效未保存草稿
+ * 合并读取 localStorage 与 Rust 磁盘兜底快照，按时间戳倒序返回全部候选快照列表
  */
-export async function getRecoverySnapshotAsync(): Promise<{
-  key: string;
-  snapshot: RecoverySnapshot;
-} | null> {
+export async function getAllRecoverySnapshotsAsync(): Promise<
+  Array<{
+    key: string;
+    snapshot: RecoverySnapshot;
+  }>
+> {
   const map = readSnapshotMap();
 
   try {
@@ -227,53 +291,88 @@ export async function getRecoverySnapshotAsync(): Promise<{
     // 浏览器环境或后端不可用时静默回退到 localStorage
   }
 
-  const entries = Object.entries(map);
-  if (entries.length === 0) return null;
-  entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
-  const [key, snapshot] = entries[0];
-  return { key, snapshot };
+  const entries = Object.entries(map)
+    .filter(([, snap]) => Boolean(snap && snap.content && snap.content.trim()))
+    .sort((a, b) => b[1].timestamp - a[1].timestamp);
+
+  return entries.map(([key, snapshot]) => ({ key, snapshot }));
 }
 
 /**
- * 应用启动时检查是否存在未正常保存的快照，若存在且与磁盘原文件确实不同则提示一键恢复
+ * 兼容旧接口：返回最新的一份非其他活跃窗口占用的有效未保存草稿
+ */
+export async function getRecoverySnapshotAsync(): Promise<{
+  key: string;
+  snapshot: RecoverySnapshot;
+} | null> {
+  const all = await getAllRecoverySnapshotsAsync();
+  for (const item of all) {
+    if (isSessionAliveInOtherWindow(item.snapshot.sessionId)) {
+      continue;
+    }
+    return item;
+  }
+  return null;
+}
+
+/**
+ * 应用启动时检查是否存在未正常保存的快照：
+ * 1. 自动跳过正在其他活跃窗口中编辑的会话草稿（彻底修复新建独立窗口误弹窗 Bug 3）；
+ * 2. 遍历全部候选快照，若排在前面的快照与磁盘文件内容一致则自动清理并继续检查下一条（修复单条目盲区）。
  */
 export async function checkAndPromptRecovery(
   onRecover: (snapshot: RecoverySnapshot) => void,
   onDiscard?: () => void
 ) {
-  const found = await getRecoverySnapshotAsync();
-  if (!found || !found.snapshot.content || !found.snapshot.content.trim()) return;
+  const candidates = await getAllRecoverySnapshotsAsync();
+  if (candidates.length === 0) return;
 
-  const { key, snapshot } = found;
-
-  const removeSpecificKey = () => {
+  const removeSpecificKey = (targetKey: string) => {
     const map = readSnapshotMap();
-    delete map[key];
+    delete map[targetKey];
     writeSnapshotMap(map);
-    invoke("clear_draft_snapshot", { fileId: key }).catch(() => {});
+    invoke("clear_draft_snapshot", { fileId: targetKey }).catch(() => {});
   };
 
-  if (Date.now() - snapshot.timestamp > 7 * 24 * 3600 * 1000) {
-    removeSpecificKey();
-    return;
-  }
+  let matchedCandidate: { key: string; snapshot: RecoverySnapshot } | null = null;
 
-  // 若快照关联了本地文件且快照内容与磁盘文件内容完全一致，说明已保存，直接静默清理
-  if (snapshot.filePath) {
-    try {
-      const diskContent = await invoke<string>("read_file_content", {
-        path: snapshot.filePath,
-      });
-      if (diskContent === snapshot.content) {
-        removeSpecificKey();
-        return;
-      }
-    } catch {
-      // 文件可能已被移动或删除，继续展示恢复横幅
+  for (const cand of candidates) {
+    const { key, snapshot } = cand;
+
+    // 若该草稿属于当前仍在其他窗口活跃打开的会话，绝不抢占或弹窗提示
+    if (isSessionAliveInOtherWindow(snapshot.sessionId)) {
+      continue;
     }
+
+    // 超过 7 天的陈旧快照自动清理并继续检查后续条目
+    if (Date.now() - snapshot.timestamp > 7 * 24 * 3600 * 1000) {
+      removeSpecificKey(key);
+      continue;
+    }
+
+    // 若快照关联了本地文件且快照内容与磁盘文件内容完全一致，说明已保存，静默清理并继续检查下一条
+    if (snapshot.filePath) {
+      try {
+        const diskContent = await invoke<string>("read_file_content", {
+          path: snapshot.filePath,
+        });
+        if (diskContent === snapshot.content) {
+          removeSpecificKey(key);
+          continue;
+        }
+      } catch {
+        // 文件可能已被移动或删除，保留为可恢复候选
+      }
+    }
+
+    matchedCandidate = cand;
+    break;
   }
 
+  if (!matchedCandidate) return;
   if (document.querySelector(".ty-recovery-banner")) return;
+
+  const { key, snapshot } = matchedCandidate;
 
   const banner = document.createElement("div");
   banner.className = "ty-recovery-banner";
@@ -296,13 +395,13 @@ export async function checkAndPromptRecovery(
   `;
 
   banner.querySelector(".btn-restore")?.addEventListener("click", () => {
-    removeSpecificKey();
+    removeSpecificKey(key);
     onRecover(snapshot);
     banner.remove();
   });
 
   banner.querySelector(".btn-discard")?.addEventListener("click", () => {
-    removeSpecificKey();
+    removeSpecificKey(key);
     banner.remove();
     onDiscard?.();
   });

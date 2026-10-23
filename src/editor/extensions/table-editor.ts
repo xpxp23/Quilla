@@ -2,7 +2,6 @@ import { isLikelyUrl, normalizeUrlForLink } from "./inline-boundary-guard";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { EditorView, KeyBinding, WidgetType, Decoration, DecorationSet } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
-import katex from "katex";
 import { centerElementInTypewriter } from "./typewriter-mode";
 import { forceRefreshEffect } from "./refresh-effect";
 import {
@@ -10,7 +9,13 @@ import {
   isTableDelimiter,
   TableBlock,
 } from "./doc-structure";
-import { parseInlineAST, renderInlineASTSync, parseTableRowCells } from "../markdown-ast-renderer";
+import {
+  parseInlineAST,
+  renderInlineASTSync,
+  parseTableRowCells,
+  saveTableColumnWidthRatios,
+  getSavedTableColumnWidthRatios,
+} from "../markdown-ast-renderer";
 
 export { isTableDelimiter };
 export type { TableBlock };
@@ -50,12 +55,13 @@ function padVisualEnd(str: string, targetVisualWidth: number): string {
 }
 
 /**
- * 将二维数据与对齐方式重新序列化为 CJK 视觉等宽对齐的规范 Markdown 表格
+ * 将二维数据、对齐方式与可选的列宽百分比权重重新序列化为 CJK 视觉等宽对齐的规范 Markdown 表格
  */
 export function serializeMarkdownTable(
   headers: string[],
   rows: string[][],
-  alignments: Array<"left" | "center" | "right">
+  alignments: Array<"left" | "center" | "right">,
+  colWidthRatios?: number[] | null
 ): string {
   const sanitizeCell = (s: string) =>
     s
@@ -80,6 +86,15 @@ export function serializeMarkdownTable(
       colWidths[i] = Math.max(colWidths[i], getVisualDisplayWidth(cell));
     });
   });
+
+  // 若用户通过拖拽调整了列宽比例，将比例映射至分隔行破折号长度（并同步存入持久化注册表）
+  if (colWidthRatios && colWidthRatios.length === colCount) {
+    saveTableColumnWidthRatios(normalizedHeaders, colWidthRatios);
+    for (let i = 0; i < colCount; i++) {
+      const ratioDash = Math.max(3, Math.round((colWidthRatios[i] / 100) * 36));
+      colWidths[i] = Math.max(colWidths[i], ratioDash);
+    }
+  }
 
   const delimiterRow = new Array(colCount).fill("left").map((_, i) => {
     const align = alignments[i] || "left";
@@ -117,12 +132,13 @@ export function formatMarkdownToHTML(text: string): string {
 }
 
 /**
- * 将单元格 DOM 结构逆向转换为规范的 Markdown 格式文本
+ * 将单元格 DOM 结构逆向转换为规范的 Markdown 格式文本（自动过滤尾部光标占位 <br data-sentinel="1">）
  */
 export function formatHTMLToMarkdown(cell: HTMLElement): string {
   function serializeNode(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
       return (node.textContent || "")
+        .replace(/\u200B/g, "")
         .replace(/\r?\n/g, " ")
         .replace(/<(?=[a-zA-Z!/])/g, "&lt;");
     }
@@ -146,6 +162,7 @@ export function formatHTMLToMarkdown(cell: HTMLElement): string {
       }
 
       if (tagName === "BR") {
+        if (el.dataset.sentinel === "1") return "";
         return "<br>";
       }
 
@@ -228,6 +245,46 @@ function insertNodeAtCellSelection(cellEditor: HTMLElement, node: Node) {
   range.collapse(true);
   sel.removeAllRanges();
   sel.addRange(range);
+}
+
+/**
+ * 在单元格内可视化插入软回车换行 (<br>)：
+ * 解决 contentEditable 末尾单次按 Shift+Enter / Alt+Enter 光标不落入下一行的 Chromium 原生缺陷
+ */
+export function insertSoftLineBreakInCell(cellEditor: HTMLElement) {
+  const sel = window.getSelection();
+  const br = document.createElement("br");
+  if (!sel || sel.rangeCount === 0 || !cellEditor.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    cellEditor.appendChild(br);
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+  range.insertNode(br);
+
+  // 检查新插入的 <br> 后是否没有任何可见节点（处于末尾），若是则追加一个零宽占位符确保光标立即落到新行
+  const hasFollowingNode = (() => {
+    let cur: Node | null = br.nextSibling;
+    while (cur) {
+      if (cur.nodeType === Node.ELEMENT_NODE) return true;
+      if (cur.nodeType === Node.TEXT_NODE && (cur.textContent || "").length > 0) return true;
+      cur = cur.nextSibling;
+    }
+    return false;
+  })();
+
+  if (!hasFollowingNode) {
+    const sentinel = document.createElement("br");
+    sentinel.dataset.sentinel = "1";
+    br.after(sentinel);
+  }
+
+  const nextRange = document.createRange();
+  nextRange.setStartAfter(br);
+  nextRange.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(nextRange);
+  cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function toggleCellInlineTag(
@@ -393,16 +450,16 @@ function promptCellInlineLink(cellEditor: HTMLElement, onCommit: () => void) {
 }
 
 /**
- * 可视化表格内联可编辑组件 (In-Place Interactive TableWidget v0.4)
- * - 根治删行后 Ctrl+Z 无法撤销与视口乱跳 Bug（仅在 keepAlive="1" 时跳过重建，外部 undo/redo/查找替换 100% 重建表格并锁定 scrollTop）
- * - 支持 Pointer Events 行列拖拽换位、列宽拖拽调节、表格右/下边缘一键加行列、单元格 Ctrl+K 插入链接
- * - 悬浮工具栏纯图标化设计，且在表格靠近视口顶部时自动向下翻转 (.flip-bottom) 防遮挡
+ * 可视化表格内联可编辑组件 (In-Place Interactive TableWidget v0.10.0)
+ * - 支持拖拽调整列宽（Column Resizing）并按百分比权重持久化（导出 PDF / 海报长图 / Word / HTML 100% 保持列宽比例）
+ * - 支持 Shift+Enter / Alt+Enter 及工具栏按钮在单元格内直接可视化多行换行 (<br>)
  */
 class InteractiveTableWidget extends WidgetType {
   private currentHeaders: string[] = [];
   private currentRows: string[][] = [];
   private currentAlignments: Array<"left" | "center" | "right"> = [];
   private colWidthsPx: Array<number | null> = [];
+  private colWidthRatios: number[] | null = null;
   private trackedFromPos: number;
   private trackedToPos: number;
 
@@ -431,8 +488,6 @@ class InteractiveTableWidget extends WidgetType {
       delete dom.dataset.forceRebuild;
       return false;
     }
-    // 仅当由当前 Widget 内部 syncToDoc 主动触发 (keepAlive === "1") 时复用 DOM，
-    // 任何外部 Undo/Redo、菜单撤销或查找替换事务均返回 false 强制无损重建表格 DOM！
     if (dom.dataset.keepAlive === "1") {
       dom.dataset.fromPos = String(this.fromPos);
       dom.dataset.toPos = String(this.toPos);
@@ -473,6 +528,7 @@ class InteractiveTableWidget extends WidgetType {
       this.currentHeaders.push("");
     }
     this.colWidthsPx = new Array(colCount).fill(null);
+    this.colWidthRatios = getSavedTableColumnWidthRatios(this.currentHeaders, delimiterParts);
     this.currentAlignments = new Array(colCount)
       .fill("left")
       .map((_, i) => {
@@ -573,7 +629,8 @@ class InteractiveTableWidget extends WidgetType {
       const newMarkdown = serializeMarkdownTable(
         this.currentHeaders,
         this.currentRows,
-        this.currentAlignments
+        this.currentAlignments,
+        this.colWidthRatios
       );
 
       try {
@@ -593,7 +650,6 @@ class InteractiveTableWidget extends WidgetType {
         container.dataset.keepAlive = "1";
         view.dispatch({
           changes: { from, to, insert: newMarkdown },
-          // 将 CodeMirror 主选区锚定至当前表格起点，彻底根除 Ctrl+Z 撤销时视口跳回远端旧光标的 Bug
           selection: { anchor: from },
           userEvent: "input.table",
         });
@@ -622,6 +678,15 @@ class InteractiveTableWidget extends WidgetType {
         </button>
         <button type="button" class="tbl-btn icon-only" data-act="align-right" title="当前列右对齐">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="toolbar-sep"></div>
+      <div class="toolbar-group">
+        <button type="button" class="tbl-btn" data-act="insert-br" title="在单元格内插入多行软回车 (Shift+Enter / Alt+Enter)">
+          <span>↵换行</span>
+        </button>
+        <button type="button" class="tbl-btn" data-act="reset-col-widths" title="重置并均分所有列宽 (也可双击列分隔线)">
+          <span>均分列宽</span>
         </button>
       </div>
       <div class="toolbar-sep"></div>
@@ -686,7 +751,6 @@ class InteractiveTableWidget extends WidgetType {
         el.classList.toggle("active", el.dataset.act === `align-${curAlign}`);
       });
 
-      // 当表格位于文档顶部或靠近视口上边缘时，工具栏自动向下翻转，避免超出视口顶部被裁切
       requestAnimationFrame(() => {
         if (!container.isConnected) return;
         const figRect = container.getBoundingClientRect();
@@ -745,9 +809,35 @@ class InteractiveTableWidget extends WidgetType {
         }
       }
 
-      const sanitized = text.replace(/\r?\n/g, " ");
-      insertNodeAtCellSelection(cellEditor, document.createTextNode(sanitized));
+      // 单格内粘贴多行文本时自动转换为 <br> 软换行节点
+      if (rawLines.length > 1) {
+        const frag = document.createDocumentFragment();
+        rawLines.forEach((lineStr, idx) => {
+          if (idx > 0) frag.appendChild(document.createElement("br"));
+          frag.appendChild(document.createTextNode(lineStr));
+        });
+        insertNodeAtCellSelection(cellEditor, frag);
+      } else {
+        insertNodeAtCellSelection(cellEditor, document.createTextNode(text));
+      }
       cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    const computeAndPersistColWidthRatiosFromDOM = () => {
+      const ths = Array.from(table.querySelectorAll<HTMLElement>("thead th"));
+      if (ths.length === 0) return;
+      const pxWidths = ths.map((el, idx) => this.colWidthsPx[idx] || el.getBoundingClientRect().width || 100);
+      const totalPx = pxWidths.reduce((a, b) => a + b, 0);
+      if (totalPx <= 0) return;
+      const ratios = pxWidths.map((w) => Math.max(6, Math.round((w / totalPx) * 100)));
+      const sum = ratios.reduce((a, b) => a + b, 0);
+      if (sum !== 100 && ratios.length > 0) {
+        ratios[ratios.length - 1] = Math.max(6, ratios[ratios.length - 1] + (100 - sum));
+      }
+      this.colWidthRatios = ratios;
+      saveTableColumnWidthRatios(this.currentHeaders, ratios);
+      hasUserEdited = true;
+      syncToDoc(true);
     };
 
     // Pointer Events 行列拖拽排序与列宽调整
@@ -818,6 +908,11 @@ class InteractiveTableWidget extends WidgetType {
           const [movedWidth] = this.colWidthsPx.splice(cIdx, 1);
           this.colWidthsPx.splice(targetColIdx, 0, movedWidth);
 
+          if (this.colWidthRatios && this.colWidthRatios.length === this.currentHeaders.length) {
+            const [movedRatio] = this.colWidthRatios.splice(cIdx, 1);
+            this.colWidthRatios.splice(targetColIdx, 0, movedRatio);
+          }
+
           this.currentRows.forEach((row) => {
             const [movedCell] = row.splice(cIdx, 1);
             row.splice(targetColIdx!, 0, movedCell);
@@ -830,11 +925,11 @@ class InteractiveTableWidget extends WidgetType {
       colGrip.addEventListener("pointerup", (e) => endColDrag(e, true));
       colGrip.addEventListener("pointercancel", (e) => endColDrag(e, false));
 
-      // 列宽拖拽调节把手
+      // 列宽拖拽调节把手（支持百分比权重持久化，导出 PDF / 长图时 100% 保留列宽权重）
       const resizer = document.createElement("span");
       resizer.className = "tbl-col-resizer";
       resizer.contentEditable = "false";
-      resizer.title = "拖动调整列宽，双击恢复自适应宽度";
+      resizer.title = "拖动调整列宽（导出 PDF/长图自动保留比例），双击恢复均分宽度";
 
       let isResizing = false;
       let resizeStartX = 0;
@@ -847,13 +942,20 @@ class InteractiveTableWidget extends WidgetType {
         isResizing = true;
         resizeStartX = e.clientX;
         startWidth = th.getBoundingClientRect().width;
+        // 锁定其余列当前像素宽度以实现平滑拖拽
+        const allThs = Array.from(table.querySelectorAll<HTMLElement>("thead th"));
+        allThs.forEach((hEl, idx) => {
+          if (this.colWidthsPx[idx] === null) {
+            this.colWidthsPx[idx] = Math.round(hEl.getBoundingClientRect().width);
+          }
+        });
         resizer.setPointerCapture(e.pointerId);
         resizer.classList.add("active");
       });
 
       resizer.addEventListener("pointermove", (e: PointerEvent) => {
         if (!isResizing) return;
-        const newW = Math.max(56, Math.round(startWidth + (e.clientX - resizeStartX)));
+        const newW = Math.max(48, Math.round(startWidth + (e.clientX - resizeStartX)));
         this.colWidthsPx[cIdx] = newW;
         table.querySelectorAll<HTMLElement>(`[data-col="${cIdx}"]`).forEach((cell) => {
           cell.style.width = `${newW}px`;
@@ -868,17 +970,22 @@ class InteractiveTableWidget extends WidgetType {
         try {
           if (resizer.hasPointerCapture(e.pointerId)) resizer.releasePointerCapture(e.pointerId);
         } catch {}
+        computeAndPersistColWidthRatiosFromDOM();
       };
 
       resizer.addEventListener("pointerup", stopResize);
       resizer.addEventListener("pointercancel", stopResize);
       resizer.addEventListener("dblclick", (e) => {
         e.stopPropagation();
-        this.colWidthsPx[cIdx] = null;
-        table.querySelectorAll<HTMLElement>(`[data-col="${cIdx}"]`).forEach((cell) => {
+        this.colWidthsPx.fill(null);
+        this.colWidthRatios = null;
+        saveTableColumnWidthRatios(this.currentHeaders, null);
+        table.querySelectorAll<HTMLElement>("th, td").forEach((cell) => {
           cell.style.width = "";
           cell.style.minWidth = "";
         });
+        hasUserEdited = true;
+        syncToDoc(true);
       });
 
       th.appendChild(colGrip);
@@ -1003,7 +1110,6 @@ class InteractiveTableWidget extends WidgetType {
       });
 
       cellEditor.addEventListener("blur", () => {
-        // 关键防护：在 DOM 重建、Ctrl+Z 撤销重做、节点已卸载或用户根本未编辑时，严禁触发 syncToDoc 覆写底层文档！
         if (
           isRebuildingDOM ||
           isUndoingOrRedoing ||
@@ -1048,6 +1154,8 @@ class InteractiveTableWidget extends WidgetType {
           if (this.colWidthsPx[cIdx]) {
             th.style.width = `${this.colWidthsPx[cIdx]}px`;
             th.style.minWidth = `${this.colWidthsPx[cIdx]}px`;
+          } else if (this.colWidthRatios && this.colWidthRatios[cIdx]) {
+            th.style.width = `${this.colWidthRatios[cIdx]}%`;
           }
           th.dataset.row = "-1";
           th.dataset.col = String(cIdx);
@@ -1075,6 +1183,8 @@ class InteractiveTableWidget extends WidgetType {
             if (this.colWidthsPx[cIdx]) {
               td.style.width = `${this.colWidthsPx[cIdx]}px`;
               td.style.minWidth = `${this.colWidthsPx[cIdx]}px`;
+            } else if (this.colWidthRatios && this.colWidthRatios[cIdx]) {
+              td.style.width = `${this.colWidthRatios[cIdx]}%`;
             }
             td.dataset.row = String(rIdx);
             td.dataset.col = String(cIdx);
@@ -1128,10 +1238,6 @@ class InteractiveTableWidget extends WidgetType {
       }
     };
 
-    /**
-     * 先同步底层 CodeMirror 文档 (syncToDoc)，再重建 DOM 并原位聚焦单元格，
-     * 彻底杜绝先聚焦后 dispatch 导致焦点被 CodeMirror 抢走及 blur 二次污染的问题
-     */
     const rebuildAndSync = (
       nextRow: number,
       nextCol: number,
@@ -1297,7 +1403,7 @@ class InteractiveTableWidget extends WidgetType {
     };
 
     container.addEventListener("keydown", (e: KeyboardEvent) => {
-      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做（严格加锁阻止 blur 回写，并锁定视口 scrollTop）
+      // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1463,16 +1569,14 @@ class InteractiveTableWidget extends WidgetType {
         return;
       }
 
-      // 2.6 Shift+Enter 在单元格内安全插入 <br> 换行
-      if (e.key === "Enter" && e.shiftKey) {
+      // 2.6 Shift+Enter 或 Alt+Enter 在单元格内可视化直接插入 <br> 多行软回车换行 (Phase 2.1)
+      if (e.key === "Enter" && (e.shiftKey || e.altKey)) {
         e.preventDefault();
         e.stopPropagation();
-        insertNodeAtCellSelection(cellEditor, document.createElement("br"));
-        cellEditor.dispatchEvent(new Event("input", { bubbles: true }));
+        insertSoftLineBreakInCell(cellEditor);
         return;
       }
 
-      // 辅助检测多行单元格（含 <br> 或软折行）内光标是否已处于首/末视觉行
       const isAtCellVerticalEdge = (edge: "top" | "bottom"): boolean => {
         try {
           const sel = window.getSelection();
@@ -1520,7 +1624,7 @@ class InteractiveTableWidget extends WidgetType {
         view.focus();
       };
 
-      // 3. 上下方向键：多行单元格内优先上下折行移动，到达首/末视觉行时跨行或平滑跳出表格
+      // 3. 上下方向键
       if (e.key === "ArrowUp") {
         if (!isAtCellVerticalEdge("top")) {
           return;
@@ -1555,7 +1659,7 @@ class InteractiveTableWidget extends WidgetType {
         return;
       }
 
-      // 3.1 左右方向键：单元格首尾边界跨格流转 + 首末格离开表格（支持文档首/末行自动补空行防死锁）
+      // 3.1 左右方向键
       if (e.key === "ArrowLeft" && !e.shiftKey) {
         const { atStart } = getCaretBoundary(cellEditor);
         if (atStart) {
@@ -1621,7 +1725,7 @@ class InteractiveTableWidget extends WidgetType {
             focusCell(-1, cols - 1, "end");
           }
         }
-      } else if (e.key === "Enter" && !e.shiftKey) {
+      } else if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         e.stopPropagation();
         flushActiveCellContent();
@@ -1640,6 +1744,24 @@ class InteractiveTableWidget extends WidgetType {
 
     const executeToolbarAction = (act: string | undefined) => {
       if (!act) return;
+      if (act === "insert-br") {
+        const activeCell = table.querySelector(
+          `[data-row="${activeRow}"][data-col="${activeCol}"] .tbl-cell-editor`
+        ) as HTMLElement | null;
+        if (activeCell) {
+          activeCell.focus({ preventScroll: true });
+          insertSoftLineBreakInCell(activeCell);
+        }
+        return;
+      }
+      if (act === "reset-col-widths") {
+        this.colWidthsPx.fill(null);
+        this.colWidthRatios = null;
+        saveTableColumnWidthRatios(this.currentHeaders, null);
+        rebuildAndSync(activeRow, activeCol);
+        return;
+      }
+
       flushActiveCellContent();
       const cols = this.currentHeaders.length;
 
@@ -1664,12 +1786,14 @@ class InteractiveTableWidget extends WidgetType {
         this.currentHeaders.splice(activeCol, 0, "");
         this.currentAlignments.splice(activeCol, 0, "left");
         this.colWidthsPx.splice(activeCol, 0, null);
+        this.colWidthRatios = null;
         this.currentRows.forEach((row) => row.splice(activeCol, 0, ""));
         rebuildAndSync(activeRow, activeCol, "start");
       } else if (act === "add-col-right") {
         this.currentHeaders.splice(activeCol + 1, 0, "");
         this.currentAlignments.splice(activeCol + 1, 0, "left");
         this.colWidthsPx.splice(activeCol + 1, 0, null);
+        this.colWidthRatios = null;
         this.currentRows.forEach((row) => row.splice(activeCol + 1, 0, ""));
         rebuildAndSync(activeRow, activeCol + 1, "start");
       } else if (act === "del-row") {
@@ -1692,7 +1816,6 @@ class InteractiveTableWidget extends WidgetType {
             this.currentRows[0] = new Array(cols).fill("");
             rebuildAndSync(0, activeCol, "start");
           } else {
-            // 若唯一数据行已为空且用户再次点击删行，则删除整个表格（支持 Ctrl+Z 一键恢复）
             executeToolbarAction("del-table");
           }
         }
@@ -1701,6 +1824,7 @@ class InteractiveTableWidget extends WidgetType {
           this.currentHeaders.splice(activeCol, 1);
           this.currentAlignments.splice(activeCol, 1);
           this.colWidthsPx.splice(activeCol, 1);
+          this.colWidthRatios = null;
           this.currentRows.forEach((row) => row.splice(activeCol, 1));
           const nextC = Math.min(activeCol, this.currentHeaders.length - 1);
           rebuildAndSync(activeRow, nextC, "end");
@@ -1740,6 +1864,7 @@ class InteractiveTableWidget extends WidgetType {
       this.currentHeaders.push(`表头 ${newColIdx + 1}`);
       this.currentAlignments.push("left");
       this.colWidthsPx.push(null);
+      this.colWidthRatios = null;
       this.currentRows.forEach((row) => row.push(""));
       rebuildAndSync(-1, newColIdx, "end");
     });
