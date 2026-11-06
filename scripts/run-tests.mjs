@@ -13,9 +13,9 @@ fs.readFileSync = function (...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证 ===");
 
-// 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.0 全量修复及新特性验证
+// 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.x 全量修复及新特性验证
 {
   const mainTs = fs.readFileSync(path.join(rootDir, "src/main.ts"), "utf-8");
   const indexTs = fs.readFileSync(path.join(rootDir, "src/editor/index.ts"), "utf-8");
@@ -333,10 +333,10 @@ console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证
     "[v0.10.0 Phase 3.1 & 3.2] 必须启用 Rust 增量倒排全文检索、![[note#^block-id]] 实时双向同步编辑、Myers Diff 与 Theme Studio"
   );
 
-  console.log("✓ [1/4] 静态源码架构、历史回归项与 v0.10.0 三阶段全部新特性检查通过");
+  console.log("✓ [1/5] 静态源码架构、历史回归项与 v0.10.0 三阶段全部新特性检查通过");
 }
 
-// 2. 版本号一致性验证 (0.10.0)
+// 2. 版本号一致性验证 (0.10.1)
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf-8"));
   const tauriConf = JSON.parse(
@@ -345,8 +345,8 @@ console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
   const indexHtml = fs.readFileSync(path.join(rootDir, "index.html"), "utf-8");
 
-  assert.equal(pkg.version, "0.10.0", "package.json 版本号必须为 0.10.0");
-  assert.equal(tauriConf.version, "0.10.0", "tauri.conf.json 版本号必须为 0.10.0");
+  assert.equal(pkg.version, "0.10.1", "package.json 版本号必须为 0.10.1");
+  assert.equal(tauriConf.version, "0.10.1", "tauri.conf.json 版本号必须为 0.10.1");
   assert.equal(
     Array.isArray(tauriConf.bundle?.fileAssociations) &&
       tauriConf.bundle.fileAssociations[0].ext.includes("md"),
@@ -354,17 +354,17 @@ console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证
     "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
   );
   assert.equal(
-    cargoToml.includes('version = "0.10.0"'),
+    cargoToml.includes('version = "0.10.1"'),
     true,
-    "Cargo.toml 版本号必须为 0.10.0"
+    "Cargo.toml 版本号必须为 0.10.1"
   );
   assert.equal(
-    indexHtml.includes("Quilla (羽墨) v0.10.0"),
+    indexHtml.includes("Quilla (羽墨) v0.10.1"),
     true,
-    "index.html 标题版本号必须为 v0.10.0"
+    "index.html 标题版本号必须为 v0.10.1"
   );
 
-  console.log("✓ [2/4] 全工程版本号 (v0.10.0 / 0.10.0) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/5] 全工程版本号 (v0.10.1 / 0.10.1) 与桌面文件关联配置验证通过");
 }
 
 // 3. 统一内联词法解析器 (inline-tokenizer.ts) 与 Myers Diff 运行时逻辑验证
@@ -385,7 +385,7 @@ console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证
     "3~6 中的波浪号两侧均为数字，应被识别为数值区间连接符"
   );
 
-  console.log("✓ [3/4] 统一内联词法边界守卫 (`1~2周...3~6个月` 防误判) 运行时验证通过");
+  console.log("✓ [3/5] 统一内联词法边界守卫 (`1~2周...3~6个月` 防误判) 运行时验证通过");
 }
 
 // 4. 统一 AST 渲染内核与智能超链接构建器逻辑验证
@@ -398,7 +398,54 @@ console.log("=== Quilla (羽墨) v0.10.0 自动化回归与架构完整性验证
   assert.ok(astSrc.includes("exported-code-card"), "必须生成统一的代码块卡片容器");
   assert.ok(astSrc.includes("exported-code-header"), "必须生成统一的代码块顶栏");
   assert.ok(astSrc.includes("saveTableColumnWidthRatios"), "必须支持表格列宽比例持久化导出");
-  console.log("✓ [4/4] 统一 AST 渲染内核、表格列宽权重导出与原生矢量 PDF 书签管线验证通过");
+  console.log("✓ [4/5] 统一 AST 渲染内核、表格列宽权重导出与原生矢量 PDF 书签管线验证通过");
+}
+
+// 5. [v0.10.1] 多选行内格式保护代码块 + 超长大纲不再覆盖底部「提及此文档」模块
+{
+  const fmtKeymapSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/formatting-keymap.ts"),
+    "utf-8"
+  );
+  const outlineSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/outline.ts"),
+    "utf-8"
+  );
+  const docStructSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/doc-structure.ts"),
+    "utf-8"
+  );
+  const windowCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/window.css"), "utf-8");
+
+  assert.equal(
+    fmtKeymapSrc.includes("function createStructuralLineGuard") &&
+      fmtKeymapSrc.includes("if (isStructuralLine(ln)) {") &&
+      fmtKeymapSrc.includes("if (isStructuralLine(view.state.doc.lineAt(from).number)) return true;") &&
+      fmtKeymapSrc.includes("if (isStructuralLine(line.number)) return true;") &&
+      fmtKeymapSrc.includes("return structuralSkipped > 0;"),
+    true,
+    "[v0.10.1 Bug 1] 多选行内格式化必须逐行跳过围栏代码块 / 公式块 / 表格等结构块，严禁包裹围栏行导致下文被吞入代码块"
+  );
+  assert.equal(
+    docStructSrc.includes("const isCalloutFenceLine = /^(`{3,}|~{3,})/.test(strippedQuote);") &&
+      docStructSrc.includes("if (inCalloutFence || isCalloutFenceLine) {"),
+    true,
+    "[v0.10.1 Bug 1] Callout 内围栏代码块的起止围栏行必须计入代码行集合"
+  );
+  assert.equal(
+    outlineSrc.includes("function resolveOutlineScrollContainer") &&
+      outlineSrc.includes("resolveOutlineScrollContainer(container)") &&
+      windowCssSrc.includes("#panel-outline .outline-content {") &&
+      windowCssSrc.includes("overscroll-behavior: contain;") &&
+      windowCssSrc.includes(".outline-backlinks-section {\n  border-top: 1px solid var(--border-color);") &&
+      windowCssSrc.includes("flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n  padding: 4px 10px 8px;"),
+    true,
+    "[v0.10.1 Bug 2] 大纲列表必须拥有独立滚动区（min-height:0 + overflow-y:auto），底部「提及此文档」模块常驻且不被超长大纲覆盖"
+  );
+
+  console.log(
+    "✓ [5/5] 多选行内格式化结构块守卫与大纲/反向链接两段式滚动布局防回归验证通过"
+  );
 }
 
 console.log("=== ALL TESTS PASSED (100%) ===");

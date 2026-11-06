@@ -548,10 +548,12 @@ export function buildDocStructure(doc: Text, state?: EditorState): DocStructure 
           break;
         }
         const strippedQuote = nextText.replace(/^\s*(?:>\s*)*/, "").trim();
-        if (/^(`{3,}|~{3,})/.test(strippedQuote)) {
+        const isCalloutFenceLine = /^(`{3,}|~{3,})/.test(strippedQuote);
+        if (isCalloutFenceLine) {
           inCalloutFence = !inCalloutFence;
         }
-        if (inCalloutFence) {
+        // 起止围栏行本身也必须计入代码行，否则围栏闭合标记会被当成普通引用正文参与格式化
+        if (inCalloutFence || isCalloutFenceLine) {
           codeLineSet.add(lineIdx);
         }
         endLine = lineIdx;

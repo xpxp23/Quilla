@@ -1,5 +1,5 @@
 import { EditorView, KeyBinding } from "@codemirror/view";
-import { ChangeSpec, Text } from "@codemirror/state";
+import { ChangeSpec, EditorState, Text } from "@codemirror/state";
 import { moveCurrentSemanticBlock, duplicateCurrentSemanticBlock } from "./block-handle";
 import {
   getDocStructureFromState,
@@ -158,8 +158,43 @@ export function buildSubsequentRenumberChanges(
 }
 
 /**
+ * 构建「结构块行守卫」：
+ * 判断某一行是否属于不允许插入行内 Markdown 定界符的块级结构——
+ * 围栏代码块（含 ```lang 信息串与 Mermaid）、多行数学公式块、Callout 内围栏、YAML Front Matter、
+ * 表格（含分隔行）、水平分割线与 [TOC] 目录行。
+ *
+ * 为什么必须拦截：行内定界符是「按行包裹」的，一旦把围栏行包裹成 `~~```rust~~`，
+ * 闭合围栏随之失效，后续所有正文都会被吞进未闭合的代码块，造成整篇文档格式错乱；
+ * 包裹表格行则会破坏列结构。因此这些行在多选批量格式化时必须原样跳过。
+ */
+function createStructuralLineGuard(state: EditorState): (lineNum: number) => boolean {
+  const struct = getDocStructureFromState(state);
+
+  let tableLines: Set<number> | null = null;
+  if (struct.tables.length > 0) {
+    tableLines = new Set<number>();
+    for (const tb of struct.tables) {
+      for (let ln = tb.startLine; ln <= tb.endLine; ln++) tableLines.add(ln);
+    }
+  }
+
+  let singleLines: Set<number> | null = null;
+  if (struct.hrLines.length > 0 || struct.tocLines.length > 0) {
+    singleLines = new Set<number>([...struct.hrLines, ...struct.tocLines]);
+  }
+
+  return (lineNum: number) => {
+    if (struct.codeLineSet.has(lineNum)) return true;
+    if (tableLines && tableLines.has(lineNum)) return true;
+    if (singleLines && singleLines.has(lineNum)) return true;
+    return false;
+  };
+}
+
+/**
  * 包装或插入定界符 (如 **bold**, *italic*, `code`, ~~del~~, ==mark==, $math$)
  * - 支持跨多行选区逐行智能包裹与解包（自动跳过列表/标题/引用块前缀与空行，彻底修复多行删除线/加粗等失效 Bug）
+ * - 多行选区自动跳过围栏代码块 / 公式块 / 表格等结构块行，绝不破坏块级结构（v0.10.1 Bug #1）
  * - 智能支持单行反选 (再次按下快捷键或点击工具栏取消格式，包括光标处于词内时的精确探测解包及 *** 复合解包)
  */
 export function smartToggleFormat(
@@ -171,6 +206,7 @@ export function smartToggleFormat(
   const from = selection.from;
   const to = selection.to;
   const selectedText = view.state.sliceDoc(from, to);
+  const isStructuralLine = createStructuralLineGuard(view.state);
 
   if (selectedText.length > 0) {
     // 1. 多行选区：按行独立剥离块级前缀并对每行正文执行包裹/解包
@@ -190,6 +226,7 @@ export function smartToggleFormat(
       }
 
       const targets: LineFormatTarget[] = [];
+      let structuralSkipped = 0;
       for (let ln = startLine.number; ln <= endLine.number; ln++) {
         const line = doc.line(ln);
         let rFrom = Math.max(from, line.from);
@@ -198,6 +235,13 @@ export function smartToggleFormat(
 
         const rawSlice = view.state.sliceDoc(rFrom, rTo);
         if (!rawSlice.trim()) continue;
+
+        // 结构块行（围栏代码块 / Mermaid / 公式块 / 表格 / Front Matter / 分割线 / [TOC]）整行原样跳过，
+        // 绝不插入任何行内定界符，避免破坏围栏闭合与表格列结构
+        if (isStructuralLine(ln)) {
+          structuralSkipped++;
+          continue;
+        }
 
         // 若选区从行首（或仅含缩进处）开始，自动跳过标题/列表/引用/Callout 前缀，只格式化正文内容
         if (rFrom === line.from) {
@@ -241,7 +285,11 @@ export function smartToggleFormat(
         });
       }
 
-      if (targets.length === 0) return false;
+      if (targets.length === 0) {
+        // 选区内的可格式化行全部被结构块守卫拦截（例如只选中了一个代码块）：
+        // 视为已消费本次格式化指令，保持文档原样，不再向代码块内注入定界符
+        return structuralSkipped > 0;
+      }
 
       const shouldUnwrap = targets.every((t) => t.isWrapped || t.hasOuterWrapInDoc);
       const changes: ChangeSpec[] = [];
@@ -293,6 +341,9 @@ export function smartToggleFormat(
     }
 
     // 2. 单行选区：若选区首尾已包含定界符，直接解包
+    // 结构块行（围栏代码块内容行 / 表格行等）内不施加任何行内定界符，直接消费按键保持原样
+    if (isStructuralLine(view.state.doc.lineAt(from).number)) return true;
+
     if (
       selectedText.startsWith(before) &&
       selectedText.endsWith(after) &&
@@ -368,6 +419,9 @@ export function smartToggleFormat(
   }
 
   const line = view.state.doc.lineAt(from);
+  // 光标位于结构块行（围栏代码块 / Mermaid / 公式块 / 表格 / Front Matter）内时，
+  // 直接消费按键保持原样，绝不向代码或表格中插入 `****`、`~~~~` 等会污染内容的定界符
+  if (isStructuralLine(line.number)) return true;
   const relPos = from - line.from;
   const lineText = line.text;
 

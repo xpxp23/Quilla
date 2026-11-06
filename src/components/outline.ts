@@ -675,6 +675,23 @@ function applyOutlineFilter(container: HTMLElement) {
 }
 
 /**
+ * 解析大纲列表真正生效的滚动容器：
+ * - 新版布局（v0.10.1 起）中大纲列表自身即为内部滚动区（`overflow-y:auto`），
+ *   底部「提及此文档」模块常驻，不再随大纲一起滚动；
+ * - 兼容面板未启用内部滚动（或其他主题覆盖样式）的情形，回退到最近的 `.sidebar-content`。
+ */
+function resolveOutlineScrollContainer(container: HTMLElement): HTMLElement {
+  try {
+    const overflowY = window.getComputedStyle(container).overflowY;
+    if (/(auto|scroll|overlay)/.test(overflowY)) return container;
+  } catch {
+    // getComputedStyle 在极少数环境不可用时直接回退
+  }
+  const sidebarScroller = container.closest(".sidebar-content") as HTMLElement | null;
+  return sidebarScroller || container;
+}
+
+/**
  * 渲染侧边栏大纲树：
  * - 采用签名比对增量更新 + 保持滚动位置，彻底消除大纲视图乱跳 (Bug #7)
  * - 支持 Ctrl/Cmd+Click 与 Shift+Click 多选章节并右键批量修改层级 (Bug #8)
@@ -704,9 +721,9 @@ export function renderOutline(
   lastRenderedSignature = newSignature;
 
   // 保存大纲滚动容器的当前滚动位置，防止重绘时跳回顶部 (Bug #7)
-  const sidebarScroller = container.closest(".sidebar-content") as HTMLElement | null;
+  const sidebarScroller = resolveOutlineScrollContainer(container);
   const prevContainerScrollTop = container.scrollTop;
-  const prevSidebarScrollTop = sidebarScroller ? sidebarScroller.scrollTop : 0;
+  const prevSidebarScrollTop = sidebarScroller === container ? 0 : sidebarScroller.scrollTop;
 
   container.innerHTML = "";
 
@@ -996,7 +1013,7 @@ export function renderOutline(
 
   // 恢复滚动位置，防止大纲列表刷新时乱跳
   container.scrollTop = prevContainerScrollTop;
-  if (sidebarScroller) {
+  if (sidebarScroller !== container) {
     sidebarScroller.scrollTop = prevSidebarScrollTop;
   }
 }
@@ -1031,9 +1048,9 @@ export function syncActiveOutlineHeading(
     if (isAct) activeEl = item;
   });
 
-  // 仅当未处于手动点击大纲锁定期间，且当前激活项超出侧边栏可视范围时，才平滑微调可见性
+  // 仅当未处于手动点击大纲锁定期间，且当前激活项超出可视滚动范围时，才平滑微调可见性
   if (activeEl && !isOutlineJumpLocked()) {
-    const scroller = (container.closest(".sidebar-content") as HTMLElement) || container;
+    const scroller = resolveOutlineScrollContainer(container);
     const scrollerRect = scroller.getBoundingClientRect();
     const itemRect = (activeEl as HTMLElement).getBoundingClientRect();
     if (itemRect.height > 0) {
