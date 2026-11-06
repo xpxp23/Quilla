@@ -1,0 +1,117 @@
+/* =====================================================================
+   墨观 · 玄墨 Dimmed (Inkstone Xuanmo Dimmed) — 深墨夜色，矿物色低一度
+   ---------------------------------------------------------------------
+   色值取自墨观色板（docs/palette.md）· 传统色源自 zhongguose.com
+   正文对比度 11.72:1 · 关键字 桂红 · 降彩 #c57f73
+   ===================================================================== */
+:root,
+body.theme-inkstone-xuanmo-dim,
+body.theme-night.theme-inkstone-xuanmo-dim {
+  /* ---------- 兼容层 ---------- */
+  --bg-color: #19181e;
+  --text-color: #d8d2c6;
+  --side-bar-bg-color: #1e1d24;
+  --control-text-color: #b0a99f;
+  --select-text-bg-color: #363347;
+  --select-text-font-color: auto;
+  --item-hover-bg-color: #232129;
+  --item-hover-text-color: #d8d2c6;
+  --primary-color: #66a9c9;
+  --primary-rgb: 102, 169, 201;
+  --primary-bg-subtle: rgba(102, 169, 201, 0.12);
+  --unsaved-color: #b78b26;
+  --border-color: #393643;
+  --quote-border-color: rgba(197, 127, 115, 0.70);
+  --editor-font-size: 15.5px;
+  --editor-line-height: 1.8;
+  --editor-max-width: 860px;
+  --monospace: "JetBrains Mono", "SF Mono", "Cascadia Code", "Sarasa Mono SC", "Noto Sans Mono CJK SC", Consolas, "Courier New", monospace;
+
+  /* ---------- 表面层级 ---------- */
+  --surface-canvas: #19181e;
+  --surface-panel: #1e1d24;
+  --surface-raised: #24222b;
+  --surface-overlay: #2b2933;
+  --surface-sunken: #151419;
+  --surface-input: #22212a;
+  --surface-hover: #232129;
+  --surface-active: #2e2c36;
+
+  /* ---------- 文字层级 ---------- */
+  --text-secondary: #b0a99f;
+  --text-muted: #8f8996;
+  --text-faint: #726c7a;
+  --text-on-action: #19181e;
+  --text-inverse: #19181e;
+
+  /* ---------- 描边 ---------- */
+  --border-hairline: #2a2832;
+  --border-strong: #4f4a5b;
+  --focus-ring: #66a9c9;
+
+  /* ---------- 动作（青做动作） ---------- */
+  --primary-hover: #78b3cf;
+  --action-soft: rgba(102, 169, 201, 0.12);
+  --action-border: rgba(102, 169, 201, 0.32);
+
+  /* ---------- 状态（红做记号） ---------- */
+  --danger-color: #e25737;
+  --danger-rgb: 226, 87, 55;
+  --success-color: #69a794;
+  --success-rgb: 105, 167, 148;
+  --warning-color: #b78b26;
+  --warning-rgb: 183, 139, 38;
+  --info-color: #66a9c9;
+  --important-color: #d6a01d;
+  --important-rgb: 214, 160, 29;
+
+  /* ---------- 代码语法 ---------- */
+  --syn-keyword: #c57f73;
+  --syn-string: #69a794;
+  --syn-comment: #85809e;
+  --syn-number: #b78b26;
+  --syn-type: #d6a01d;
+  --syn-function: #66a9c9;
+  --syn-attr: #d6a01d;
+  --syn-operator: #9d97a8;
+
+  /* ---------- Callout 批注 ---------- */
+  --callout-note: #66a9c9;
+  --callout-note-bg: rgba(102, 169, 201, 0.1);
+  --callout-tip: #69a794;
+  --callout-tip-bg: rgba(105, 167, 148, 0.1);
+  --callout-important: #c08eaf;
+  --callout-important-bg: rgba(192, 142, 175, 0.1);
+  --callout-warning: #b78b26;
+  --callout-warning-bg: rgba(183, 139, 38, 0.1);
+  --callout-caution: #e25737;
+  --callout-caution-bg: rgba(226, 87, 55, 0.11);
+
+  /* ---------- 编辑器 ---------- */
+  --code-bg: #151419;
+  --code-header-bg: #1f1e26;
+  --code-inline-bg: rgba(216, 210, 198, 0.07);
+  --mark-bg: rgba(214, 160, 29, 0.26);
+  --mark-fg: #f4efe4;
+  --table-header-bg: rgba(216, 210, 198, 0.05);
+  --table-stripe-bg: rgba(216, 210, 198, 0.02);
+  --quote-bg: rgba(216, 210, 198, 0.026);
+  --search-hit-bg: rgba(183, 139, 38, 0.38);
+  --search-hit-fg: #fff8e6;
+  --search-active-bg: #b78b26;
+  --search-active-fg: #19181e;
+  --search-pulse-bg: #d6a01d;
+  --scrollbar-thumb: rgba(216, 210, 198, 0.18);
+  --scrollbar-thumb-hover: rgba(216, 210, 198, 0.32);
+
+  /* ---------- 标题（朱丝栏） ---------- */
+  --heading-rule: rgba(197, 127, 115, 0.50);
+  --heading-mark: #c57f73;
+
+  /* ---------- 字体 ---------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  --font-sans-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  --font-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STZhongsong", "STSong", "SimSun", Georgia, serif;
+  --font-quote: var(--font-sans);
+  --paragraph-spacing: 0.44em;
+}

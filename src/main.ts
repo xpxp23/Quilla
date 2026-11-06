@@ -14,7 +14,7 @@ import {
   countMixedWords,
   extractOutlineHeadings,
 } from "./editor";
-import { themeLoader, BUILTIN_THEMES } from "./themes/theme-loader";
+import { themeLoader, BUILTIN_THEMES, THEME_ORDER, THEME_SERIES_META } from "./themes/theme-loader";
 import { initTitlebar, updateWindowTitle } from "./components/titlebar";
 import {
   renderOutline,
@@ -94,17 +94,19 @@ import { renderMarkdownDocumentToHtml } from "./editor/markdown-ast-renderer";
 import { quillaPluginRegistry } from "./editor/plugin-system";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.10.0 全景工作台指南
+title: Quilla (羽墨) v0.11.0 全景工作台指南
 author: Quilla Studio
 tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.10.0
+version: 0.11.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.10.0
+# 欢迎使用 Quilla (羽墨) v0.11.0
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
-> [!TIP] Quilla v0.10.0 核心演进与生产力跃升
+内置 **墨观（Inkstone）** 中国风主题——玄墨 / 宣纸 / 沧海 / 青瓷等六个变体，色值取自 526 个中国传统色，遵循「红做记号、青做动作」的配色伦理；点击底部状态栏的「主题」即可在卡片式面板中切换，也可跟随系统深浅色自动换房间。
+
+> [!TIP] Quilla v0.11.0 核心演进与生产力跃升
 > - **第一阶段 · 统一词法与独立多实例分屏**：全新 \`inline-tokenizer.ts\` 统一双端内联词法解析并内置中文数字区间（如 1~2周、3~6个月）3 层边界守卫；分屏状态与文档路径迁入 CodeMirror \`StateField\` 实现真正的多实例隔离。
 > - **第二阶段 · 表格深层增强、多卡自动切片与 PDF 矢量书签**：支持表格列宽拖拽比例持久化与 \`Shift+Enter\` 可视化多行软回车；海报长图新增 ` + "`375px / 430px`" + ` 手机视口及 **小红书 3:4 / 朋友圈 9:16 多卡片自动分页切片**；PDF 导出自动注入 H1~H6 原生可折叠目录书签。
 > - **第三阶段 · 增量全文检索引擎、块级双向同步与主题工作坊**：Rust 倒排分词与 Bigram 增量检索引擎实现毫秒级检索与 \`#标签\` 组合过滤；支持 \`![[笔记#^block-id]]\` 块级嵌入原位双向同步编辑；内置 **主题与排版预设工作坊（Theme Studio）**。
@@ -146,7 +148,7 @@ version: 0.10.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.10.0"] --> Phase1["统一词法解析 & 独立多实例分屏"]
+    Start["Quilla v0.11.0"] --> Phase1["统一词法解析 & 独立多实例分屏"]
     Start --> Phase2["表格列宽持久化 & 小红书多卡切片 & PDF书签"]
     Start --> Phase3["增量全文检索 & 块级双向同步 & 主题工作坊"]
 \`\`\`
@@ -157,7 +159,7 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.10.0!");
+    println!("Hello, Quilla (羽墨) v0.11.0!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
@@ -1685,7 +1687,7 @@ class App {
       bodyHtml,
       wordCount: countMixedWords(docText),
       themeCss: themeMeta.css,
-      isDark: themeMeta.id === "night",
+      isDark: themeMeta.isDark,
       onSystemPrintFallback: (compiledBodyHtml, pageCss) => {
         let printStyle = document.getElementById("quilla-print-page-style") as HTMLStyleElement | null;
         if (!printStyle) {
@@ -1728,7 +1730,7 @@ class App {
     const themeMeta = themeLoader.getThemeMeta();
     const themeCss = themeMeta.css;
     const studioCss = buildThemeStudioExportVariablesCss();
-    const isNight = themeMeta.id === "night";
+    const isNight = themeMeta.isDark;
     const bodyClass = isNight ? `theme-${themeMeta.id} theme-night` : `theme-${themeMeta.id}`;
     const bodyHtml = await this.renderMarkdownToHtmlBody(docText, docPath);
 
@@ -1741,25 +1743,25 @@ class App {
   <style>
     ${themeCss}
     ${studioCss}
-    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: var(--editor-line-height, 1.75); background-color: var(--bg-color, #ffffff); color: var(--text-color, #24292f); }
+    body { max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: var(--editor-line-height, 1.75); background-color: var(--surface-canvas, #ffffff); color: var(--text-color, #24292f); font-family: var(--font-sans, sans-serif); }
     table.md-table { border-collapse: collapse; width: 100%; max-width: 100%; table-layout: fixed; margin: 1.2rem 0; }
     table.md-table th, table.md-table td { border: 1px solid var(--border-color, #dfe2e5); padding: 8px 12px; min-width: 0 !important; word-break: break-word; overflow-wrap: anywhere; vertical-align: top; }
     table.md-table.md-table-dense th, table.md-table.md-table-dense td { font-size: 12.5px; padding: 6px 8px; }
     table.md-table.md-table-ultra-dense th, table.md-table.md-table-ultra-dense td { font-size: 11.5px; padding: 4px 6px; }
-    table.md-table th { background-color: rgba(127, 127, 127, 0.06); font-weight: 600; }
+    table.md-table th { background-color: var(--table-header-bg); font-weight: 600; border-bottom: 1px solid var(--border-strong); }
     table.md-table th code, table.md-table td code { white-space: pre-wrap; word-break: break-all; }
-    .exported-code-card { margin: 1.2rem 0; border-radius: 8px; background: rgba(127, 127, 127, 0.06); border: 1px solid var(--border-color, #dfe2e5); overflow: hidden; }
-    .exported-code-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; background: rgba(127, 127, 127, 0.08); border-bottom: 1px solid var(--border-color, #dfe2e5); font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif; font-size: 12px; color: var(--control-text-color, #57606a); }
+    .exported-code-card { margin: 1.2rem 0; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--border-color); overflow: hidden; }
+    .exported-code-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; background: var(--code-header-bg); border-bottom: 1px solid var(--border-color); font-family: -apple-system, BlinkMacSystemFont, Consolas, sans-serif; font-size: 12px; color: var(--control-text-color, #57606a); }
     .exported-code-dots { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; }
     .exported-code-dots i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
     .exported-code-dots i.dot-red { background: #ff5f56; }
     .exported-code-dots i.dot-amber { background: #ffbd2e; }
     .exported-code-dots i.dot-green { background: #27c93f; }
-    .exported-code-lang { font-weight: 700; letter-spacing: 0.05em; color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.1); padding: 1px 7px; border-radius: 999px; font-size: 11px; }
+    .exported-code-lang { font-weight: 700; letter-spacing: 0.05em; color: var(--primary-color); background: var(--action-soft); padding: 1px 7px; border-radius: 999px; font-size: 11px; }
     .exported-code-meta { margin-left: auto; font-size: 11px; opacity: 0.72; }
     pre { margin: 0; padding: 12px 16px; background: transparent; border: none; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-family: Consolas, "JetBrains Mono", monospace; font-size: 13px; line-height: 1.65; }
     pre > code { background: transparent !important; border: none !important; padding: 0 !important; font-size: inherit !important; }
-    :not(pre) > code { font-family: Consolas, "JetBrains Mono", monospace; font-size: 87%; background-color: rgba(127, 127, 127, 0.1); padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border-color, #dfe2e5); }
+    :not(pre) > code { font-family: Consolas, "JetBrains Mono", monospace; font-size: 87%; background-color: var(--code-inline-bg); padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border-color, #dfe2e5); }
     .exported-code-line {
       position: relative;
       display: block;
@@ -1788,32 +1790,26 @@ class App {
       user-select: none;
       box-sizing: border-box;
     }
-    .cm-syn-keyword { color: #cf222e; font-weight: 600; }
-    .cm-syn-string { color: #0a3069; }
-    .cm-syn-comment { color: #6e7781; font-style: italic; }
-    .cm-syn-number { color: #0550ae; }
-    .cm-syn-type { color: #953800; }
-    .cm-syn-function { color: #8250df; }
-    .cm-syn-attr { color: #116329; }
-    body.theme-night .cm-syn-keyword { color: #c678dd; }
-    body.theme-night .cm-syn-string { color: #98c379; }
-    body.theme-night .cm-syn-comment { color: #7f848e; }
-    body.theme-night .cm-syn-number { color: #d19a66; }
-    body.theme-night .cm-syn-type { color: #e5c07b; }
-    body.theme-night .cm-syn-function { color: #61afef; }
-    body.theme-night .cm-syn-attr { color: #56b6c2; }
-    blockquote { border-left: 3.5px solid var(--quote-border-color, #d0d7de); margin: 1rem 0; padding: 4px 16px; color: var(--control-text-color, #57606a); background: rgba(127, 127, 127, 0.03); }
-    .cm-callout-export { border: 1px solid rgba(9, 105, 218, 0.22); border-left: 4px solid #0969da; border-radius: 6px; padding: 10px 16px; margin: 1rem 0; background: rgba(9, 105, 218, 0.06); }
-    .cm-callout-export.cm-callout-tip { border-color: rgba(26, 127, 55, 0.22); border-left-color: #1a7f37; background: rgba(26, 127, 55, 0.06); }
-    .cm-callout-export.cm-callout-important { border-color: rgba(130, 80, 223, 0.22); border-left-color: #8250df; background: rgba(130, 80, 223, 0.06); }
-    .cm-callout-export.cm-callout-warning { border-color: rgba(154, 103, 0, 0.22); border-left-color: #9a6700; background: rgba(154, 103, 0, 0.07); }
-    .cm-callout-export.cm-callout-caution { border-color: rgba(207, 34, 46, 0.22); border-left-color: #cf222e; background: rgba(207, 34, 46, 0.07); }
-    .cm-callout-header-widget { font-weight: 700; margin-bottom: 4px; color: #0969da; }
-    .cm-callout-header-tip { color: #1a7f37; }
-    .cm-callout-header-important { color: #8250df; }
-    .cm-callout-header-warning { color: #9a6700; }
-    .cm-callout-header-caution { color: #cf222e; }
-    .cm-wikilink, .cm-hashtag { color: var(--primary-color, #0969da); background: rgba(9, 105, 218, 0.08); padding: 1px 7px; border-radius: 10px; font-weight: 500; font-size: 0.92em; }
+    .cm-syn-keyword { color: var(--syn-keyword); font-weight: 600; }
+    .cm-syn-string { color: var(--syn-string); }
+    .cm-syn-comment { color: var(--syn-comment); font-style: italic; }
+    .cm-syn-number { color: var(--syn-number); }
+    .cm-syn-type { color: var(--syn-type); }
+    .cm-syn-function { color: var(--syn-function); }
+    .cm-syn-attr { color: var(--syn-attr); }
+    .cm-syn-operator { color: var(--syn-operator); }
+    blockquote { border-left: 3.5px solid var(--quote-border-color); margin: 1rem 0; padding: 4px 16px; color: var(--text-secondary); background: var(--quote-bg); }
+    .cm-callout-export { border: 1px solid var(--action-border); border-left: 4px solid var(--callout-note); border-radius: 6px; padding: 10px 16px; margin: 1rem 0; background: var(--callout-note-bg); }
+    .cm-callout-export.cm-callout-tip { border-color: var(--action-border); border-left-color: var(--callout-tip); background: var(--callout-tip-bg); }
+    .cm-callout-export.cm-callout-important { border-color: var(--action-border); border-left-color: var(--callout-important); background: var(--callout-important-bg); }
+    .cm-callout-export.cm-callout-warning { border-color: var(--action-border); border-left-color: var(--callout-warning); background: var(--callout-warning-bg); }
+    .cm-callout-export.cm-callout-caution { border-color: var(--action-border); border-left-color: var(--callout-caution); background: var(--callout-caution-bg); }
+    .cm-callout-header-widget { font-weight: 700; margin-bottom: 4px; color: var(--callout-note); }
+    .cm-callout-header-tip { color: var(--callout-tip); }
+    .cm-callout-header-important { color: var(--callout-important); }
+    .cm-callout-header-warning { color: var(--callout-warning); }
+    .cm-callout-header-caution { color: var(--callout-caution); }
+    .cm-wikilink, .cm-hashtag { color: var(--primary-color); background: var(--action-soft); padding: 1px 7px; border-radius: 10px; font-weight: 500; font-size: 0.92em; }
     li.task-list-item { list-style: none; }
     .md-mermaid-card { text-align: center; margin: 1.4rem 0; }
     .cm-footnote-def { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--border-color, #d0d7de); font-size: 0.92em; color: var(--control-text-color, #57606a); }
@@ -2233,19 +2229,26 @@ ${bodyHtml}
     if (!picker) {
       picker = document.createElement("div");
       picker.id = "app-theme-picker-popover";
-      picker.className = "ty-dropdown-menu hidden";
+      picker.className = "theme-picker-panel hidden";
       document.body.appendChild(picker);
 
       picker.addEventListener("click", (evt) => {
-        const item = (evt.target as HTMLElement).closest(".menu-item") as HTMLElement;
-        if (!item) return;
-        if (item.dataset.action === "open-theme-studio") {
+        const target = evt.target as HTMLElement;
+        const actionEl = target.closest("[data-action]") as HTMLElement | null;
+        if (actionEl?.dataset.action === "open-theme-studio") {
           picker?.classList.add("hidden");
           openThemeStudioModal();
           return;
         }
-        if (!item.dataset.theme) return;
-        themeLoader.setTheme(item.dataset.theme);
+        if (actionEl?.dataset.action === "toggle-system-theme") {
+          const nextMode = themeLoader.getMode() === "system" ? "manual" : "system";
+          themeLoader.setMode(nextMode);
+          this.renderThemePicker(picker!);
+          return;
+        }
+        const card = target.closest(".theme-card") as HTMLElement | null;
+        if (!card?.dataset.theme) return;
+        themeLoader.setTheme(card.dataset.theme);
         picker?.classList.add("hidden");
       });
 
@@ -2254,39 +2257,68 @@ ${bodyHtml}
       });
     }
 
-    const cur = themeLoader.getTheme();
-    picker.innerHTML = `
-      <div class="menu-section">
-        <div class="menu-item-group-title">切换内置主题</div>
-        ${Object.values(BUILTIN_THEMES)
-          .map(
-            (t) => `
-          <div class="menu-item theme-choice ${t.id === cur ? "active" : ""}" data-theme="${t.id}">
-            <div class="menu-item-left">
-              <span class="m-icon">${t.id === cur ? "✓" : ""}</span>
-              <span>${this.escapeHtml(t.label)}</span>
-            </div>
-          </div>
-        `
-          )
-          .join("")}
-        <div class="menu-divider"></div>
-        <div class="menu-item" data-action="open-theme-studio">
-          <div class="menu-item-left">
-            <span class="m-icon">🎨</span>
-            <span>主题与排版工作坊...</span>
-          </div>
-        </div>
-      </div>
-    `;
-
+    this.renderThemePicker(picker);
     picker.classList.remove("hidden");
+
     const targetEl =
       document.getElementById("footer-theme-selector") || (e.target as HTMLElement);
     const rect = targetEl.getBoundingClientRect();
-    picker.style.bottom = `${window.innerHeight - rect.top + 6}px`;
-    picker.style.left = `${rect.left}px`;
+    picker.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+    picker.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - 360))}px`;
     picker.style.top = "auto";
+  }
+
+  private renderThemePicker(picker: HTMLElement) {
+    const cur = themeLoader.getTheme();
+    const mode = themeLoader.getMode();
+    const seriesOrder: Array<"inkstone" | "classic"> = ["inkstone", "classic"];
+
+    const seriesBlock = (series: "inkstone" | "classic") => {
+      const meta = THEME_SERIES_META[series];
+      const items = THEME_ORDER.map((id) => BUILTIN_THEMES[id]).filter((t) => t.series === series);
+      return `
+        <div class="theme-series">
+          <div class="theme-series-head">
+            <span class="theme-series-title">${meta.title}</span>
+            <span class="theme-series-sub">${meta.subtitle}</span>
+          </div>
+          <div class="theme-grid">
+            ${items
+              .map(
+                (t) => `
+              <button type="button" class="theme-card ${t.id === cur ? "active" : ""}" data-theme="${t.id}" title="${this.escapeHtml(t.fullLabel)} · ${this.escapeHtml(t.tagline)}">
+                <span class="theme-card-stage" style="background:${t.canvas};color:${t.ink}">
+                  <span class="theme-card-aa">Aa 文</span>
+                  <span class="theme-card-swipes">
+                    ${t.swatches.map((c) => `<i style="background:${c}"></i>`).join("")}
+                  </span>
+                </span>
+                <span class="theme-card-meta">
+                  <span class="theme-card-name">${this.escapeHtml(t.label)}</span>
+                  <span class="theme-card-check">${t.id === cur ? "✓" : ""}</span>
+                </span>
+              </button>`
+              )
+              .join("")}
+          </div>
+        </div>`;
+    };
+
+    picker.innerHTML = `
+      <div class="theme-picker-head">
+        <span class="theme-picker-title">主题</span>
+        <button type="button" class="theme-picker-mode ${mode === "system" ? "active" : ""}" data-action="toggle-system-theme">
+          <span class="theme-picker-mode-dot"></span>跟随系统
+        </button>
+      </div>
+      <div class="theme-picker-body">
+        ${seriesOrder.map(seriesBlock).join("")}
+      </div>
+      <div class="theme-picker-foot">
+        <button type="button" class="theme-picker-studio" data-action="open-theme-studio">主题与排版工作坊…</button>
+        <span class="theme-picker-hint">Ctrl+Shift+T</span>
+      </div>
+    `;
   }
 }
 

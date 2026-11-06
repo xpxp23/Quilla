@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { showToast } from "./save-dialog";
 import { openThemeStudioModal } from "./theme-studio";
+import { themeLoader } from "../themes/theme-loader";
 
 export interface ImageBedPreferences {
   provider: "none" | "picgo" | "github" | "custom";
@@ -204,6 +205,23 @@ export function openPreferencesModal() {
             </div>
             <div class="pref-control">
               <button type="button" class="pref-action-btn" id="pref-open-theme-studio-btn">打开主题工作坊...</button>
+            </div>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-label-group">
+              <span class="pref-label">外观模式</span>
+              <span class="pref-desc">手动挑选主题，或跟随系统深浅色自动切换：墨与纸（玄墨 ↔ 宣纸）、海与瓷（沧海 ↔ 青瓷）</span>
+            </div>
+            <div class="pref-control">
+              <select id="pref-theme-mode" class="pref-select">
+                <option value="manual">手动选择</option>
+                <option value="system">跟随系统</option>
+              </select>
+              <select id="pref-theme-pair" class="pref-select">
+                <option value="ink-paper">墨与纸</option>
+                <option value="sea-celadon">海与瓷</option>
+              </select>
             </div>
           </div>
 
@@ -472,6 +490,15 @@ export function openPreferencesModal() {
     openThemeStudioModal();
   });
 
+  const themeModeSelect = prefModalEl.querySelector("#pref-theme-mode") as HTMLSelectElement;
+  const themePairSelect = prefModalEl.querySelector("#pref-theme-pair") as HTMLSelectElement;
+  themeModeSelect?.addEventListener("change", () => {
+    themeLoader.setMode(themeModeSelect.value === "system" ? "system" : "manual");
+  });
+  themePairSelect?.addEventListener("change", () => {
+    themeLoader.setSystemPair(themePairSelect.value === "sea-celadon" ? "sea-celadon" : "ink-paper");
+  });
+
   const fontSizeInput = prefModalEl.querySelector("#pref-font-size") as HTMLInputElement;
   const fontSizeVal = prefModalEl.querySelector("#pref-font-size-val") as HTMLElement;
   fontSizeInput.addEventListener("input", () => {
@@ -687,6 +714,11 @@ function syncFormWithPreferences(modal: HTMLElement, prefs: AppPreferences) {
     lineHeightInput.value = String(prefs.lineHeight);
     lineHeightVal.textContent = String(prefs.lineHeight);
   }
+
+  const themeModeSelect = modal.querySelector("#pref-theme-mode") as HTMLSelectElement;
+  if (themeModeSelect) themeModeSelect.value = themeLoader.getMode();
+  const themePairSelect = modal.querySelector("#pref-theme-pair") as HTMLSelectElement;
+  if (themePairSelect) themePairSelect.value = themeLoader.getSystemPair();
 
   const maxWidthSelect = modal.querySelector("#pref-max-width") as HTMLSelectElement;
   if (maxWidthSelect) maxWidthSelect.value = prefs.maxWidth;

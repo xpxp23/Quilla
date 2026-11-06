@@ -1,0 +1,117 @@
+/* =====================================================================
+   墨观 · 宣纸 Dimmed (Inkstone Xuanzhi Dimmed) — 陈纸暖灰，深墨旧色
+   ---------------------------------------------------------------------
+   色值取自墨观色板（docs/palette.md）· 传统色源自 zhongguose.com
+   正文对比度 10.91:1 · 关键字 烟红 #894e54
+   ===================================================================== */
+:root,
+body.theme-inkstone-xuanzhi-dim,
+body.theme-night.theme-inkstone-xuanzhi-dim {
+  /* ---------- 兼容层 ---------- */
+  --bg-color: #e9e2d4;
+  --text-color: #2f2b25;
+  --side-bar-bg-color: #e3dbcb;
+  --control-text-color: #4f4a40;
+  --select-text-bg-color: #d3c7ae;
+  --select-text-font-color: auto;
+  --item-hover-bg-color: #e0d8c7;
+  --item-hover-text-color: #2f2b25;
+  --primary-color: #144a74;
+  --primary-rgb: 20, 74, 116;
+  --primary-bg-subtle: rgba(20, 74, 116, 0.12);
+  --unsaved-color: #873d24;
+  --border-color: #cbc0ab;
+  --quote-border-color: #894e54;
+  --editor-font-size: 16px;
+  --editor-line-height: 1.9;
+  --editor-max-width: 860px;
+  --monospace: "JetBrains Mono", "SF Mono", "Cascadia Code", "Sarasa Mono SC", "Noto Sans Mono CJK SC", Consolas, "Courier New", monospace;
+
+  /* ---------- 表面层级 ---------- */
+  --surface-canvas: #e9e2d4;
+  --surface-panel: #e3dbcb;
+  --surface-raised: #dcd3c1;
+  --surface-overlay: #d5cbb7;
+  --surface-sunken: #f1ebdf;
+  --surface-input: #eee7d9;
+  --surface-hover: #e0d8c7;
+  --surface-active: #d8cebb;
+
+  /* ---------- 文字层级 ---------- */
+  --text-secondary: #4f4a40;
+  --text-muted: #665f53;
+  --text-faint: #847c6e;
+  --text-on-action: #f3eee3;
+  --text-inverse: #e9e2d4;
+
+  /* ---------- 描边 ---------- */
+  --border-hairline: #ded4c2;
+  --border-strong: #ada18a;
+  --focus-ring: #144a74;
+
+  /* ---------- 动作（青做动作） ---------- */
+  --primary-hover: #124166;
+  --action-soft: rgba(20, 74, 116, 0.12);
+  --action-border: rgba(20, 74, 116, 0.32);
+
+  /* ---------- 状态（红做记号） ---------- */
+  --danger-color: #82111f;
+  --danger-rgb: 130, 17, 31;
+  --success-color: #1a6840;
+  --success-rgb: 26, 104, 64;
+  --warning-color: #873d24;
+  --warning-rgb: 135, 61, 36;
+  --info-color: #144a74;
+  --important-color: #525288;
+  --important-rgb: 82, 82, 136;
+
+  /* ---------- 代码语法 ---------- */
+  --syn-keyword: #894e54;
+  --syn-string: #1a6840;
+  --syn-comment: #73575c;
+  --syn-number: #66462a;
+  --syn-type: #525288;
+  --syn-function: #144a74;
+  --syn-attr: #645822;
+  --syn-operator: #6b6458;
+
+  /* ---------- Callout 批注 ---------- */
+  --callout-note: #144a74;
+  --callout-note-bg: rgba(20, 74, 116, 0.1);
+  --callout-tip: #1a6840;
+  --callout-tip-bg: rgba(26, 104, 64, 0.1);
+  --callout-important: #525288;
+  --callout-important-bg: rgba(82, 82, 136, 0.1);
+  --callout-warning: #873d24;
+  --callout-warning-bg: rgba(135, 61, 36, 0.1);
+  --callout-caution: #82111f;
+  --callout-caution-bg: rgba(130, 17, 31, 0.11);
+
+  /* ---------- 编辑器 ---------- */
+  --code-bg: #f1ebdf;
+  --code-header-bg: #e7dfcd;
+  --code-inline-bg: rgba(47, 43, 37, 0.07);
+  --mark-bg: rgba(181, 133, 31, 0.30);
+  --mark-fg: #2f2b25;
+  --table-header-bg: rgba(47, 43, 37, 0.05);
+  --table-stripe-bg: rgba(47, 43, 37, 0.02);
+  --quote-bg: rgba(47, 43, 37, 0.026);
+  --search-hit-bg: rgba(181, 133, 31, 0.36);
+  --search-hit-fg: #2a2620;
+  --search-active-bg: #b5851f;
+  --search-active-fg: #f3eee3;
+  --search-pulse-bg: #d6a01d;
+  --scrollbar-thumb: rgba(47, 43, 37, 0.18);
+  --scrollbar-thumb-hover: rgba(47, 43, 37, 0.32);
+
+  /* ---------- 标题（朱丝栏） ---------- */
+  --heading-rule: rgba(137, 78, 84, 0.50);
+  --heading-mark: #894e54;
+
+  /* ---------- 字体 ---------- */
+  --font-sans: var(--font-serif);
+  --font-sans-ui: var(--font-serif);
+  --font-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STZhongsong", "STSong", "SimSun", Georgia, serif;
+  --font-quote: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "Source Han Serif SC", "Noto Serif CJK SC", Georgia, serif;
+  --paragraph-spacing: 0.46em;
+}

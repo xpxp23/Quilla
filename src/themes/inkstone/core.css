@@ -1,0 +1,291 @@
+/* =====================================================================
+   墨观 · 共享结构层 (Inkstone Structural Layer)
+   ---------------------------------------------------------------------
+   只写"形状与节奏"，颜色一律来自六个变体的调色板。
+   随任意墨观变体一起注入；经典系列不加载本文件。
+   设计约束：无渐变、无发光、无玻璃拟态；红做记号，青做动作。
+   ===================================================================== */
+
+/* ---------- 1 · 朱丝栏：古籍界栏式标题 ---------- */
+.cm-line.cm-heading,
+#write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
+#write-secondary h1, #write-secondary h2, #write-secondary h3,
+#write-secondary h4, #write-secondary h5, #write-secondary h6 {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-color);
+}
+
+.cm-line.cm-heading-1,
+#write h1, #write-secondary h1 {
+  border-bottom: 1px solid var(--heading-rule);
+  padding-bottom: 0.5rem !important;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.cm-line.cm-heading-2,
+#write h2, #write-secondary h2 {
+  border-bottom: none !important;
+  padding-bottom: 0.18rem !important;
+  letter-spacing: 0.03em;
+}
+
+/* h2 左侧朱砂短竖：古籍批注的界栏记号 */
+.cm-line.cm-heading-2::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 0.86em;
+  margin-right: 10px;
+  vertical-align: -0.04em;
+  background-color: var(--heading-mark);
+  border-radius: 1px;
+}
+
+.cm-line.cm-heading-3,
+#write h3, #write-secondary h3 {
+  letter-spacing: 0.02em;
+}
+
+.cm-line.cm-heading-4,
+#write h4, #write-secondary h4 {
+  letter-spacing: 0.015em;
+}
+
+.cm-line.cm-heading-5,
+.cm-line.cm-heading-6,
+#write h5, #write h6,
+#write-secondary h5, #write-secondary h6 {
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+/* 标题下的发丝线不再使用中灰，改用主题描边 */
+.cm-line.cm-heading-2 {
+  border-bottom-color: transparent !important;
+}
+
+/* ---------- 2 · 引用：朱砂批注 ---------- */
+blockquote,
+.cm-line.cm-blockquote {
+  border-left-width: 3px !important;
+  font-family: var(--font-quote, inherit);
+  font-style: normal !important;
+  color: var(--text-secondary) !important;
+  border-radius: 0 !important;
+  letter-spacing: 0.01em;
+}
+
+.cm-line.cm-blockquote .cm-md-delimiter {
+  opacity: 0.3 !important;
+}
+
+/* ---------- 3 · 列表：记号从墨，动作从青 ---------- */
+.md-list-bullet,
+.md-list-ordered,
+.md-ordered-marker {
+  color: var(--text-muted);
+  font-weight: 600;
+  transition: color 0.12s ease;
+}
+
+.cm-list-item:hover .md-list-bullet,
+.cm-list-item:hover .md-list-ordered,
+.cm-list-item:hover .md-ordered-marker {
+  color: var(--primary-color);
+}
+
+.task-list-item-checkbox {
+  accent-color: var(--primary-color);
+}
+
+/* ---------- 4 · 链接：青色动作 + 细下划线 ---------- */
+a, .cm-link {
+  color: var(--primary-color);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--action-border);
+}
+
+a:hover, .cm-link:hover {
+  text-decoration-color: var(--primary-color);
+  opacity: 1;
+}
+
+/* 双链与标签：保留胶囊形，但边角收紧、底色更克制 */
+.cm-wikilink,
+.cm-wikilink-widget,
+.cm-wiki-link {
+  border-radius: 3px;
+  border-color: var(--action-border);
+  font-weight: 500;
+}
+
+.cm-wikilink:hover,
+.cm-wikilink-widget:hover,
+.cm-wiki-link:hover {
+  background-color: var(--action-soft);
+  border-color: var(--primary-color);
+}
+
+/* 形状语言：方 = 文档链接，圆 = 标签 */
+.cm-hashtag {
+  border-radius: 999px;
+  border-color: var(--action-border);
+  background-color: var(--action-soft);
+}
+
+.cm-hashtag:hover {
+  background-color: var(--primary-color);
+  color: var(--text-on-action);
+}
+
+/* ---------- 5 · 行内代码与代码块：纸上的凹版 ---------- */
+:not(pre) > code,
+.cm-inline-code {
+  background-color: var(--code-inline-bg);
+  border-color: var(--border-hairline);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+pre, .cm-code-block {
+  border-radius: 4px;
+  border-color: var(--border-hairline);
+}
+
+.cm-line.cm-code-block-first-line {
+  border-radius: 4px 4px 0 0;
+  border-color: var(--border-hairline);
+  border-bottom-color: transparent;
+  color: var(--text-muted);
+}
+
+.cm-line.cm-code-block-line {
+  border-left-color: var(--border-hairline);
+  border-right-color: var(--border-hairline);
+}
+
+.cm-line.cm-code-block-last-line {
+  border-radius: 0 0 4px 4px;
+  border-color: var(--border-hairline);
+  border-top-color: transparent;
+}
+
+.exported-code-card {
+  border-radius: 4px;
+  border-color: var(--border-hairline);
+}
+
+.exported-code-header,
+.mermaid-header.live-preview-header {
+  border-bottom-color: var(--border-hairline);
+}
+
+.code-copy-btn,
+.code-lang-tag {
+  border-radius: 3px;
+}
+
+/* 代码块内的行列号与语言标签再降一级，让代码本身成为主角 */
+.code-lang-tag,
+.code-copy-btn,
+.cm-line.cm-code-block-line::before {
+  color: var(--text-muted);
+}
+
+/* ---------- 6 · 表格：只用发丝线，不做斑马重色 ---------- */
+table.md-table th,
+table.md-table td {
+  border-color: var(--border-hairline);
+}
+
+table.md-table th {
+  border-bottom: 1px solid var(--border-strong);
+  font-weight: 600;
+}
+
+table.md-table th:focus,
+table.md-table td:focus,
+table.md-table th:focus-within,
+table.md-table td:focus-within {
+  box-shadow: inset 0 0 0 1.5px var(--primary-color);
+}
+
+/* ---------- 7 · 分隔线：一条墨线，不喧哗 ---------- */
+hr, .md-hr {
+  border-top: 1px solid var(--border-strong) !important;
+  margin: 2.2rem 0 !important;
+}
+
+/* ---------- 8 · 标记符更淡，正文更清楚 ---------- */
+.cm-md-delimiter {
+  opacity: 0.32 !important;
+  color: var(--text-faint) !important;
+}
+
+.cm-md-url {
+  color: var(--text-faint);
+  opacity: 0.8;
+}
+
+.cm-strikethrough {
+  color: var(--text-muted);
+  text-decoration-color: var(--danger-color);
+}
+
+/* ---------- 9 · 卡片类元素统一细边 ---------- */
+.cm-frontmatter-card,
+.cm-toc-card,
+.cm-transclusion-card,
+.cm-blockquote {
+  border-radius: 3px;
+}
+
+/* 嵌入卡片不再整块铺强调底色，只在页眉与描边上留青色 */
+.cm-transclusion-card {
+  background-color: var(--surface-raised);
+  border-color: var(--action-border);
+  border-left-color: var(--primary-color);
+}
+
+.transclusion-header {
+  background-color: var(--action-soft);
+  border-bottom-color: var(--action-border);
+}
+
+.transclusion-inline-editor {
+  background-color: var(--surface-sunken);
+  border-top-color: var(--action-border);
+}
+
+.cm-frontmatter-card {
+  background-color: var(--surface-raised);
+}
+
+.cm-frontmatter-card:hover {
+  border-color: var(--action-border);
+  box-shadow: none;
+}
+
+.cm-transclusion-card:hover {
+  box-shadow: none;
+}
+
+/* ---------- 10 · 输入与焦点：一圈青 ---------- */
+.find-input:focus,
+.replace-input:focus,
+.transclusion-edit-textarea:focus,
+.code-lang-filter-input:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px var(--action-soft);
+}
+
+/* ---------- 11 · 打印与导出：保持纸面干净 ---------- */
+@media print {
+  .cm-line.cm-heading-1,
+  #write h1 {
+    border-bottom-color: var(--heading-rule) !important;
+  }
+}

@@ -899,12 +899,12 @@ export function openSharePosterModal(options: {
   }
 
   const studio = getActiveThemeStudioPreset();
-  let currentSkin: "ivory" | "dark" | "mint" = "ivory";
+  let currentSkin: "ivory" | "dark" | "mint" | "ink" = "ivory";
   let posterWidth: PosterWidthPreset = studio.posterDefaultWidth || 430;
   let sliceMode: PosterSliceMode = "single";
   const dateStr = new Date().toISOString().slice(0, 10);
 
-  const preparePosterHtml = (rawHtml: string, skin: "ivory" | "dark" | "mint"): string => {
+  const preparePosterHtml = (rawHtml: string, skin: "ivory" | "dark" | "mint" | "ink"): string => {
     const parser = new DOMParser();
     const doc = parser.parseFromString(`<div id="poster-prep">${rawHtml}</div>`, "text/html");
     const root = doc.getElementById("poster-prep")!;
@@ -935,7 +935,7 @@ export function openSharePosterModal(options: {
     const isMobileNarrow = posterWidth <= 430;
     const stagePadding =
       posterWidth <= 375 ? "22px 18px" : posterWidth <= 430 ? "26px 22px" : "36px 40px";
-    const watermark = studio.watermarkSignature || "Written with Quilla (羽墨) v0.10.0";
+    const watermark = studio.watermarkSignature || "Written with Quilla (羽墨) v0.11.0";
 
     const cardBodies =
       sliceMode === "single"
@@ -1010,6 +1010,7 @@ export function openSharePosterModal(options: {
               <button type="button" class="graph-scope-btn ${currentSkin === "ivory" ? "active" : ""}" data-skin="ivory">羊皮书卷</button>
               <button type="button" class="graph-scope-btn ${currentSkin === "mint" ? "active" : ""}" data-skin="mint">清晨薄荷</button>
               <button type="button" class="graph-scope-btn ${currentSkin === "dark" ? "active" : ""}" data-skin="dark">极客暗夜</button>
+              <button type="button" class="graph-scope-btn ${currentSkin === "ink" ? "active" : ""}" data-skin="ink">水墨宣纸</button>
             </div>
             <div class="graph-scope-Segment" title="选择长图宽度（375px/430px 专为手机竖屏免缩放阅读优化）">
               <button type="button" class="graph-scope-btn ${posterWidth === 375 ? "active" : ""}" data-width="375">手机紧凑 375px</button>
@@ -1103,10 +1104,10 @@ export function openSharePosterModal(options: {
  */
 function buildPosterStageSvgString(
   stage: HTMLElement,
-  skin: "ivory" | "dark" | "mint"
+  skin: "ivory" | "dark" | "mint" | "ink"
 ): { svgStr: string; width: number; height: number; bgColor: string } {
   const studio = getActiveThemeStudioPreset();
-  const accent = studio.primaryAccentColor || "#0969da";
+  const accent = skin === "ink" ? "#c34435" : studio.primaryAccentColor || "#0969da";
   const width = stage.offsetWidth || 430;
   const isNarrowMobile = width <= 430;
 
@@ -1114,21 +1115,25 @@ function buildPosterStageSvgString(
     ivory: "#faf7f0",
     mint: "#f3faf7",
     dark: "#181b20",
+    ink: "#f7f4ed",
   };
   const textColors = {
     ivory: "#2c2621",
     mint: "#1d312a",
     dark: "#e6edf3",
+    ink: "#35322d",
   };
   const codeBgColors = {
     ivory: "#f2ede2",
     mint: "#e6f4ee",
     dark: "#21262d",
+    ink: "#fffdf8",
   };
   const borderColors = {
     ivory: "#e4dccf",
     mint: "#cde5dc",
     dark: "#30363d",
+    ink: "#d6ccb9",
   };
 
   const cloned = stage.cloneNode(true) as HTMLElement;
@@ -1236,7 +1241,7 @@ function renderSvgToPngDataUrl(
 async function exportDomStageToPng(
   stage: HTMLElement,
   title: string,
-  skin: "ivory" | "dark" | "mint"
+  skin: "ivory" | "dark" | "mint" | "ink"
 ) {
   let targetSavePath: string | null = null;
   try {
@@ -1316,7 +1321,7 @@ async function exportDomStageToPng(
 async function exportMultipleDomStagesToPng(
   stages: HTMLElement[],
   title: string,
-  skin: "ivory" | "dark" | "mint"
+  skin: "ivory" | "dark" | "mint" | "ink"
 ) {
   let baseSavePath: string | null = null;
   try {
@@ -1417,7 +1422,7 @@ export function buildStandalonePdfDocumentHtml(
 ): string {
   const studio = getActiveThemeStudioPreset();
   const accent = studio.primaryAccentColor || "#0969da";
-  const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.10.0 矢量排版引擎生成";
+  const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.11.0 矢量排版引擎生成";
 
   const marginMap = {
     standard: "16mm 18mm",
@@ -1769,7 +1774,7 @@ export function openPdfExportModal(options: PdfExportOptions) {
     if (!pdfModalEl) return;
     const previewBody = preparePreviewHtml();
     const studio = getActiveThemeStudioPreset();
-    const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.10.0 矢量排版引擎生成";
+    const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.11.0 矢量排版引擎生成";
     const widthPx = pageSize === "A5" ? 520 : 680;
     const paddingMap = {
       standard: "36px 42px",

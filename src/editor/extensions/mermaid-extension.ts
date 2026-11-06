@@ -31,13 +31,111 @@ function getCurrentMermaidThemeMode(): "dark" | "light" {
   return isDark ? "dark" : "light";
 }
 
+/** 当前主题 id（墨观变体之间也需要重建图表，不能只按明暗区分） */
+function getCurrentThemeId(): string {
+  if (typeof document === "undefined") return "default";
+  return document.body.dataset.themeId || "default";
+}
+
+function readThemeVar(name: string, fallback: string): string {
+  if (typeof document === "undefined") return fallback;
+  const value = getComputedStyle(document.body).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+/**
+ * 用 Quilla 的主题令牌喂给 Mermaid 的 base 主题。
+ * 这样流程图不再是 mermaid 自带的紫/灰配色，而是与当前皮肤同一套纸墨。
+ */
+function buildMermaidThemeConfig() {
+  const dark = getCurrentMermaidThemeMode() === "dark";
+  const canvas = readThemeVar("--surface-canvas", dark ? "#1e1e1e" : "#ffffff");
+  const raised = readThemeVar("--surface-raised", dark ? "#2a2a2a" : "#f2f2f2");
+  const sunken = readThemeVar("--surface-sunken", dark ? "#151515" : "#fafafa");
+  const ink = readThemeVar("--text-color", dark ? "#d4d4d4" : "#24292f");
+  const inkSoft = readThemeVar("--text-secondary", ink);
+  const line = readThemeVar("--border-strong", dark ? "#4a4a4a" : "#c8c8c8");
+  const nodeBorder = readThemeVar("--border-color", line);
+  const action = readThemeVar("--primary-color", "#0969da");
+  const actionSoft = readThemeVar("--primary-bg-subtle", "rgba(9,105,218,0.12)");
+  const overlay = readThemeVar("--surface-overlay", canvas);
+  const fontFamily = readThemeVar("--font-sans", "sans-serif");
+
+  return {
+    theme: "base" as const,
+    themeVariables: {
+      darkMode: dark,
+      background: canvas,
+      fontFamily,
+      fontSize: "14px",
+      textColor: ink,
+      titleColor: ink,
+      primaryColor: raised,
+      primaryTextColor: ink,
+      primaryBorderColor: nodeBorder,
+      secondaryColor: actionSoft,
+      secondaryTextColor: ink,
+      secondaryBorderColor: action,
+      tertiaryColor: sunken,
+      tertiaryTextColor: inkSoft,
+      tertiaryBorderColor: nodeBorder,
+      mainBkg: raised,
+      nodeBorder,
+      nodeTextColor: ink,
+      clusterBkg: sunken,
+      clusterBorder: nodeBorder,
+      lineColor: line,
+      edgeLabelBackground: overlay,
+      // sequence
+      actorBkg: raised,
+      actorBorder: nodeBorder,
+      actorTextColor: ink,
+      actorLineColor: line,
+      signalColor: inkSoft,
+      signalTextColor: ink,
+      labelBoxBkgColor: raised,
+      labelBoxBorderColor: nodeBorder,
+      labelTextColor: ink,
+      loopTextColor: ink,
+      noteBkgColor: actionSoft,
+      noteBorderColor: action,
+      noteTextColor: ink,
+      activationBkgColor: actionSoft,
+      activationBorderColor: action,
+      sequenceNumberColor: canvas,
+      // gantt / pie
+      sectionBkgColor: sunken,
+      altSectionBkgColor: canvas,
+      sectionBkgColor2: raised,
+      gridColor: line,
+      taskBkgColor: actionSoft,
+      taskBorderColor: action,
+      taskTextColor: ink,
+      taskTextDarkColor: ink,
+      pie1: action,
+      pie2: readThemeVar("--syn-string", "#2bae85"),
+      pie3: readThemeVar("--syn-number", "#d6a01d"),
+      pie4: readThemeVar("--syn-type", "#c08eaf"),
+      pie5: readThemeVar("--danger-color", "#e25737"),
+      pie6: readThemeVar("--syn-comment", "#85809e"),
+      pie7: readThemeVar("--syn-keyword", "#d8574a"),
+      pieStrokeColor: canvas,
+      pieOuterStrokeColor: nodeBorder,
+      pieTitleTextColor: ink,
+      pieSectionTextColor: canvas,
+      pieLegendTextColor: ink,
+    },
+  };
+}
+
 class MermaidWidget extends WidgetType {
   constructor(
     readonly code: string,
     readonly fromPos: number,
     readonly toPos: number,
     readonly isLivePreview: boolean = false,
-    readonly themeMode: "dark" | "light" = getCurrentMermaidThemeMode()
+    readonly themeMode: "dark" | "light" = getCurrentMermaidThemeMode(),
+    readonly themeId: string = getCurrentThemeId()
   ) {
     super();
   }
@@ -55,7 +153,8 @@ class MermaidWidget extends WidgetType {
     if (
       dom.dataset.isLive === String(this.isLivePreview) &&
       dom.dataset.code === this.code &&
-      dom.dataset.themeMode === this.themeMode
+      dom.dataset.themeMode === this.themeMode &&
+      dom.dataset.themeId === this.themeId
     ) {
       dom.dataset.fromPos = String(this.fromPos);
       dom.dataset.toPos = String(this.toPos);
@@ -65,8 +164,6 @@ class MermaidWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const isDark = this.themeMode === "dark";
-
     const container = document.createElement("figure");
     container.className = this.isLivePreview
       ? "md-mermaid-card live-preview-card cm-mermaid-container"
@@ -76,12 +173,13 @@ class MermaidWidget extends WidgetType {
     container.dataset.isLive = String(this.isLivePreview);
     container.dataset.code = this.code;
     container.dataset.themeMode = this.themeMode;
+    container.dataset.themeId = this.themeId;
     container.title = this.isLivePreview ? "实时渲染流程图预览" : "点击编辑 Mermaid 流程图源码";
 
     const chartBox = document.createElement("div");
     chartBox.className = "mermaid-chart-box";
 
-    const cacheKey = `${this.themeMode}::${this.code.trim()}`;
+    const cacheKey = `${this.themeId}::${this.themeMode}::${this.code.trim()}`;
     const cachedSvg = svgRenderCache.get(cacheKey);
 
     if (cachedSvg) {
@@ -92,8 +190,13 @@ class MermaidWidget extends WidgetType {
       try {
         mermaid.initialize({
           startOnLoad: false,
-          theme: isDark ? "dark" : "default",
+          ...buildMermaidThemeConfig(),
           securityLevel: "loose",
+          flowchart: {
+            useMaxWidth: true,
+            htmlLabels: true,
+            curve: "basis",
+          },
         });
         mermaid
           .render(id, this.code.trim())
@@ -182,7 +285,8 @@ class MermaidWidget extends WidgetType {
       other.fromPos === this.fromPos &&
       other.toPos === this.toPos &&
       other.isLivePreview === this.isLivePreview &&
-      other.themeMode === this.themeMode
+      other.themeMode === this.themeMode &&
+      other.themeId === this.themeId
     );
   }
 }
@@ -199,6 +303,7 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
   const cursorHead = selection.head;
   const cursorLine = state.doc.lineAt(cursorHead).number;
   const themeMode = getCurrentMermaidThemeMode();
+  const themeId = getCurrentThemeId();
 
   const builder = new RangeSetBuilder<Decoration>();
 
@@ -208,7 +313,7 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
         b.to,
         b.to,
         Decoration.widget({
-          widget: new MermaidWidget(b.code, b.from, b.to, true, themeMode),
+          widget: new MermaidWidget(b.code, b.from, b.to, true, themeMode, themeId),
           side: 1,
           block: true,
         })
@@ -220,7 +325,7 @@ function computeMermaidDecorations(state: EditorState): DecorationSet {
       b.from,
       b.to,
       Decoration.replace({
-        widget: new MermaidWidget(b.code, b.from, b.to, false, themeMode),
+        widget: new MermaidWidget(b.code, b.from, b.to, false, themeMode, themeId),
         block: true,
       })
     );

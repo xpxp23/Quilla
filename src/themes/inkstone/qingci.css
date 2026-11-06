@@ -1,0 +1,117 @@
+/* =====================================================================
+   墨观 · 青瓷 (Inkstone Qingci) — 月白釉底，青灰题字
+   ---------------------------------------------------------------------
+   色值取自墨观色板（docs/palette.md）· 传统色源自 zhongguose.com
+   正文对比度 11.00:1 · 关键字 尖晶玉红 · 降彩 #bc3a46
+   ===================================================================== */
+:root,
+body.theme-inkstone-qingci,
+body.theme-night.theme-inkstone-qingci {
+  /* ---------- 兼容层 ---------- */
+  --bg-color: #e8f0ec;
+  --text-color: #2b333e;
+  --side-bar-bg-color: #e1eae4;
+  --control-text-color: #4f5b5a;
+  --select-text-bg-color: #c7d9cf;
+  --select-text-font-color: auto;
+  --item-hover-bg-color: #e2ebe5;
+  --item-hover-text-color: #2b333e;
+  --primary-color: #126e82;
+  --primary-rgb: 18, 110, 130;
+  --primary-bg-subtle: rgba(18, 110, 130, 0.12);
+  --unsaved-color: #b14b28;
+  --border-color: #c7d5cc;
+  --quote-border-color: #bc3a46;
+  --editor-font-size: 15.5px;
+  --editor-line-height: 1.84;
+  --editor-max-width: 860px;
+  --monospace: "JetBrains Mono", "SF Mono", "Cascadia Code", "Sarasa Mono SC", "Noto Sans Mono CJK SC", Consolas, "Courier New", monospace;
+
+  /* ---------- 表面层级 ---------- */
+  --surface-canvas: #e8f0ec;
+  --surface-panel: #e1eae4;
+  --surface-raised: #d9e3dc;
+  --surface-overlay: #d1dcd4;
+  --surface-sunken: #f2f8f4;
+  --surface-input: #edf4ef;
+  --surface-hover: #e2ebe5;
+  --surface-active: #d7e2da;
+
+  /* ---------- 文字层级 ---------- */
+  --text-secondary: #4f5b5a;
+  --text-muted: #5f6b67;
+  --text-faint: #7d8983;
+  --text-on-action: #f2f8f4;
+  --text-inverse: #e8f0ec;
+
+  /* ---------- 描边 ---------- */
+  --border-hairline: #dbe6df;
+  --border-strong: #a8bab0;
+  --focus-ring: #126e82;
+
+  /* ---------- 动作（青做动作） ---------- */
+  --primary-hover: #106172;
+  --action-soft: rgba(18, 110, 130, 0.12);
+  --action-border: rgba(18, 110, 130, 0.32);
+
+  /* ---------- 状态（红做记号） ---------- */
+  --danger-color: #82111f;
+  --danger-rgb: 130, 17, 31;
+  --success-color: #1a6840;
+  --success-rgb: 26, 104, 64;
+  --warning-color: #b14b28;
+  --warning-rgb: 177, 75, 40;
+  --info-color: #126e82;
+  --important-color: #813c85;
+  --important-rgb: 129, 60, 133;
+
+  /* ---------- 代码语法 ---------- */
+  --syn-keyword: #bc3a46;
+  --syn-string: #1a6840;
+  --syn-comment: #495c69;
+  --syn-number: #66462a;
+  --syn-type: #813c85;
+  --syn-function: #126e82;
+  --syn-attr: #645822;
+  --syn-operator: #5f6b67;
+
+  /* ---------- Callout 批注 ---------- */
+  --callout-note: #126e82;
+  --callout-note-bg: rgba(18, 110, 130, 0.1);
+  --callout-tip: #1a6840;
+  --callout-tip-bg: rgba(26, 104, 64, 0.1);
+  --callout-important: #813c85;
+  --callout-important-bg: rgba(129, 60, 133, 0.1);
+  --callout-warning: #b14b28;
+  --callout-warning-bg: rgba(177, 75, 40, 0.1);
+  --callout-caution: #82111f;
+  --callout-caution-bg: rgba(130, 17, 31, 0.11);
+
+  /* ---------- 编辑器 ---------- */
+  --code-bg: #f2f8f4;
+  --code-header-bg: #e6eee9;
+  --code-inline-bg: rgba(43, 51, 62, 0.07);
+  --mark-bg: rgba(183, 139, 38, 0.26);
+  --mark-fg: #2b333e;
+  --table-header-bg: rgba(43, 51, 62, 0.05);
+  --table-stripe-bg: rgba(43, 51, 62, 0.02);
+  --quote-bg: rgba(43, 51, 62, 0.026);
+  --search-hit-bg: rgba(183, 139, 38, 0.32);
+  --search-hit-fg: #243030;
+  --search-active-bg: #b78b26;
+  --search-active-fg: #f2f8f4;
+  --search-pulse-bg: #eed045;
+  --scrollbar-thumb: rgba(43, 51, 62, 0.18);
+  --scrollbar-thumb-hover: rgba(43, 51, 62, 0.32);
+
+  /* ---------- 标题（朱丝栏） ---------- */
+  --heading-rule: rgba(188, 58, 70, 0.42);
+  --heading-mark: #bc3a46;
+
+  /* ---------- 字体 ---------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  --font-sans-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  --font-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STZhongsong", "STSong", "SimSun", Georgia, serif;
+  --font-quote: var(--font-sans);
+  --paragraph-spacing: 0.46em;
+}
