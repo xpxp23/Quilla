@@ -874,12 +874,118 @@ const CALLOUT_LABELS: Record<string, string> = {
 };
 
 /**
+ * 同步将 Markdown 纯文本解析并渲染为简易卡片级 HTML（供知识画布无限白板、预览卡片等同步组件极速展示）
+ */
+export function renderMarkdownDocumentToHtmlSync(markdown: string): string {
+  const rawLines = markdown.split("\n");
+  let startIdx = 0;
+  if (rawLines.length >= 3 && rawLines[0].trim() === "---") {
+    for (let i = 1; i < Math.min(rawLines.length, 60); i++) {
+      if (rawLines[i].trim() === "---" || rawLines[i].trim() === "...") {
+        startIdx = i + 1;
+        break;
+      }
+    }
+  }
+
+  const renderInline = (raw: string): string => {
+    const blockIdMatch = raw.match(/^(.*?)\s+(\^[a-zA-Z0-9_\-]+)\s*$/);
+    if (blockIdMatch) {
+      const mainAst = parseInlineAST(blockIdMatch[1]);
+      const mainHtml = renderInlineASTSync(mainAst, { mode: "export" });
+      const anchorId = blockIdMatch[2].slice(1);
+      return `${mainHtml} <span class="cm-block-id-badge" id="block-${escapeHtml(anchorId)}">${escapeHtml(blockIdMatch[2])}</span>`;
+    }
+    const ast = parseInlineAST(raw);
+    return renderInlineASTSync(ast, { mode: "export" });
+  };
+
+  const out: string[] = [];
+  let i = startIdx;
+  while (i < rawLines.length) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      i++;
+      continue;
+    }
+    const hm = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (hm) {
+      const lvl = hm[1].length;
+      const clean = hm[2].replace(/\s+#+\s*$/, "").replace(/\s+\^[a-zA-Z0-9_\-]+$/, "");
+      out.push(`<h${lvl}>${renderInline(clean)}</h${lvl}>`);
+      i++;
+      continue;
+    }
+    if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      out.push("<hr />");
+      i++;
+      continue;
+    }
+    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})\s*([^\s`~]*).*$/);
+    if (fenceMatch) {
+      const fenceChar = fenceMatch[1][0];
+      const fenceLen = fenceMatch[1].length;
+      const lang = (fenceMatch[2] || "").toLowerCase();
+      const codeLines: string[] = [];
+      i++;
+      while (i < rawLines.length) {
+        const t = rawLines[i].trim();
+        const closeM = t.match(/^(`{3,}|~{3,})\s*$/);
+        if (closeM && closeM[1][0] === fenceChar && closeM[1].length >= fenceLen) {
+          i++;
+          break;
+        }
+        codeLines.push(rawLines[i]);
+        i++;
+      }
+      out.push(`<pre><code class="language-${escapeHtml(lang || "text")}">${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+    if (trimmed.startsWith(">")) {
+      const qLines: string[] = [];
+      while (i < rawLines.length && rawLines[i].trim().startsWith(">")) {
+        qLines.push(rawLines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      out.push(`<blockquote>${renderMarkdownDocumentToHtmlSync(qLines.join("\n"))}</blockquote>`);
+      continue;
+    }
+    const listMatch = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+    if (listMatch) {
+      const isOrdered = /^\d+\./.test(listMatch[2]);
+      const tag = isOrdered ? "ol" : "ul";
+      const items: string[] = [];
+      while (i < rawLines.length) {
+        const lm = rawLines[i].match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+        if (!lm) break;
+        items.push(`<li>${renderInline(lm[3])}</li>`);
+        i++;
+      }
+      out.push(`<${tag}>${items.join("")}</${tag}>`);
+      continue;
+    }
+    out.push(`<p>${renderInline(trimmed)}</p>`);
+    i++;
+  }
+  return out.join("\n");
+}
+
+/**
  * 将完整 Markdown 文档解析并渲染为导出级 HTML Body（支持嵌套列表内代码块/引用、代码块精致卡片顶栏、表格列宽权重与防溢出紧凑布局等）
  */
 export async function renderMarkdownDocumentToHtml(
   markdown: string,
-  ctx: DocumentRenderContext
+  rawCtx?: Partial<DocumentRenderContext>
 ): Promise<string> {
+  const ctx: DocumentRenderContext = {
+    fullMarkdown: rawCtx?.fullMarkdown ?? markdown,
+    showLineNumbers: rawCtx?.showLineNumbers ?? false,
+    isDarkTheme: rawCtx?.isDarkTheme ?? (typeof document !== "undefined" && document.body?.classList.contains("theme-night")),
+    highlightCodeBlockToHtml: rawCtx?.highlightCodeBlockToHtml ?? ((code, lang) => `<pre><code class="language-${escapeHtml(lang || "text")}">${escapeHtml(code)}</code></pre>`),
+    resolveImageSrc: rawCtx?.resolveImageSrc,
+    fetchTransclusionContent: rawCtx?.fetchTransclusionContent,
+  };
   const rawLines = markdown.split("\n");
   let startIdx = 0;
 

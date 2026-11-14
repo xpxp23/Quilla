@@ -39,7 +39,8 @@ export function computeDetailedStats(text: string): DetailedStats {
   };
 }
 
-export function initStatsPopover(view: EditorView) {
+export function initStatsPopover(defaultView: EditorView, getActiveView?: () => EditorView) {
+  const getView = () => (getActiveView ? getActiveView() : defaultView);
   const popover = document.createElement("div");
   popover.className = "ty-stats-popover hidden";
   popover.innerHTML = `
@@ -65,6 +66,7 @@ export function initStatsPopover(view: EditorView) {
       return;
     }
 
+    const view = getView();
     const text = view.state.doc.toString();
     const stats = computeDetailedStats(text);
 

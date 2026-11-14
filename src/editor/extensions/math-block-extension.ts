@@ -1,3 +1,4 @@
+import { isLineInsideFoldedSection, setHeadingFoldEffect } from "./live-preview";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { EditorView, WidgetType, Decoration, DecorationSet } from "@codemirror/view";
 import katex from "katex";
@@ -145,6 +146,9 @@ function computeMathBlockDecorations(state: EditorState): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
 
   for (const b of blocks) {
+    if (isLineInsideFoldedSection(state, b.startLine)) {
+      continue;
+    }
     if (cursorLine >= b.startLine && cursorLine <= b.endLine) {
       builder.add(
         b.to,
@@ -176,7 +180,7 @@ export const mathBlockLiveViewField = StateField.define<DecorationSet>({
     return computeMathBlockDecorations(state);
   },
   update(decorations, tr) {
-    if (tr.docChanged || tr.effects.some((e) => e.is(forceRefreshEffect))) {
+    if (tr.docChanged || tr.effects.some((e) => e.is(forceRefreshEffect) || e.is(setHeadingFoldEffect))) {
       return computeMathBlockDecorations(tr.state);
     }
     if (tr.selection) {

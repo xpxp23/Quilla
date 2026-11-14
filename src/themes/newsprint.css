@@ -1,5 +1,14 @@
 /* ================= Typora Newsprint 经典报刊衬线主题 (newsprint.css) ================= */
 :root {
+  --surface-canvas: #f3f2ee;
+  --surface-panel: #eae8e1;
+  --surface-raised: #e2dfd6;
+  --surface-overlay: #f7f6f2;
+  --surface-glass: rgba(247, 246, 242, 0.94);
+  --surface-sunken: #eceae3;
+  --surface-input: #fbfaf7;
+  --code-bg: #eae7de;
+  --code-header-bg: #dfd9cc;
   --bg-color: #f8f5ee;
   --text-color: #2f2f2f;
   --side-bar-bg-color: #ece7de;

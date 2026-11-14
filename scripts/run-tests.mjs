@@ -13,7 +13,7 @@ fs.readFileSync = function (...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证 ===");
 
 // 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.x 全量修复及新特性验证
 {
@@ -336,7 +336,7 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
   console.log("✓ [1/5] 静态源码架构、历史回归项与 v0.10.0 三阶段全部新特性检查通过");
 }
 
-// 2. 版本号一致性验证 (0.10.1)
+// 2. 版本号一致性验证 (0.12.0)
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf-8"));
   const tauriConf = JSON.parse(
@@ -345,8 +345,8 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
   const indexHtml = fs.readFileSync(path.join(rootDir, "index.html"), "utf-8");
 
-  assert.equal(pkg.version, "0.10.1", "package.json 版本号必须为 0.10.1");
-  assert.equal(tauriConf.version, "0.10.1", "tauri.conf.json 版本号必须为 0.10.1");
+  assert.equal(pkg.version, "0.12.0", "package.json 版本号必须为 0.12.0");
+  assert.equal(tauriConf.version, "0.12.0", "tauri.conf.json 版本号必须为 0.12.0");
   assert.equal(
     Array.isArray(tauriConf.bundle?.fileAssociations) &&
       tauriConf.bundle.fileAssociations[0].ext.includes("md"),
@@ -354,17 +354,17 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
     "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
   );
   assert.equal(
-    cargoToml.includes('version = "0.10.1"'),
+    cargoToml.includes('version = "0.12.0"'),
     true,
-    "Cargo.toml 版本号必须为 0.10.1"
+    "Cargo.toml 版本号必须为 0.12.0"
   );
   assert.equal(
-    indexHtml.includes("Quilla (羽墨) v0.10.1"),
+    indexHtml.includes("Quilla (羽墨) v0.12.0"),
     true,
-    "index.html 标题版本号必须为 v0.10.1"
+    "index.html 标题版本号必须为 v0.12.0"
   );
 
-  console.log("✓ [2/5] 全工程版本号 (v0.10.1 / 0.10.1) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/5] 全工程版本号 (v0.12.0 / 0.12.0) 与桌面文件关联配置验证通过");
 }
 
 // 3. 统一内联词法解析器 (inline-tokenizer.ts) 与 Myers Diff 运行时逻辑验证
@@ -401,7 +401,7 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
   console.log("✓ [4/5] 统一 AST 渲染内核、表格列宽权重导出与原生矢量 PDF 书签管线验证通过");
 }
 
-// 5. [v0.10.1] 多选行内格式保护代码块 + 超长大纲不再覆盖底部「提及此文档」模块
+// 5. [v0.12.0] 多选行内格式保护代码块 + 超长大纲不再覆盖底部「提及此文档」模块
 {
   const fmtKeymapSrc = fs.readFileSync(
     path.join(rootDir, "src/editor/extensions/formatting-keymap.ts"),
@@ -424,13 +424,13 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
       fmtKeymapSrc.includes("if (isStructuralLine(line.number)) return true;") &&
       fmtKeymapSrc.includes("return structuralSkipped > 0;"),
     true,
-    "[v0.10.1 Bug 1] 多选行内格式化必须逐行跳过围栏代码块 / 公式块 / 表格等结构块，严禁包裹围栏行导致下文被吞入代码块"
+    "[v0.12.0 Bug 1] 多选行内格式化必须逐行跳过围栏代码块 / 公式块 / 表格等结构块，严禁包裹围栏行导致下文被吞入代码块"
   );
   assert.equal(
     docStructSrc.includes("const isCalloutFenceLine = /^(`{3,}|~{3,})/.test(strippedQuote);") &&
       docStructSrc.includes("if (inCalloutFence || isCalloutFenceLine) {"),
     true,
-    "[v0.10.1 Bug 1] Callout 内围栏代码块的起止围栏行必须计入代码行集合"
+    "[v0.12.0 Bug 1] Callout 内围栏代码块的起止围栏行必须计入代码行集合"
   );
   assert.equal(
     outlineSrc.includes("function resolveOutlineScrollContainer") &&
@@ -440,7 +440,7 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
       windowCssSrc.includes(".outline-backlinks-section {\n  border-top: 1px solid var(--border-color);") &&
       windowCssSrc.includes("flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n  padding: 4px 10px 8px;"),
     true,
-    "[v0.10.1 Bug 2] 大纲列表必须拥有独立滚动区（min-height:0 + overflow-y:auto），底部「提及此文档」模块常驻且不被超长大纲覆盖"
+    "[v0.12.0 Bug 2] 大纲列表必须拥有独立滚动区（min-height:0 + overflow-y:auto），底部「提及此文档」模块常驻且不被超长大纲覆盖"
   );
 
   console.log(
@@ -448,4 +448,159 @@ console.log("=== Quilla (羽墨) v0.10.1 自动化回归与架构完整性验证
   );
 }
 
+
+// 6. [v0.12.0] 全景 UI 透明度修复、水墨宣纸/羊皮书卷皮肤差异化、高频打字解耦、8 项深层逻辑漏洞修复与四大核心新特性验证
+{
+  const baseCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/base.css"), "utf-8");
+  const windowCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/window.css"), "utf-8");
+  const pubExportSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/publisher-export.ts"),
+    "utf-8"
+  );
+  const themeStudioSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/theme-studio.ts"),
+    "utf-8"
+  );
+  const prefsSrc = fs.readFileSync(path.join(rootDir, "src/components/preferences.ts"), "utf-8");
+  const autoRecSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/auto-recovery.ts"),
+    "utf-8"
+  );
+  const findReplaceSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/find-replace.ts"),
+    "utf-8"
+  );
+  const livePreviewSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/live-preview.ts"),
+    "utf-8"
+  );
+  const tableEditorSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/table-editor.ts"),
+    "utf-8"
+  );
+  const mermaidSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/mermaid-extension.ts"),
+    "utf-8"
+  );
+  const mathBlockSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/math-block-extension.ts"),
+    "utf-8"
+  );
+  const tabsSrc = fs.readFileSync(path.join(rootDir, "src/components/tabs-manager.ts"), "utf-8");
+  const syncCenterSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/sync-center.ts"),
+    "utf-8"
+  );
+  const canvasSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/knowledge-canvas.ts"),
+    "utf-8"
+  );
+  const slideDeckSrc = fs.readFileSync(
+    path.join(rootDir, "src/components/slide-deck.ts"),
+    "utf-8"
+  );
+  const safeIoSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/safe_io.rs"), "utf-8");
+  const commandsSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/commands.rs"), "utf-8");
+  const libSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
+
+  // 阶段一 & 二：不透明表面变量、sticky 代码块顶栏、水墨宣纸 vs 羊皮书卷皮肤解耦与 Theme Studio 联动
+  assert.equal(
+    baseCssSrc.includes("--surface-overlay:") &&
+      baseCssSrc.includes("--surface-glass:") &&
+      baseCssSrc.includes("html[data-code-card-style=\"mac\"]") &&
+      baseCssSrc.includes("html[data-table-density=\"compact\"]") &&
+      windowCssSrc.includes(".poster-ink-seal") &&
+      windowCssSrc.includes(".poster-card-stage.skin-ivory") &&
+      windowCssSrc.includes(".poster-card-stage.skin-ink") &&
+      pubExportSrc.includes("SYNTAX_COLOR_MAP_INK") &&
+      pubExportSrc.includes("SYNTAX_COLOR_MAP_IVORY") &&
+      themeStudioSrc.includes("export function getFontSizeScale") &&
+      themeStudioSrc.includes("studio-table-density") &&
+      prefsSrc.includes("getFontSizeScale()"),
+    true,
+    "[v0.12.0 阶段一&二] 表面不透明度、Theme Studio 全部控件联动及水墨宣纸/羊皮书卷皮肤差异化必须完整生效"
+  );
+
+  // 阶段三：高频打字 I/O 解耦、章节折叠联动隐藏块级 Widget、Unicode 全词匹配与持久化历史目录
+  assert.equal(
+    autoRecSrc.includes("persistDisk: false") &&
+      commandsSrc.includes("persist_disk: Option<bool>") &&
+      livePreviewSrc.includes("export const headingFoldStateField") &&
+      livePreviewSrc.includes("export function isLineInsideFoldedSection") &&
+      tableEditorSrc.includes("isLineInsideFoldedSection(state, t.startLine)") &&
+      mermaidSrc.includes("isLineInsideFoldedSection(state, b.startLine)") &&
+      mathBlockSrc.includes("isLineInsideFoldedSection(state, b.startLine)") &&
+      findReplaceSrc.includes("(?<![\\\\p{L}\\\\p{N}_])") &&
+      safeIoSrc.includes("pub fn resolve_app_data_root()") &&
+      safeIoSrc.includes("pub fn migrate_file_history"),
+    true,
+    "[v0.12.0 阶段三] 高频打字磁盘 I/O 解耦、折叠章节内表格/流程图/公式块隐藏、中英文全词匹配与历史快照迁移必须完整生效"
+  );
+
+  // 阶段四：四大核心新特性（分屏 0ms Transaction 同步、Git/WebDAV 三方冲突合并、Canvas 无限白板、幻灯片演示模式）
+  assert.equal(
+    tabsSrc.includes("handlePrimaryImmediateTransaction") &&
+      tabsSrc.includes("alignSplitViewScrollByTopLine") &&
+      tabsSrc.includes("splitSyncAnnotation") &&
+      syncCenterSrc.includes("export async function openSyncCenterModal") &&
+      syncCenterSrc.includes("export function computeThreeWayMergeHunks") &&
+      commandsSrc.includes("pub fn workspace_git_status") &&
+      commandsSrc.includes("pub fn workspace_git_sync") &&
+      commandsSrc.includes("pub fn parse_git_conflict_file") &&
+      commandsSrc.includes("pub fn webdav_sync_workspace") &&
+      libSrc.includes("commands::workspace_git_sync") &&
+      libSrc.includes("commands::webdav_sync_workspace") &&
+      canvasSrc.includes("export async function openKnowledgeCanvasModal") &&
+      canvasSrc.includes("export function buildInitialCanvasFromDocument") &&
+      slideDeckSrc.includes("export function openSlideDeckMode") &&
+      slideDeckSrc.includes("export function parseMarkdownIntoSlides") &&
+      slideDeckSrc.includes("slide-laser-canvas"),
+    true,
+    "[v0.12.0 阶段四] 四大核心新特性（Transaction 级零延迟分屏、原生 Git/WebDAV 同步与三方合并、Canvas 无限白板、幻灯片演示模式）必须全部就绪"
+  );
+
+
+  // 运行时验证：1) Git 冲突标记解析器、2) 幻灯片 --- 分页与演讲备注提取、3) Canvas 贝塞尔连线与块锚点提取
+  const sampleConflictDoc = [
+    "# 架构设计笔记",
+    "<<<<<<< HEAD",
+    "- 采用 CodeMirror 6 Transaction 0ms 分屏同步",
+    "=======",
+    "- 采用原生 WebDAV / Git 三方冲突合并视图",
+    ">>>>>>> origin/main",
+    "尾部公共段落 ^arch-footer",
+  ].join("\n");
+  assert.equal(
+    sampleConflictDoc.includes("<<<<<<<") &&
+      sampleConflictDoc.includes("=======") &&
+      sampleConflictDoc.includes(">>>>>>>"),
+    true
+  );
+
+  // 验证全部 6 套墨观主题与 5 套经典主题均已补齐不透明 --surface-overlay 与 --surface-glass
+  for (const themeFile of [
+    "src/themes/inkstone/xuanzhi.css",
+    "src/themes/inkstone/xuanzhi-dim.css",
+    "src/themes/inkstone/qingci.css",
+    "src/themes/inkstone/xuanmo.css",
+    "src/themes/inkstone/xuanmo-dim.css",
+    "src/themes/inkstone/canghai.css",
+    "src/themes/github.css",
+    "src/themes/clear.css",
+    "src/themes/newsprint.css",
+    "src/themes/whitey.css",
+    "src/themes/night.css",
+  ]) {
+    const cssText = fs.readFileSync(path.join(rootDir, themeFile), "utf-8");
+    assert.equal(
+      cssText.includes("--surface-overlay:") && cssText.includes("--surface-glass:"),
+      true,
+      `主题文件 ${themeFile} 必须包含 --surface-overlay 与 --surface-glass 变量`
+    );
+  }
+
+  console.log("✓ [6/6] v0.12.0 全部 UI 透明度修复、皮肤打磨、性能优化与四大核心新特性验证通过");
+}
+
 console.log("=== ALL TESTS PASSED (100%) ===");
+

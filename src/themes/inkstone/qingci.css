@@ -32,6 +32,7 @@ body.theme-night.theme-inkstone-qingci {
   --surface-panel: #e1eae4;
   --surface-raised: #d9e3dc;
   --surface-overlay: #d1dcd4;
+  --surface-glass: rgba(248, 251, 249, 0.94);
   --surface-sunken: #f2f8f4;
   --surface-input: #edf4ef;
   --surface-hover: #e2ebe5;

@@ -32,7 +32,10 @@ export interface MenuActions {
   onExportSharePoster?: () => void;
   onCopyWeChatHtml?: () => void;
   onOpenTimeMachine?: () => void;
+  onOpenSyncCenter?: () => void;
   onOpenKnowledgeGraph?: () => void;
+  onOpenKnowledgeCanvas?: () => void;
+  onOpenSlideDeck?: () => void;
   onOpenThemeStudio?: () => void;
   onPrint?: () => void;
   onQuickOpen?: () => void;
@@ -54,7 +57,10 @@ const SVG = {
   folderOpen: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`,
   clock: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
   history: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>`,
+  sync: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>`,
   graph: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="12" cy="18" r="3"></circle><line x1="8.6" y1="7.5" x2="15.4" y2="7.5"></line><line x1="7.5" y1="8.6" x2="10.5" y2="15.4"></line><line x1="16.5" y1="8.6" x2="13.5" y2="15.4"></line></svg>`,
+  canvas: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="8" y="14" width="8" height="7" rx="1.5"></rect><path d="M6.5 10v2a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2"></path></svg>`,
+  slides: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>`,
   save: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`,
   saveAs: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`,
   print: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>`,
@@ -121,6 +127,10 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
         <div class="menu-item-left"><span class="m-icon">${SVG.history}</span><span>版本历史 / 时间机器...</span></div>
         <span class="shortcut">${mod}+Alt+H</span>
       </div>
+      <div class="menu-item" data-action="sync-center">
+        <div class="menu-item-left"><span class="m-icon">${SVG.sync}</span><span>Git / WebDAV 同步与冲突合并...</span></div>
+        <span class="shortcut">${mod}+Alt+S</span>
+      </div>
       <div class="menu-divider"></div>
       <div class="menu-item" data-action="copy-wechat">
         <div class="menu-item-left"><span class="m-icon">${SVG.sparkles}</span><span>复制为公众号 / 知乎富文本</span></div>
@@ -152,6 +162,14 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
       <div class="menu-item" data-action="knowledge-graph">
         <div class="menu-item-left"><span class="m-icon">${SVG.graph}</span><span>双链知识图谱...</span></div>
         <span class="shortcut">${mod}+G</span>
+      </div>
+      <div class="menu-item" data-action="knowledge-canvas">
+        <div class="menu-item-left"><span class="m-icon">${SVG.canvas}</span><span>Canvas 无限白板与卡片编排...</span></div>
+        <span class="shortcut">${mod}+Alt+C</span>
+      </div>
+      <div class="menu-item" data-action="slide-deck">
+        <div class="menu-item-left"><span class="m-icon">${SVG.slides}</span><span>幻灯片演示模式 (激光笔/备注)...</span></div>
+        <span class="shortcut">F5</span>
       </div>
       <div class="menu-item" data-action="theme-studio">
         <div class="menu-item-left"><span class="m-icon">${SVG.palette}</span><span>主题与排版工作坊...</span></div>
@@ -260,7 +278,10 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
     else if (action === "save") actions.onSaveFile();
     else if (action === "save-as") actions.onSaveFileAs?.();
     else if (action === "time-machine") actions.onOpenTimeMachine?.();
+    else if (action === "sync-center") actions.onOpenSyncCenter?.();
     else if (action === "knowledge-graph") actions.onOpenKnowledgeGraph?.();
+    else if (action === "knowledge-canvas") actions.onOpenKnowledgeCanvas?.();
+    else if (action === "slide-deck") actions.onOpenSlideDeck?.();
     else if (action === "theme-studio")
       actions.onOpenThemeStudio ? actions.onOpenThemeStudio() : openThemeStudioModal();
     else if (action === "copy-wechat") actions.onCopyWeChatHtml?.();

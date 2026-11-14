@@ -306,19 +306,81 @@ export async function updateTransclusionSectionContent(
       targetPath.replace(/\\/g, "/").toLowerCase() ===
         activePath.replace(/\\/g, "/").toLowerCase());
 
-  if (isSelfDoc && activeView && headingName.startsWith("^")) {
-    const blockId = headingName.slice(1);
+  if (isSelfDoc && activeView && headingName) {
     const doc = activeView.state.doc;
-    const re = new RegExp(`^(.*?)(\\s+\\^${blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)$`, "i");
-    for (let ln = 1; ln <= doc.lines; ln++) {
-      const lineObj = doc.line(ln);
-      const m = lineObj.text.match(re);
-      if (m) {
-        const updatedLine = `${newContent.replace(/\r?\n/g, " ").trim()}${m[2]}`;
-        activeView.dispatch({
-          changes: { from: lineObj.from, to: lineObj.to, insert: updatedLine },
-          userEvent: "input.transclusion.sync",
-        });
+    if (headingName.startsWith("^")) {
+      const blockId = headingName.slice(1);
+      const re = new RegExp(`^(.*?)(\\s+\\^${blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*)$`, "i");
+      for (let ln = 1; ln <= doc.lines; ln++) {
+        const lineObj = doc.line(ln);
+        const m = lineObj.text.match(re);
+        if (m) {
+          const updatedLine = `${newContent.replace(/\r?\n/g, " ").trim()}${m[2]}`;
+          activeView.dispatch({
+            changes: { from: lineObj.from, to: lineObj.to, insert: updatedLine },
+            userEvent: "input.transclusion.sync",
+          });
+          clearTransclusionCache();
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("quilla-transclusion-updated"));
+          }
+          return true;
+        }
+      }
+    } else {
+      // 内存态章节标题嵌入 (![[#章节名]]) 双向原位同步写回 (Bug 3 修复)
+      const targetHeadingLower = headingName.trim().toLowerCase();
+      let startBodyLine = -1;
+      let endBodyLine = doc.lines;
+      let targetLevel = 0;
+      let inFence = false;
+
+      for (let i = 1; i <= doc.lines; i++) {
+        const lineText = doc.line(i).text;
+        if (/^\s*(`{3,}|~{3,})/.test(lineText)) {
+          inFence = !inFence;
+          continue;
+        }
+        if (inFence) continue;
+        const m = lineText.match(/^(#{1,6})\s+(.+?)\s*$/);
+        if (m) {
+          const lvl = m[1].length;
+          const titleClean = m[2].replace(/\s+#+\s*$/, "").trim().toLowerCase();
+          if (startBodyLine === -1) {
+            if (titleClean === targetHeadingLower) {
+              targetLevel = lvl;
+              startBodyLine = i + 1;
+            }
+          } else if (lvl <= targetLevel) {
+            endBodyLine = i - 1;
+            break;
+          }
+        }
+      }
+
+      if (startBodyLine !== -1) {
+        const cleanedBody = newContent.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
+        if (startBodyLine > endBodyLine) {
+          const headingLineObj = doc.line(startBodyLine - 1);
+          activeView.dispatch({
+            changes: {
+              from: headingLineObj.to,
+              to: headingLineObj.to,
+              insert: `\n\n${cleanedBody}\n`,
+            },
+            userEvent: "input.transclusion.sync",
+          });
+        } else {
+          const fromPos = doc.line(startBodyLine).from;
+          const toPos = doc.line(endBodyLine).to;
+          const replacement = `\n${cleanedBody}\n`;
+          if (doc.sliceString(fromPos, toPos) !== replacement) {
+            activeView.dispatch({
+              changes: { from: fromPos, to: toPos, insert: replacement },
+              userEvent: "input.transclusion.sync",
+            });
+          }
+        }
         clearTransclusionCache();
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("quilla-transclusion-updated"));

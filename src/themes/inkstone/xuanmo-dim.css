@@ -32,6 +32,7 @@ body.theme-night.theme-inkstone-xuanmo-dim {
   --surface-panel: #1e1d24;
   --surface-raised: #24222b;
   --surface-overlay: #2b2933;
+  --surface-glass: rgba(50, 52, 56, 0.94);
   --surface-sunken: #151419;
   --surface-input: #22212a;
   --surface-hover: #232129;

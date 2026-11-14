@@ -1,3 +1,4 @@
+import { isLineInsideFoldedSection, setHeadingFoldEffect } from "./live-preview";
 import { isLikelyUrl, normalizeUrlForLink } from "./inline-boundary-guard";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { EditorView, KeyBinding, WidgetType, Decoration, DecorationSet } from "@codemirror/view";
@@ -1922,6 +1923,9 @@ function computeTableDecorations(state: EditorState): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
 
   tables.forEach((t, idx) => {
+    if (isLineInsideFoldedSection(state, t.startLine)) {
+      return;
+    }
     builder.add(
       t.from,
       t.to,
@@ -1940,7 +1944,7 @@ export const tableLiveViewField = StateField.define<DecorationSet>({
     return computeTableDecorations(state);
   },
   update(decorations, tr) {
-    if (tr.docChanged || tr.effects.some((e) => e.is(forceRefreshEffect))) {
+    if (tr.docChanged || tr.effects.some((e) => e.is(forceRefreshEffect) || e.is(setHeadingFoldEffect))) {
       return computeTableDecorations(tr.state);
     }
     return decorations;

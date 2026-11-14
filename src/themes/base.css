@@ -34,8 +34,10 @@
   /* ---------- 第 2 层 · 语义层 · 表面 ---------- */
   --surface-canvas: var(--bg-color);
   --surface-panel: var(--side-bar-bg-color);
-  --surface-raised: rgba(127, 127, 127, 0.055);
-  --surface-sunken: rgba(127, 127, 127, 0.035);
+  --surface-raised: #f2f4f7;
+  --surface-overlay: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.94);
+  --surface-sunken: #f8fafc;
   --surface-input: var(--bg-color);
   --surface-hover: var(--item-hover-bg-color);
   --surface-active: rgba(127, 127, 127, 0.1);
@@ -92,7 +94,7 @@
 
   /* ---------- 第 2 层 · 语义层 · 编辑器 ---------- */
   --code-bg: #f6f8fa;
-  --code-header-bg: rgba(127, 127, 127, 0.065);
+  --code-header-bg: #eef1f5;
   --code-inline-bg: rgba(127, 127, 127, 0.1);
   --mark-bg: #fff8c5;
   --mark-fg: #24292f;
@@ -136,8 +138,10 @@ body.theme-night {
   --border-color: rgba(255, 255, 255, 0.12);
   --quote-border-color: #4ea1f3;
 
-  --surface-raised: rgba(255, 255, 255, 0.045);
-  --surface-sunken: rgba(255, 255, 255, 0.025);
+  --surface-raised: #2a2d32;
+  --surface-overlay: #26292e;
+  --surface-glass: rgba(38, 41, 46, 0.94);
+  --surface-sunken: #181a1d;
   --surface-active: rgba(255, 255, 255, 0.1);
   --text-faint: rgba(255, 255, 255, 0.42);
   --border-hairline: rgba(255, 255, 255, 0.09);
@@ -177,7 +181,7 @@ body.theme-night {
   --callout-caution-bg: rgba(248, 81, 73, 0.12);
 
   --code-bg: #252526;
-  --code-header-bg: rgba(255, 255, 255, 0.05);
+  --code-header-bg: #2d3139;
   --code-inline-bg: rgba(255, 255, 255, 0.09);
   --mark-bg: rgba(210, 153, 34, 0.35);
   --mark-fg: #f0f6fc;
@@ -2491,4 +2495,48 @@ html[data-studio-code-style="mac-glass"] .cm-line.cm-code-block-first-line,
 html[data-studio-code-style="mac-glass"] .exported-code-card {
   backdrop-filter: blur(12px);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
+}
+
+/* 主题工作坊 (Theme Studio) 代码块外观变体与表格密度实时生效规则 */
+.code-mac-dots {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+}
+
+.code-mac-dots i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.code-mac-dots i.dot-red { background: #ff5f56; }
+.code-mac-dots i.dot-amber { background: #ffbd2e; }
+.code-mac-dots i.dot-green { background: #27c93f; }
+
+html[data-code-card-style="mac"] .code-mac-dots {
+  display: inline-flex;
+}
+
+html[data-code-card-style="minimal"] .cm-line.cm-code-block-first-line {
+  background-color: var(--code-bg, #f6f8fa) !important;
+  border-bottom-style: dashed !important;
+}
+
+html[data-code-card-style="bordered"] .cm-line.cm-code-block-line {
+  border-left-width: 2px;
+  border-right-width: 2px;
+}
+
+html[data-table-density="compact"] table.md-table th,
+html[data-table-density="compact"] table.md-table td {
+  padding: 5px 9px;
+  font-size: 0.92em;
+}
+
+html[data-table-density="comfortable"] table.md-table th,
+html[data-table-density="comfortable"] table.md-table td {
+  padding: 12px 16px;
 }

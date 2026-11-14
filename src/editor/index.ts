@@ -1,4 +1,4 @@
-import { EditorState, Extension, Prec } from "@codemirror/state";
+import { Annotation, EditorState, Extension, Prec, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, undo, redo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -7,6 +7,7 @@ import {
   livePreviewPlugin,
   activeDocumentPath,
   documentPathStateField,
+  headingFoldStateField,
   getViewDocumentPath,
   stripInlineMarkdown,
   toggleHeadingFoldAtLine,
@@ -44,7 +45,10 @@ import { isOutlineJumpLocked } from "../components/outline";
 import { TextDeltaPayload } from "../components/auto-recovery";
 import { invoke } from "@tauri-apps/api/core";
 
+export const splitSyncAnnotation = Annotation.define<boolean>();
+
 export interface EditorCallbacks {
+  onImmediateDocTransaction?: (tr: Transaction) => void;
   onChange: (content: string, deltas?: TextDeltaPayload[]) => void;
   onStatsUpdate: (words: number, chars: number) => void;
   onOutlineUpdate: (headings: Array<{ level: number; text: string; line: number }>) => void;
@@ -283,6 +287,13 @@ export function createEditor(
 
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
+      if (callbacks.onImmediateDocTransaction) {
+        for (const tr of update.transactions) {
+          if (tr.docChanged && !tr.annotation(splitSyncAnnotation)) {
+            callbacks.onImmediateDocTransaction(tr);
+          }
+        }
+      }
       lastEditTime = performance.now();
       const oldDoc = update.startState.doc;
       const newDoc = update.state.doc;
@@ -367,6 +378,7 @@ export function createEditor(
     history(),
     markdown({ addKeymap: false }),
     documentPathStateField,
+    headingFoldStateField,
     docStructureField,
     inlineBoundaryCursorGuardExtension,
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),

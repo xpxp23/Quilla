@@ -1,4 +1,4 @@
-import { ChangeSet, EditorState } from "@codemirror/state";
+import { ChangeSet, EditorState, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -8,6 +8,7 @@ import {
   toggleTypewriterMode,
   isFocusModeActive,
   toggleFocusMode,
+  splitSyncAnnotation,
 } from "../editor";
 import {
   TabFoldSnapshot,
@@ -228,12 +229,7 @@ export class TabsManager {
             return;
           }
           this.isSyncingScroll = true;
-          const pDom = primaryView.scrollDOM;
-          const sDom = this.secondaryView.scrollDOM;
-          const maxP = Math.max(1, pDom.scrollHeight - pDom.clientHeight);
-          const maxS = Math.max(1, sDom.scrollHeight - sDom.clientHeight);
-          const ratio = pDom.scrollTop / maxP;
-          sDom.scrollTop = ratio * maxS;
+          this.alignSplitViewScrollByTopLine(primaryView, this.secondaryView);
           requestAnimationFrame(() => {
             this.isSyncingScroll = false;
           });
@@ -370,6 +366,74 @@ export class TabsManager {
     }
   }
 
+  /**
+   * 分屏平滑行级对齐同步滚动 (Feature 1)：
+   * 当左右双视口具有独立章节/代码块折叠状态时，单纯按 scrollHeight 百分比滚动会导致可视行严重错位；
+   * 此处探测源视口顶部锚点逻辑行号与行内偏移比例，精准映射到目标视口对应逻辑行的 lineBlock 高度位置。
+   */
+  private alignSplitViewScrollByTopLine(sourceView: EditorView, targetView: EditorView) {
+    const sDom = sourceView.scrollDOM;
+    const tDom = targetView.scrollDOM;
+    if (sDom.scrollTop <= 2) {
+      tDom.scrollTop = 0;
+      return;
+    }
+    const maxS = Math.max(1, sDom.scrollHeight - sDom.clientHeight);
+    const maxT = Math.max(1, tDom.scrollHeight - tDom.clientHeight);
+    if (sDom.scrollTop >= maxS - 2) {
+      tDom.scrollTop = maxT;
+      return;
+    }
+    try {
+      const topBlock = sourceView.lineBlockAtHeight(sDom.scrollTop + 12);
+      const topLineNum = sourceView.state.doc.lineAt(topBlock.from).number;
+      const lineFraction =
+        topBlock.height > 0
+          ? Math.max(0, Math.min(1, (sDom.scrollTop - topBlock.top) / topBlock.height))
+          : 0;
+
+      const clampedTargetLine = Math.min(topLineNum, targetView.state.doc.lines);
+      const targetLinePos = targetView.state.doc.line(clampedTargetLine).from;
+      const targetBlock = targetView.lineBlockAt(targetLinePos);
+      tDom.scrollTop = Math.max(0, targetBlock.top + lineFraction * targetBlock.height);
+    } catch {
+      const ratio = sDom.scrollTop / maxS;
+      tDom.scrollTop = ratio * maxT;
+    }
+  }
+
+  /**
+   * 同文档左右分屏 Transaction 级 0ms 零延迟镜像转发 (Feature 1)：
+   * 直接将主屏产生的 CodeMirror Transaction.changes 映射到副屏，保留副屏独立光标与独立折叠状态。
+   */
+  public handlePrimaryImmediateTransaction(tr: Transaction) {
+    if (
+      !this.splitActive ||
+      !this.secondaryView ||
+      this.secondaryTabId !== this.activeTabId ||
+      this.isSyncingDualDoc ||
+      !tr.docChanged
+    ) {
+      return;
+    }
+    if (this.secondaryView.state.doc.length !== tr.startState.doc.length) {
+      return;
+    }
+    this.isSyncingDualDoc = true;
+    try {
+      const prevScroll = this.secondaryView.scrollDOM.scrollTop;
+      const mappedSel = this.secondaryView.state.selection.map(tr.changes);
+      this.secondaryView.dispatch({
+        changes: tr.changes,
+        selection: mappedSel,
+        annotations: splitSyncAnnotation.of(true),
+      });
+      this.secondaryView.scrollDOM.scrollTop = prevScroll;
+    } finally {
+      this.isSyncingDualDoc = false;
+    }
+  }
+
   public notifyPrimaryDocChanged(content: string, isModified: boolean) {
     const activeTab = this.getActiveTab();
     if (!activeTab) return;
@@ -391,6 +455,7 @@ export class TabsManager {
       !this.isSyncingDualDoc
     ) {
       const secDoc = this.secondaryView.state.doc.toString();
+      if (secDoc === content) return;
       const diff = computeMinimalTextDiff(secDoc, content);
       if (diff) {
         this.isSyncingDualDoc = true;
@@ -829,6 +894,34 @@ export class TabsManager {
     const initialText = secTab ? secTab.editorState.doc.toString() : "";
 
     this.secondaryView = createEditor(this.secondaryWriteEl, initialText, {
+      onImmediateDocTransaction: (tr) => {
+        const primaryView = this.callbacks.getPrimaryView();
+        if (
+          !this.splitActive ||
+          !primaryView ||
+          this.secondaryTabId !== this.activeTabId ||
+          this.isSyncingDualDoc ||
+          !tr.docChanged
+        ) {
+          return;
+        }
+        if (primaryView.state.doc.length !== tr.startState.doc.length) {
+          return;
+        }
+        this.isSyncingDualDoc = true;
+        try {
+          const prevScroll = primaryView.scrollDOM.scrollTop;
+          const mappedSel = primaryView.state.selection.map(tr.changes);
+          primaryView.dispatch({
+            changes: tr.changes,
+            selection: mappedSel,
+            annotations: splitSyncAnnotation.of(true),
+          });
+          primaryView.scrollDOM.scrollTop = prevScroll;
+        } finally {
+          this.isSyncingDualDoc = false;
+        }
+      },
       onChange: (content) => {
         if (this.isSyncingDualDoc) return;
         const targetTab = this.tabs.find((t) => t.id === this.secondaryTabId);
@@ -911,12 +1004,7 @@ export class TabsManager {
           return;
         }
         this.isSyncingScroll = true;
-        const sDom = this.secondaryView.scrollDOM;
-        const pDom = primaryView.scrollDOM;
-        const maxS = Math.max(1, sDom.scrollHeight - sDom.clientHeight);
-        const maxP = Math.max(1, pDom.scrollHeight - pDom.clientHeight);
-        const ratio = sDom.scrollTop / maxS;
-        pDom.scrollTop = ratio * maxP;
+        this.alignSplitViewScrollByTopLine(this.secondaryView, primaryView);
         requestAnimationFrame(() => {
           this.isSyncingScroll = false;
         });

@@ -214,7 +214,11 @@ pub fn run() {
             commands::register_default_markdown_app,
             commands::reveal_in_explorer,
             commands::reveal_in_folder,
-            commands::open_external_url
+            commands::open_external_url,
+            commands::workspace_git_status,
+            commands::workspace_git_sync,
+            commands::parse_git_conflict_file,
+            commands::webdav_sync_workspace
         ])
         .build(tauri::generate_context!())
         .expect("构建 Quilla 失败");

@@ -23,6 +23,28 @@ const SYNTAX_COLOR_MAP_LIGHT: Record<string, string> = {
   "cm-syn-attr": "color: #116329;",
 };
 
+const SYNTAX_COLOR_MAP_INK: Record<string, string> = {
+  "cm-syn-keyword": "color: #c34435; font-weight: 600;",
+  "cm-syn-string": "color: #2f6f4e;",
+  "cm-syn-comment": "color: #8c8275; font-style: italic;",
+  "cm-syn-number": "color: #b76b15;",
+  "cm-syn-type": "color: #2b73af;",
+  "cm-syn-function": "color: #8c4356;",
+  "cm-syn-attr": "color: #9b5328;",
+  "cm-syn-operator": "color: #5c5449;",
+};
+
+const SYNTAX_COLOR_MAP_IVORY: Record<string, string> = {
+  "cm-syn-keyword": "color: #8b261d; font-weight: 600;",
+  "cm-syn-string": "color: #3b5e2b;",
+  "cm-syn-comment": "color: #847058; font-style: italic;",
+  "cm-syn-number": "color: #9c5214;",
+  "cm-syn-type": "color: #2b547e;",
+  "cm-syn-function": "color: #6e352c;",
+  "cm-syn-attr": "color: #7c471e;",
+  "cm-syn-operator": "color: #5a4632;",
+};
+
 const SYNTAX_COLOR_MAP_DARK: Record<string, string> = {
   "cm-syn-keyword": "color: #ff7b72; font-weight: 600;",
   "cm-syn-string": "color: #a5d6ff;",
@@ -935,7 +957,7 @@ export function openSharePosterModal(options: {
     const isMobileNarrow = posterWidth <= 430;
     const stagePadding =
       posterWidth <= 375 ? "22px 18px" : posterWidth <= 430 ? "26px 22px" : "36px 40px";
-    const watermark = studio.watermarkSignature || "Written with Quilla (羽墨) v0.11.0";
+    const watermark = studio.watermarkSignature || "Written with Quilla (羽墨) v0.12.0";
 
     const cardBodies =
       sliceMode === "single"
@@ -1422,7 +1444,7 @@ export function buildStandalonePdfDocumentHtml(
 ): string {
   const studio = getActiveThemeStudioPreset();
   const accent = studio.primaryAccentColor || "#0969da";
-  const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.11.0 矢量排版引擎生成";
+  const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.12.0 矢量排版引擎生成";
 
   const marginMap = {
     standard: "16mm 18mm",
@@ -1774,7 +1796,7 @@ export function openPdfExportModal(options: PdfExportOptions) {
     if (!pdfModalEl) return;
     const previewBody = preparePreviewHtml();
     const studio = getActiveThemeStudioPreset();
-    const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.11.0 矢量排版引擎生成";
+    const watermark = studio.watermarkSignature || "由 Quilla (羽墨) v0.12.0 矢量排版引擎生成";
     const widthPx = pageSize === "A5" ? 520 : 680;
     const paddingMap = {
       standard: "36px 42px",

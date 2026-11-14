@@ -13,7 +13,15 @@ function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function initFindReplace(view: EditorView): FindReplaceController {
+export function initFindReplace(defaultView: EditorView, getActiveView?: () => EditorView): FindReplaceController {
+  const resolveView = () => (getActiveView ? getActiveView() : defaultView);
+  const view: EditorView = new Proxy(defaultView, {
+    get(_target, prop) {
+      const active = resolveView();
+      const val = (active as any)[prop];
+      return typeof val === "function" ? val.bind(active) : val;
+    },
+  });
   const bar = document.createElement("div");
   bar.id = "ty-find-replace";
   bar.className = "ty-find-replace-bar hidden";
@@ -124,9 +132,9 @@ export function initFindReplace(view: EditorView): FindReplaceController {
     try {
       let pattern = isRegex ? query : escapeRegExp(query);
       if (isWholeWord) {
-        pattern = `\\b(?:${pattern})\\b`;
+        pattern = `(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])`;
       }
-      const flags = isCaseSensitive ? "g" : "gi";
+      const flags = isCaseSensitive ? "gu" : "giu";
       const re = new RegExp(pattern, flags);
       activeRegex = re;
       let m: RegExpExecArray | null;
@@ -301,9 +309,10 @@ export function initFindReplace(view: EditorView): FindReplaceController {
         replaceRow.classList.remove("hidden");
       }
 
-      const sel = view.state.selection.main;
+      const activeView = resolveView();
+      const sel = activeView.state.selection.main;
       if (!sel.empty && sel.to - sel.from < 100) {
-        const text = view.state.sliceDoc(sel.from, sel.to).trim();
+        const text = activeView.state.sliceDoc(sel.from, sel.to).trim();
         if (text && !text.includes("\n")) {
           findInput.value = text;
         }

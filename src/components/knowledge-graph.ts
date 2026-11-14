@@ -139,6 +139,7 @@ export async function openKnowledgeGraphModal(options: {
   activeTitle: string;
   hasWorkspace: boolean;
   onOpenNote: (pathOrName: string, exists: boolean) => void;
+  onSwitchToCanvas?: () => void;
 }) {
   if (animFrameId !== null) {
     cancelAnimationFrame(animFrameId);
@@ -177,6 +178,7 @@ export async function openKnowledgeGraphModal(options: {
             <button type="button" class="graph-scope-btn ${currentScope === "global" ? "active" : ""}" data-scope="global">全局图谱</button>
           </div>
           <input type="text" class="graph-filter-input" id="graph-node-filter" placeholder="筛选节点名称..." />
+          <button type="button" class="graph-scope-btn" id="graph-switch-canvas-btn" title="切换至 Canvas 无限白板与卡片编排 (Ctrl+Alt+C)">Canvas 无限白板</button>
           <button type="button" class="modal-close-btn" id="graph-close-btn" title="关闭 (Esc)">✕</button>
         </div>
       </div>
@@ -211,6 +213,10 @@ export async function openKnowledgeGraphModal(options: {
   };
 
   graphModalEl.querySelector("#graph-close-btn")?.addEventListener("click", closeModal);
+  graphModalEl.querySelector("#graph-switch-canvas-btn")?.addEventListener("click", () => {
+    closeModal();
+    options.onSwitchToCanvas?.();
+  });
   graphModalEl.querySelector("#graph-done-btn")?.addEventListener("click", closeModal);
   graphModalEl.addEventListener("click", (e) => {
     if (e.target === graphModalEl) closeModal();

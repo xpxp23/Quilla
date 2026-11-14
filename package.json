@@ -1,7 +1,7 @@
 {
   "name": "quilla",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Quilla (羽墨) v0.11.0 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust",
   "type": "module",
   "scripts": {

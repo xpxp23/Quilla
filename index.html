@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quilla (羽墨) v0.11.0 - 极简所见即所得 Markdown 编辑器与双链知识库</title>
+  <title>Quilla (羽墨) v0.12.0 - 极简所见即所得 Markdown 编辑器与双链知识库</title>
   <link rel="stylesheet" href="./src/themes/base.css" />
   <link rel="stylesheet" href="./src/themes/window.css" />
   <link rel="stylesheet" id="base_user_css" />
@@ -22,6 +22,28 @@
       <span class="title-text" id="title-text" data-tauri-drag-region>未命名.md - Quilla</span>
     </div>
     <div id="w-traffic-lights">
+      <button type="button" class="toolbar-icon btn" id="w-slide-btn" title="幻灯片演示模式 (F5 / Ctrl+Alt+P)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+          <line x1="8" y1="21" x2="16" y2="21"></line>
+          <line x1="12" y1="17" x2="12" y2="21"></line>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-icon btn" id="w-canvas-btn" title="Canvas 无限白板与卡片编排 (Ctrl+Alt+C)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+          <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+          <rect x="8" y="14" width="8" height="7" rx="1.5"></rect>
+          <path d="M6.5 10v2a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2"></path>
+        </svg>
+      </button>
+      <button type="button" class="toolbar-icon btn" id="w-sync-btn" title="Git / WebDAV 增量同步与三方冲突合并 (Ctrl+Alt+S)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+      </button>
       <button type="button" class="toolbar-icon btn" id="w-graph-btn" title="双链知识图谱 (Ctrl+G)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="6" cy="6" r="3"></circle>
@@ -266,6 +288,18 @@
       <span id="footer-open-graph" class="footer-btn" title="双链知识图谱 (Ctrl+G)">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><circle cx="12" cy="18" r="3"></circle><line x1="8.6" y1="7.5" x2="15.4" y2="7.5"></line><line x1="7.5" y1="8.6" x2="10.5" y2="15.4"></line><line x1="16.5" y1="8.6" x2="13.5" y2="15.4"></line></svg>
         <span class="footer-btn-label">图谱</span>
+      </span>
+      <span id="footer-open-canvas" class="footer-btn" title="Canvas 无限白板与多文档知识卡片编排 (Ctrl+Alt+C)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="8" y="14" width="8" height="7" rx="1.5"></rect><path d="M6.5 10v2a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2"></path></svg>
+        <span class="footer-btn-label">白板</span>
+      </span>
+      <span id="footer-open-slides" class="footer-btn" title="幻灯片全屏演示模式 (F5 / Ctrl+Alt+P)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+        <span class="footer-btn-label">演示</span>
+      </span>
+      <span id="footer-open-sync" class="footer-btn" title="Git / WebDAV 增量同步与三方冲突合并 (Ctrl+Alt+S)">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+        <span class="footer-btn-label">同步</span>
       </span>
       <span id="footer-open-history" class="footer-btn" title="本地版本历史 / 时间机器 (Ctrl+Alt+H)">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>

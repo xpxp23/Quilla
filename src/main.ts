@@ -92,21 +92,27 @@ import {
 } from "./components/publisher-export";
 import { renderMarkdownDocumentToHtml } from "./editor/markdown-ast-renderer";
 import { quillaPluginRegistry } from "./editor/plugin-system";
+import { openSyncCenterModal } from "./components/sync-center";
+import { openKnowledgeCanvasModal } from "./components/knowledge-canvas";
+import { openSlideDeckMode } from "./components/slide-deck";
 
 const INITIAL_DEMO_DOC = `---
-title: Quilla (羽墨) v0.11.0 全景工作台指南
+title: Quilla (羽墨) v0.12.0 全景工作台指南
 author: Quilla Studio
-tags: [Markdown, 双链知识库, 思源大纲, 效率工具/写作]
-version: 0.11.0
+tags: [Markdown, 双链知识库, 无限白板, 幻灯片演示, 效率工具/写作]
+version: 0.12.0
 ---
 
-# 欢迎使用 Quilla (羽墨) v0.11.0
+# 欢迎使用 Quilla (羽墨) v0.12.0
+
+<!-- note: 欢迎大家来到 Quilla v0.12.0 全景演示！按 L 键可开启朱砂红激光笔，按 G 键可打开幻灯片总览网格。 -->
 
 这是一个基于 **Rust + Tauri v2 + CodeMirror 6 Lezer AST** 打造的极速、现代化的 Markdown 所见即所得编辑器与本地知识库系统。支持内联标签如 #知识管理/双链笔记 与 #Markdown写作（点击标签可直接在侧边栏聚合检索）。
 
 内置 **墨观（Inkstone）** 中国风主题——玄墨 / 宣纸 / 沧海 / 青瓷等六个变体，色值取自 526 个中国传统色，遵循「红做记号、青做动作」的配色伦理；点击底部状态栏的「主题」即可在卡片式面板中切换，也可跟随系统深浅色自动换房间。
 
-> [!TIP] Quilla v0.11.0 核心演进与生产力跃升
+> [!TIP] Quilla v0.12.0 核心演进与生产力跃升
+> - **第四阶段 · 零延迟分屏、Git/WebDAV 三方合并、Canvas 无限白板与幻灯片演示**：同文档分屏升级为 CodeMirror \`Transaction\` 0ms 镜像转发与行级对齐同步滚动；内置免插件 Git / WebDAV 增量同步与 Myers Diff 三方冲突合并台 (\`Ctrl+Alt+S\`)；新增 **Canvas 无限白板** (\`Ctrl+Alt+C\`) 与 **全屏幻灯片演示模式** (\`F5\`，含朱砂激光笔与演讲者备注)。
 > - **第一阶段 · 统一词法与独立多实例分屏**：全新 \`inline-tokenizer.ts\` 统一双端内联词法解析并内置中文数字区间（如 1~2周、3~6个月）3 层边界守卫；分屏状态与文档路径迁入 CodeMirror \`StateField\` 实现真正的多实例隔离。
 > - **第二阶段 · 表格深层增强、多卡自动切片与 PDF 矢量书签**：支持表格列宽拖拽比例持久化与 \`Shift+Enter\` 可视化多行软回车；海报长图新增 ` + "`375px / 430px`" + ` 手机视口及 **小红书 3:4 / 朋友圈 9:16 多卡片自动分页切片**；PDF 导出自动注入 H1~H6 原生可折叠目录书签。
 > - **第三阶段 · 增量全文检索引擎、块级双向同步与主题工作坊**：Rust 倒排分词与 Bigram 增量检索引擎实现毫秒级检索与 \`#标签\` 组合过滤；支持 \`![[笔记#^block-id]]\` 块级嵌入原位双向同步编辑；内置 **主题与排版预设工作坊（Theme Studio）**。
@@ -148,7 +154,7 @@ version: 0.11.0
 
 \`\`\`mermaid
 flowchart LR
-    Start["Quilla v0.11.0"] --> Phase1["统一词法解析 & 独立多实例分屏"]
+    Start["Quilla v0.12.0"] --> Phase1["统一词法解析 & 独立多实例分屏"]
     Start --> Phase2["表格列宽持久化 & 小红书多卡切片 & PDF书签"]
     Start --> Phase3["增量全文检索 & 块级双向同步 & 主题工作坊"]
 \`\`\`
@@ -159,7 +165,7 @@ flowchart LR
 
 \`\`\`rust
 fn main() {
-    println!("Hello, Quilla (羽墨) v0.11.0!");
+    println!("Hello, Quilla (羽墨) v0.12.0!");
     let rope = ropey::Rope::from_str("支持代码块一键折叠、自动缩进格式化与点击左侧行号整行选中");
     println!("文档字符数: {}", rope.len_chars());
 }
@@ -213,11 +219,29 @@ class App {
     document.getElementById("w-graph-btn")?.addEventListener("click", () => {
       this.openKnowledgeGraph();
     });
+    document.getElementById("w-canvas-btn")?.addEventListener("click", () => {
+      this.openKnowledgeCanvas();
+    });
+    document.getElementById("w-slide-btn")?.addEventListener("click", () => {
+      this.openSlideDeck();
+    });
+    document.getElementById("w-sync-btn")?.addEventListener("click", () => {
+      this.openSyncCenter();
+    });
     document.getElementById("w-history-btn")?.addEventListener("click", () => {
       this.openTimeMachine();
     });
     document.getElementById("footer-open-graph")?.addEventListener("click", () => {
       this.openKnowledgeGraph();
+    });
+    document.getElementById("footer-open-canvas")?.addEventListener("click", () => {
+      this.openKnowledgeCanvas();
+    });
+    document.getElementById("footer-open-slides")?.addEventListener("click", () => {
+      this.openSlideDeck();
+    });
+    document.getElementById("footer-open-sync")?.addEventListener("click", () => {
+      this.openSyncCenter();
     });
     document.getElementById("footer-open-history")?.addEventListener("click", () => {
       this.openTimeMachine();
@@ -322,6 +346,7 @@ class App {
 
     const writeContainer = document.getElementById("write")!;
     this.editorView = createEditor(writeContainer, INITIAL_DEMO_DOC, {
+      onImmediateDocTransaction: (tr) => this.tabsManager?.handlePrimaryImmediateTransaction(tr),
       onChange: (content, deltas) => this.handleContentChange(content, deltas),
       onStatsUpdate: (words, chars) => this.updateStats(words, chars),
       onOutlineUpdate: (headings) => this.updateOutline(headings),
@@ -386,7 +411,7 @@ class App {
       });
     }
 
-    this.findReplaceCtrl = initFindReplace(this.editorView);
+    this.findReplaceCtrl = initFindReplace(this.editorView, () => this.tabsManager?.getFocusedView() || this.editorView!);
 
     const quickOpen = initQuickOpen({
       onOpenFile: (filePath) => this.loadFile(filePath),
@@ -396,7 +421,7 @@ class App {
       },
     });
 
-    initStatsPopover(this.editorView);
+    initStatsPopover(this.editorView, () => this.tabsManager?.getFocusedView() || this.editorView!);
     initFloatingToolbars(this.editorView, (filePath) => this.loadFile(filePath));
     initSmartPaste(this.editorView);
 
@@ -638,6 +663,15 @@ class App {
       } else if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "h") {
         e.preventDefault();
         this.openTimeMachine();
+      } else if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        this.openSyncCenter();
+      } else if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        this.openKnowledgeCanvas();
+      } else if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "p")) {
+        e.preventDefault();
+        this.openSlideDeck();
       } else if (e.key === "F9") {
         e.preventDefault();
         toggleTW();
@@ -714,7 +748,10 @@ class App {
       onSaveFile: () => this.saveFile(),
       onSaveFileAs: () => this.saveFileAs(),
       onOpenTimeMachine: () => this.openTimeMachine(),
+      onOpenSyncCenter: () => this.openSyncCenter(),
       onOpenKnowledgeGraph: () => this.openKnowledgeGraph(),
+      onOpenKnowledgeCanvas: () => this.openKnowledgeCanvas(),
+      onOpenSlideDeck: () => this.openSlideDeck(),
       onOpenThemeStudio: () => openThemeStudioModal(),
       onCopyWeChatHtml: () => this.handleCopyWeChatHtml(),
       onExportWordDoc: () => this.handleExportWordDoc(),
@@ -944,6 +981,7 @@ class App {
       activeFilePath: this.currentFilePath,
       activeTitle,
       hasWorkspace: Boolean(this.currentWorkspaceRoot),
+      onSwitchToCanvas: () => this.openKnowledgeCanvas(),
       onOpenNote: async (pathOrName, exists) => {
         if (exists) {
           await this.loadFile(pathOrName);
@@ -969,6 +1007,79 @@ class App {
           showToast(`节点「${pathOrName}」尚未创建本地文件（请先打开工作区文件夹）`, "info");
         }
       },
+    });
+  }
+
+  private openSyncCenter(initialTab?: "git" | "webdav" | "merger") {
+    const focusedView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
+    const filePath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const docTitle =
+      focusedTab?.title ||
+      (filePath ? filePath.split(/[\\/]/).pop()! : "未命名.md");
+    openSyncCenterModal({
+      view: focusedView,
+      workspaceRoot: this.currentWorkspaceRoot,
+      activeFilePath: filePath,
+      activeTitle: docTitle,
+      initialTab,
+      onDocumentMerged: (newContent, targetPath) => {
+        if (focusedView === this.editorView && (!targetPath || targetPath === this.currentFilePath)) {
+          this.savedContent = newContent;
+          this.handleContentChange(newContent);
+        }
+        if (this.currentWorkspaceRoot) {
+          this.loadWorkspace(this.currentWorkspaceRoot, true);
+        }
+      },
+      onWorkspaceSynced: () => {
+        if (this.currentWorkspaceRoot) {
+          this.loadWorkspace(this.currentWorkspaceRoot, true);
+        }
+      },
+    });
+  }
+
+  private async openKnowledgeCanvas() {
+    const focusedView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
+    const filePath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const docTitle =
+      focusedTab?.title ||
+      (filePath ? filePath.split(/[\\/]/).pop()! : "未命名.md");
+    if (this.currentWorkspaceRoot && this.workspaceFileCache.length === 0) {
+      await this.refreshWorkspaceMarkdownIndex().catch(() => {});
+    }
+    openKnowledgeCanvasModal({
+      view: focusedView,
+      workspaceRoot: this.currentWorkspaceRoot,
+      activeFilePath: filePath,
+      activeTitle: docTitle,
+      workspaceFiles: this.workspaceFileCache,
+      onOpenNote: async (targetFilePath, headingOrBlockAnchor) => {
+        const loaded = await this.loadFile(targetFilePath);
+        if (loaded && headingOrBlockAnchor && this.editorView) {
+          setTimeout(() => {
+            if (this.editorView) {
+              navigateToAnchor(this.editorView, headingOrBlockAnchor);
+            }
+          }, 50);
+        }
+      },
+      onSwitchToGraph: () => this.openKnowledgeGraph(),
+    });
+  }
+
+  private openSlideDeck() {
+    const focusedView = this.tabsManager?.getFocusedView() || this.editorView;
+    const focusedTab = this.tabsManager?.getFocusedTab();
+    const filePath = focusedTab ? focusedTab.filePath : this.currentFilePath;
+    const docTitle =
+      focusedTab?.title ||
+      (filePath ? filePath.split(/[\\/]/).pop()! : "未命名.md");
+    openSlideDeckMode({
+      view: focusedView,
+      activeTitle: docTitle,
     });
   }
 
@@ -2233,6 +2344,7 @@ ${bodyHtml}
       document.body.appendChild(picker);
 
       picker.addEventListener("click", (evt) => {
+        evt.stopPropagation();
         const target = evt.target as HTMLElement;
         const actionEl = target.closest("[data-action]") as HTMLElement | null;
         if (actionEl?.dataset.action === "open-theme-studio") {
@@ -2243,6 +2355,12 @@ ${bodyHtml}
         if (actionEl?.dataset.action === "toggle-system-theme") {
           const nextMode = themeLoader.getMode() === "system" ? "manual" : "system";
           themeLoader.setMode(nextMode);
+          this.renderThemePicker(picker!);
+          return;
+        }
+        if (actionEl?.dataset.action === "set-system-pair") {
+          const pair = actionEl.dataset.pair === "sea-celadon" ? "sea-celadon" : "ink-paper";
+          themeLoader.setSystemPair(pair);
           this.renderThemePicker(picker!);
           return;
         }
@@ -2304,6 +2422,7 @@ ${bodyHtml}
         </div>`;
     };
 
+    const sysPair = themeLoader.getSystemPair();
     picker.innerHTML = `
       <div class="theme-picker-head">
         <span class="theme-picker-title">主题</span>
@@ -2311,6 +2430,14 @@ ${bodyHtml}
           <span class="theme-picker-mode-dot"></span>跟随系统
         </button>
       </div>
+      ${
+        mode === "system"
+          ? `<div class="theme-picker-pair-bar">
+              <button type="button" class="theme-pair-chip ${sysPair === "ink-paper" ? "active" : ""}" data-action="set-system-pair" data-pair="ink-paper">墨与纸 (玄墨 ↔ 宣纸)</button>
+              <button type="button" class="theme-pair-chip ${sysPair === "sea-celadon" ? "active" : ""}" data-action="set-system-pair" data-pair="sea-celadon">海与瓷 (沧海 ↔ 青瓷)</button>
+            </div>`
+          : ""
+      }
       <div class="theme-picker-body">
         ${seriesOrder.map(seriesBlock).join("")}
       </div>

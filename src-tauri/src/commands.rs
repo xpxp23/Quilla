@@ -186,9 +186,11 @@ pub fn sync_document_buffer(
     file_path: Option<String>,
     title: Option<String>,
     need_headings: Option<bool>,
+    persist_disk: Option<bool>,
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<Vec<HeadingItem>, String> {
+    let should_persist_disk = persist_disk.unwrap_or_else(|| deltas.is_none());
     let mut final_content = content.clone().unwrap_or_default();
     let buffer_key = format!(
         "{}::{}",
@@ -209,25 +211,29 @@ pub fn sync_document_buffer(
                     buf.set_text(full_text);
                 }
             }
-            if final_content.is_empty() {
-                final_content = buf.get_text();
-            }
         } else if let Some(ref full_text) = content {
             buf.set_text(full_text);
         }
 
-        if let Some(ref id) = file_id {
-            if id != "memory_only" && !final_content.is_empty() {
-                let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
+        if should_persist_disk {
+            if final_content.is_empty() {
+                final_content = buf.get_text();
+            }
+            if let Some(ref id) = file_id {
+                if id != "memory_only" && !final_content.is_empty() {
+                    let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
+                }
             }
         }
 
         if need_headings.unwrap_or(false) {
             return Ok(buf.extract_headings());
         }
-    } else if let Some(ref id) = file_id {
-        if id != "memory_only" && !final_content.is_empty() {
-            let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
+    } else if should_persist_disk {
+        if let Some(ref id) = file_id {
+            if id != "memory_only" && !final_content.is_empty() {
+                let _ = SafeIO::save_draft_snapshot(id, file_path, &final_content, title);
+            }
         }
     }
 
@@ -1640,6 +1646,7 @@ pub fn rename_path(
         }
     }
 
+    SafeIO::migrate_file_history(old_p, new_p);
     state.workspace_index.handle_rename(old_p, new_p);
     Ok(())
 }
@@ -1682,15 +1689,17 @@ pub fn delete_path(path: String, state: State<'_, AppState>) -> Result<(), Strin
                 let shared_assets = parent.join("assets");
                 if shared_assets.exists() && shared_assets.is_dir() {
                     let mut still_used = HashSet::new();
-                    if let Ok(entries) = fs::read_dir(&parent) {
-                        for entry in entries.flatten() {
-                            let ep = entry.path();
-                            if ep.is_file() {
-                                if let Ok(c) = fs::read_to_string(&ep) {
-                                    for name in extract_referenced_image_filenames(&c) {
-                                        still_used.insert(name);
-                                    }
-                                }
+                    let scan_root = state
+                        .current_workspace
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.clone())
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| parent.clone());
+                    for md_file in SearchEngine::collect_markdown_files(&scan_root) {
+                        if let Ok(c) = fs::read_to_string(&md_file) {
+                            for name in extract_referenced_image_filenames(&c) {
+                                still_used.insert(name);
                             }
                         }
                     }
@@ -2468,4 +2477,635 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+
+// ============================================================================
+// v0.12.0 新增：原生 Git / WebDAV 增量同步与冲突三方解析命令
+// ============================================================================
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileStatusEntry {
+    pub path: String,
+    pub rel_path: String,
+    pub status: String,
+    pub is_conflicted: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorkspaceStatus {
+    pub is_repo: bool,
+    pub workspace_root: String,
+    pub branch: String,
+    pub remote_url: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub changed_files: Vec<GitFileStatusEntry>,
+    pub conflicted_files: Vec<String>,
+    pub summary: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSyncResult {
+    pub success: bool,
+    pub message: String,
+    pub has_conflicts: bool,
+    pub status: GitWorkspaceStatus,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFilePayload {
+    pub path: String,
+    pub has_conflict_markers: bool,
+    pub conflict_count: usize,
+    pub local_label: String,
+    pub remote_label: String,
+    pub local_content: String,
+    pub remote_content: String,
+    pub base_content: String,
+    pub raw_content: String,
+}
+
+fn run_git_cmd(repo_dir: &Path, args: &[&str]) -> Result<(bool, String, String), String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(repo_dir).args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("无法调用系统 git 命令，请确认已安装 Git: {}", e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Ok((out.status.success(), stdout, stderr))
+}
+
+fn file_contains_conflict_markers(path: &Path) -> bool {
+    if let Ok(content) = fs::read_to_string(path) {
+        content.contains("<<<<<<<") && content.contains("=======") && content.contains(">>>>>>>")
+    } else {
+        false
+    }
+}
+
+fn collect_git_workspace_status_inner(root_dir: &Path) -> Result<GitWorkspaceStatus, String> {
+    let ws_str = root_dir.to_string_lossy().to_string();
+    let (ok_repo, inside_out, _) =
+        run_git_cmd(root_dir, &["rev-parse", "--is-inside-work-tree"])?;
+    if !ok_repo || inside_out != "true" {
+        return Ok(GitWorkspaceStatus {
+            is_repo: false,
+            workspace_root: ws_str,
+            branch: String::new(),
+            remote_url: String::new(),
+            ahead: 0,
+            behind: 0,
+            changed_files: Vec::new(),
+            conflicted_files: Vec::new(),
+            summary: "当前工作区尚未初始化 Git 仓库".to_string(),
+        });
+    }
+
+    let branch = run_git_cmd(root_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|(_, out, _)| if out.is_empty() { "main".to_string() } else { out })
+        .unwrap_or_else(|_| "main".to_string());
+
+    let remote_url = run_git_cmd(root_dir, &["remote", "get-url", "origin"])
+        .map(|(ok, out, _)| if ok { out } else { String::new() })
+        .unwrap_or_default();
+
+    let (mut ahead, mut behind) = (0u32, 0u32);
+    if let Ok((true, counts, _)) =
+        run_git_cmd(root_dir, &["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+    {
+        let parts: Vec<&str> = counts.split_whitespace().collect();
+        if parts.len() == 2 {
+            ahead = parts[0].parse().unwrap_or(0);
+            behind = parts[1].parse().unwrap_or(0);
+        }
+    }
+
+    let mut changed_files = Vec::new();
+    let mut conflicted_files = Vec::new();
+    if let Ok((true, porcelain, _)) =
+        run_git_cmd(root_dir, &["status", "--porcelain=v1", "-uall"])
+    {
+        for raw_line in porcelain.lines() {
+            if raw_line.len() < 4 {
+                continue;
+            }
+            let code = raw_line[..2].trim().to_string();
+            let rel_raw = raw_line[3..].trim().trim_matches('"');
+            let rel_path = if let Some(idx) = rel_raw.find(" -> ") {
+                rel_raw[idx + 4..].trim_matches('"').to_string()
+            } else {
+                rel_raw.to_string()
+            };
+            let full_path = root_dir.join(&rel_path);
+            let full_str = full_path.to_string_lossy().to_string();
+            let is_conflict_code = matches!(
+                code.as_str(),
+                "UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD"
+            ) || file_contains_conflict_markers(&full_path);
+
+            if is_conflict_code && !conflicted_files.contains(&full_str) {
+                conflicted_files.push(full_str.clone());
+            }
+            changed_files.push(GitFileStatusEntry {
+                path: full_str,
+                rel_path,
+                status: if code.is_empty() { "M".to_string() } else { code },
+                is_conflicted: is_conflict_code,
+            });
+        }
+    }
+
+    let summary = if !conflicted_files.is_empty() {
+        format!(
+            "检测到 {} 个冲突文件待三方合并（分支 {}）",
+            conflicted_files.len(),
+            branch
+        )
+    } else if changed_files.is_empty() {
+        format!("工作区纯净 · 分支 {} (领先 {} / 落后 {})", branch, ahead, behind)
+    } else {
+        format!(
+            "分支 {} · {} 个变更文件待同步 (↑{} ↓{})",
+            branch,
+            changed_files.len(),
+            ahead,
+            behind
+        )
+    };
+
+    Ok(GitWorkspaceStatus {
+        is_repo: true,
+        workspace_root: ws_str,
+        branch,
+        remote_url,
+        ahead,
+        behind,
+        changed_files,
+        conflicted_files,
+        summary,
+    })
+}
+
+#[tauri::command]
+pub fn workspace_git_status(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    workspace_root: Option<String>,
+) -> Result<GitWorkspaceStatus, String> {
+    let resolved = workspace_root
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| resolve_window_workspace(&window, &state))
+        .map(PathBuf::from)
+        .ok_or_else(|| "请先打开工作区文件夹以使用 Git 增量同步".to_string())?;
+
+    collect_git_workspace_status_inner(&resolved)
+}
+
+#[tauri::command]
+pub fn workspace_git_sync(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    workspace_root: Option<String>,
+    action: String,
+    commit_message: Option<String>,
+    remote_url: Option<String>,
+) -> Result<GitSyncResult, String> {
+    let root_dir = workspace_root
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| resolve_window_workspace(&window, &state))
+        .map(PathBuf::from)
+        .ok_or_else(|| "请先打开工作区文件夹以执行 Git 同步".to_string())?;
+
+    if action == "init" {
+        let (ok, _, err) = run_git_cmd(&root_dir, &["init"])?;
+        if !ok {
+            return Err(format!("初始化 Git 仓库失败: {}", err));
+        }
+        if let Some(url) = remote_url.filter(|s| !s.trim().is_empty()) {
+            let _ = run_git_cmd(&root_dir, &["remote", "remove", "origin"]);
+            let _ = run_git_cmd(&root_dir, &["remote", "add", "origin", url.trim()]);
+        }
+        let status = collect_git_workspace_status_inner(&root_dir)?;
+        return Ok(GitSyncResult {
+            success: true,
+            message: "已初始化本地 Git 仓库".to_string(),
+            has_conflicts: false,
+            status,
+        });
+    }
+
+    if let Some(url) = remote_url.filter(|s| !s.trim().is_empty()) {
+        let (has_origin, current_origin, _) =
+            run_git_cmd(&root_dir, &["remote", "get-url", "origin"]).unwrap_or((false, String::new(), String::new()));
+        if !has_origin {
+            let _ = run_git_cmd(&root_dir, &["remote", "add", "origin", url.trim()]);
+        } else if current_origin.trim() != url.trim() {
+            let _ = run_git_cmd(&root_dir, &["remote", "set-url", "origin", url.trim()]);
+        }
+    }
+
+    let mut log_messages: Vec<String> = Vec::new();
+
+    if action == "pull" || action == "sync_all" {
+        let (ok, out, err) = run_git_cmd(&root_dir, &["pull", "--no-rebase", "origin"])?;
+        if ok {
+            log_messages.push(if out.is_empty() {
+                "远端拉取完成".to_string()
+            } else {
+                format!("拉取成功: {}", out.lines().next().unwrap_or("Already up to date"))
+            });
+        } else {
+            let st = collect_git_workspace_status_inner(&root_dir)?;
+            if !st.conflicted_files.is_empty() {
+                return Ok(GitSyncResult {
+                    success: false,
+                    message: format!(
+                        "拉取远端时检测到 {} 个文件发生冲突，请切换到「冲突三方合并」视图解决",
+                        st.conflicted_files.len()
+                    ),
+                    has_conflicts: true,
+                    status: st,
+                });
+            }
+            if !err.contains("couldn't find remote ref") && !err.contains("no tracking information") {
+                log_messages.push(format!("拉取提示: {}", err.lines().next().unwrap_or(&err)));
+            }
+        }
+    }
+
+    if action == "commit_push" || action == "sync_all" {
+        let _ = run_git_cmd(&root_dir, &["add", "-A"]);
+        let msg = commit_message
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "docs(quilla): incremental workspace sync".to_string());
+        let (commit_ok, commit_out, commit_err) = run_git_cmd(&root_dir, &["commit", "-m", &msg])?;
+        if commit_ok {
+            log_messages.push(format!(
+                "已提交本地变更 ({})",
+                commit_out.lines().next().unwrap_or(&msg)
+            ));
+        } else if !commit_out.contains("nothing to commit") && !commit_err.contains("nothing to commit") {
+            log_messages.push(format!("提交信息: {}", commit_err));
+        }
+
+        let branch = run_git_cmd(&root_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|(_, b, _)| if b.is_empty() { "main".to_string() } else { b })
+            .unwrap_or_else(|_| "main".to_string());
+
+        let (push_ok, _, push_err) = run_git_cmd(&root_dir, &["push", "-u", "origin", &branch])?;
+        if push_ok {
+            log_messages.push(format!("已推送至 origin/{}", branch));
+        } else if !push_err.is_empty() {
+            let st = collect_git_workspace_status_inner(&root_dir)?;
+            return Ok(GitSyncResult {
+                success: false,
+                message: format!("推送远端未完成: {}", push_err.lines().next().unwrap_or(&push_err)),
+                has_conflicts: !st.conflicted_files.is_empty(),
+                status: st,
+            });
+        }
+    }
+
+    let status = collect_git_workspace_status_inner(&root_dir)?;
+    let has_conflicts = !status.conflicted_files.is_empty();
+    Ok(GitSyncResult {
+        success: !has_conflicts,
+        message: if log_messages.is_empty() {
+            "Git 同步操作已完成".to_string()
+        } else {
+            log_messages.join(" · ")
+        },
+        has_conflicts,
+        status,
+    })
+}
+
+#[tauri::command]
+pub fn parse_git_conflict_file(path: String) -> Result<ConflictFilePayload, String> {
+    let file_path = Path::new(&path);
+    if !file_path.exists() {
+        return Err(format!("文件不存在: {}", path));
+    }
+    let raw_content = fs::read_to_string(file_path)
+        .map_err(|e| format!("读取冲突文件失败: {}", e))?
+        .replace("\r\n", "\n");
+
+    let mut local_lines: Vec<String> = Vec::new();
+    let mut remote_lines: Vec<String> = Vec::new();
+    let mut base_lines: Vec<String> = Vec::new();
+    let mut local_label = "HEAD (本地修改)".to_string();
+    let mut remote_label = "REMOTE (远端变更)".to_string();
+    let mut conflict_count = 0usize;
+
+    #[derive(PartialEq)]
+    enum ParseState {
+        Normal,
+        InLocal,
+        InBase,
+        InRemote,
+    }
+
+    let mut state = ParseState::Normal;
+    for line in raw_content.lines() {
+        if line.starts_with("<<<<<<<") {
+            conflict_count += 1;
+            let lbl = line.trim_start_matches('<').trim();
+            if !lbl.is_empty() {
+                local_label = lbl.to_string();
+            }
+            state = ParseState::InLocal;
+        } else if line.starts_with("|||||||") && state == ParseState::InLocal {
+            state = ParseState::InBase;
+        } else if line.starts_with("=======")
+            && (state == ParseState::InLocal || state == ParseState::InBase)
+        {
+            state = ParseState::InRemote;
+        } else if line.starts_with(">>>>>>>") && state == ParseState::InRemote {
+            let lbl = line.trim_start_matches('>').trim();
+            if !lbl.is_empty() {
+                remote_label = lbl.to_string();
+            }
+            state = ParseState::Normal;
+        } else {
+            match state {
+                ParseState::Normal => {
+                    local_lines.push(line.to_string());
+                    remote_lines.push(line.to_string());
+                    base_lines.push(line.to_string());
+                }
+                ParseState::InLocal => {
+                    local_lines.push(line.to_string());
+                }
+                ParseState::InBase => {
+                    base_lines.push(line.to_string());
+                }
+                ParseState::InRemote => {
+                    remote_lines.push(line.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(ConflictFilePayload {
+        path,
+        has_conflict_markers: conflict_count > 0,
+        conflict_count,
+        local_label,
+        remote_label,
+        local_content: local_lines.join("\n"),
+        remote_content: remote_lines.join("\n"),
+        base_content: base_lines.join("\n"),
+        raw_content,
+    })
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WebDavConflictItem {
+    pub path: String,
+    pub rel_path: String,
+    pub local_content: String,
+    pub remote_content: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WebDavSyncResult {
+    pub success: bool,
+    pub message: String,
+    pub uploaded_count: usize,
+    pub downloaded_count: usize,
+    pub conflicts: Vec<WebDavConflictItem>,
+}
+
+fn collect_markdown_files_flat(root: &Path, current: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(current) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.starts_with('.') || fname == "node_modules" || fname == "target" {
+                continue;
+            }
+            if p.is_dir() {
+                collect_markdown_files_flat(root, &p, out);
+            } else if fname.ends_with(".md")
+                || fname.ends_with(".markdown")
+                || fname.ends_with(".quilla-canvas.json")
+            {
+                out.push(p);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn webdav_sync_workspace(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    workspace_root: Option<String>,
+    endpoint: String,
+    username: String,
+    password: String,
+    remote_dir: String,
+    direction: String,
+) -> Result<WebDavSyncResult, String> {
+    let ep = endpoint.trim().trim_end_matches('/');
+    if ep.is_empty() || (!ep.starts_with("http://") && !ep.starts_with("https://")) {
+        return Err("请填写合法的 WebDAV 服务器地址（以 http:// 或 https:// 开头）".to_string());
+    }
+
+    let remote_clean = remote_dir.trim().trim_matches('/');
+    let base_remote_url = if remote_clean.is_empty() {
+        format!("{}/", ep)
+    } else {
+        format!("{}/{}/", ep, remote_clean)
+    };
+
+    let run_curl = |args: &[&str]| -> Result<(bool, String, String), String> {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(args);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("调用系统 curl 执行 WebDAV 请求失败: {}", e))?;
+        Ok((
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        ))
+    };
+
+    let auth_pair = format!("{}:{}", username.trim(), password);
+
+    if direction == "test" {
+        let (ok, stdout, stderr) = run_curl(&[
+            "-sS",
+            "-i",
+            "-X",
+            "PROPFIND",
+            "-u",
+            &auth_pair,
+            "-H",
+            "Depth: 0",
+            &base_remote_url,
+        ])?;
+        if !ok {
+            return Err(format!("无法连接 WebDAV 服务器: {}", stderr));
+        }
+        let first_line = stdout.lines().next().unwrap_or("");
+        if first_line.contains("200")
+            || first_line.contains("207")
+            || first_line.contains("301")
+            || first_line.contains("302")
+        {
+            return Ok(WebDavSyncResult {
+                success: true,
+                message: format!("WebDAV 连接验证成功 ({})", first_line.trim()),
+                uploaded_count: 0,
+                downloaded_count: 0,
+                conflicts: Vec::new(),
+            });
+        } else if first_line.contains("404") {
+            let _ = run_curl(&["-sS", "-X", "MKCOL", "-u", &auth_pair, &base_remote_url]);
+            return Ok(WebDavSyncResult {
+                success: true,
+                message: "WebDAV 认证通过，并已自动在远端创建同步目录".to_string(),
+                uploaded_count: 0,
+                downloaded_count: 0,
+                conflicts: Vec::new(),
+            });
+        } else if first_line.contains("401") || first_line.contains("403") {
+            return Err(format!("WebDAV 认证失败，请检查账号或应用专用密码 ({})", first_line.trim()));
+        }
+        return Ok(WebDavSyncResult {
+            success: true,
+            message: format!("WebDAV 响应状态: {}", first_line.trim()),
+            uploaded_count: 0,
+            downloaded_count: 0,
+            conflicts: Vec::new(),
+        });
+    }
+
+    let root_dir = workspace_root
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| resolve_window_workspace(&window, &state))
+        .map(PathBuf::from)
+        .ok_or_else(|| "请先打开工作区文件夹以执行 WebDAV 增量同步".to_string())?;
+
+    let _ = run_curl(&["-sS", "-X", "MKCOL", "-u", &auth_pair, &base_remote_url]);
+
+    let mut local_files = Vec::new();
+    collect_markdown_files_flat(&root_dir, &root_dir, &mut local_files);
+
+    let mut uploaded_count = 0usize;
+    let mut downloaded_count = 0usize;
+    let mut conflicts = Vec::new();
+
+    for file_path in &local_files {
+        let rel = match file_path.strip_prefix(&root_dir) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        if rel.contains('/') {
+            continue;
+        }
+        let encoded_rel = encode_uri_component(&rel);
+        let file_remote_url = format!("{}{}", base_remote_url, encoded_rel);
+        let local_content = fs::read_to_string(file_path).unwrap_or_default();
+
+        if direction == "push" {
+            let (ok, _, _) = run_curl(&[
+                "-sS",
+                "-X",
+                "PUT",
+                "-u",
+                &auth_pair,
+                "--data-binary",
+                &format!("@{}", file_path.to_string_lossy()),
+                &file_remote_url,
+            ])?;
+            if ok {
+                uploaded_count += 1;
+            }
+        } else {
+            let (ok, remote_body, _) = run_curl(&[
+                "-sS",
+                "-f",
+                "-X",
+                "GET",
+                "-u",
+                &auth_pair,
+                &file_remote_url,
+            ])?;
+            if ok && !remote_body.is_empty() {
+                let norm_local = local_content.replace("\r\n", "\n");
+                let norm_remote = remote_body.replace("\r\n", "\n");
+                if norm_local != norm_remote {
+                    if direction == "pull" {
+                        let _ = SafeIO::atomic_write(file_path, &remote_body);
+                        downloaded_count += 1;
+                    } else {
+                        conflicts.push(WebDavConflictItem {
+                            path: file_path.to_string_lossy().to_string(),
+                            rel_path: rel.clone(),
+                            local_content: norm_local,
+                            remote_content: norm_remote,
+                        });
+                    }
+                }
+            } else if direction == "bidirectional" {
+                let (put_ok, _, _) = run_curl(&[
+                    "-sS",
+                    "-X",
+                    "PUT",
+                    "-u",
+                    &auth_pair,
+                    "--data-binary",
+                    &format!("@{}", file_path.to_string_lossy()),
+                    &file_remote_url,
+                ])?;
+                if put_ok {
+                    uploaded_count += 1;
+                }
+            }
+        }
+    }
+
+    let message = if !conflicts.is_empty() {
+        format!(
+            "增量扫描完成：上传 {} 篇，检测到 {} 篇本地与云端存在差异，可在三方视图中合并",
+            uploaded_count,
+            conflicts.len()
+        )
+    } else {
+        format!(
+            "WebDAV 增量同步完成：已上传 {} 篇，拉取更新 {} 篇",
+            uploaded_count, downloaded_count
+        )
+    };
+
+    Ok(WebDavSyncResult {
+        success: conflicts.is_empty(),
+        message,
+        uploaded_count,
+        downloaded_count,
+        conflicts,
+    })
 }

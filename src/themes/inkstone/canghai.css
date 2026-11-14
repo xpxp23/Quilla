@@ -32,6 +32,7 @@ body.theme-night.theme-inkstone-canghai {
   --surface-panel: #12202b;
   --surface-raised: #182833;
   --surface-overlay: #1f3340;
+  --surface-glass: rgba(28, 43, 59, 0.94);
   --surface-sunken: #0a131b;
   --surface-input: #152430;
   --surface-hover: #172733;

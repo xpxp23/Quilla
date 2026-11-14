@@ -61,6 +61,22 @@ export const documentPathStateField = StateField.define<string | null>({
   },
 });
 
+export const setHeadingFoldEffect = StateEffect.define<string[]>();
+
+export const headingFoldStateField = StateField.define<Set<string>>({
+  create() {
+    return new Set<string>(foldedHeadingKeys);
+  },
+  update(val, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setHeadingFoldEffect)) {
+        return new Set<string>(e.value);
+      }
+    }
+    return val;
+  },
+});
+
 interface ViewFoldSets {
   foldedHeadings: Set<string>;
   collapsedCodes: Set<string>;
@@ -182,7 +198,10 @@ export function toggleHeadingFoldAtLine(view: EditorView, lineNum: number): bool
     foldedHeadingKeys.delete(key);
   }
   view.dispatch({
-    effects: forceRefreshEffect.of(true),
+    effects: [
+      setHeadingFoldEffect.of(Array.from(foldSet)),
+      forceRefreshEffect.of(true),
+    ],
   });
   return nextState;
 }
@@ -203,7 +222,10 @@ export function setHeadingFoldAtLine(
     foldedHeadingKeys.delete(key);
   }
   view.dispatch({
-    effects: forceRefreshEffect.of(true),
+    effects: [
+      setHeadingFoldEffect.of(Array.from(foldSet)),
+      forceRefreshEffect.of(true),
+    ],
   });
 }
 
@@ -217,7 +239,8 @@ export function getFoldedSectionSpanAtLine(
 ): { startLine: number; endLine: number } | null {
   const struct = getDocStructureFromState(state);
   const keys = buildStableHeadingFoldKeys(struct.headings);
-  const foldSet = getFoldSetsForView(view).foldedHeadings;
+  const stateFoldSet = state.field(headingFoldStateField, false);
+  const foldSet = view ? getFoldSetsForView(view).foldedHeadings : stateFoldSet || foldedHeadingKeys;
   for (let i = 0; i < struct.headings.length; i++) {
     const h = struct.headings[i];
     if (foldSet.has(keys[i])) {
@@ -227,6 +250,24 @@ export function getFoldedSectionSpanAtLine(
     }
   }
   return null;
+}
+
+/**
+ * 判断某行是否处于已折叠的标题正文中（不含标题自身行，专供表格/Mermaid/数学公式块同步隐藏使用）
+ */
+export function isLineInsideFoldedSection(state: EditorState, lineNum: number): boolean {
+  const struct = getDocStructureFromState(state);
+  if (struct.headings.length === 0) return false;
+  const stateFoldSet = state.field(headingFoldStateField, false) || foldedHeadingKeys;
+  if (stateFoldSet.size === 0) return false;
+  const keys = buildStableHeadingFoldKeys(struct.headings);
+  for (let i = 0; i < struct.headings.length; i++) {
+    const h = struct.headings[i];
+    if (stateFoldSet.has(keys[i]) && lineNum > h.line && lineNum <= h.endLine) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function setActiveDocumentPath(path: string | null, view?: EditorView | null) {
@@ -1027,21 +1068,30 @@ class CalloutHeaderWidget extends WidgetType {
     bar.appendChild(titleSpan);
     bar.appendChild(badgeSpan);
 
+    bar.dataset.clickPos = String(this.clickPos);
     bar.addEventListener("click", (e) => {
       e.stopPropagation();
-      view.dispatch({ selection: { anchor: this.clickPos } });
+      const targetPos = Number(bar.dataset.clickPos ?? this.clickPos);
+      view.dispatch({ selection: { anchor: Math.min(targetPos, view.state.doc.length) } });
       view.focus();
     });
 
     return bar;
   }
 
+  updateDOM(dom: HTMLElement): boolean {
+    if (
+      dom.classList.contains(`cm-callout-header-${this.calloutType}`) &&
+      dom.querySelector(".cm-callout-title")?.textContent === this.title
+    ) {
+      dom.dataset.clickPos = String(this.clickPos);
+      return true;
+    }
+    return false;
+  }
+
   eq(other: CalloutHeaderWidget) {
-    return (
-      other.calloutType === this.calloutType &&
-      other.title === this.title &&
-      other.clickPos === this.clickPos
-    );
+    return other.calloutType === this.calloutType && other.title === this.title;
   }
 }
 
@@ -1080,11 +1130,13 @@ class WikiLinkWidget extends WidgetType {
     span.appendChild(icon);
     span.appendChild(label);
 
+    span.dataset.clickPos = String(this.clickPos);
     span.addEventListener("pointerdown", (e) => e.stopPropagation());
     span.addEventListener("click", (e) => {
       e.stopPropagation();
       if (e.altKey) {
-        view.dispatch({ selection: { anchor: this.clickPos + 2 } });
+        const basePos = Number(span.dataset.clickPos ?? this.clickPos);
+        view.dispatch({ selection: { anchor: Math.min(basePos + 2, view.state.doc.length) } });
         view.focus();
         return;
       }
@@ -1094,12 +1146,23 @@ class WikiLinkWidget extends WidgetType {
     return span;
   }
 
+  updateDOM(dom: HTMLElement): boolean {
+    if (
+      dom.dataset.wikiDoc === this.targetDoc &&
+      dom.dataset.wikiHeading === this.heading &&
+      dom.querySelector(".cm-wiki-link-label")?.textContent === this.displayText
+    ) {
+      dom.dataset.clickPos = String(this.clickPos);
+      return true;
+    }
+    return false;
+  }
+
   eq(other: WikiLinkWidget) {
     return (
       other.targetDoc === this.targetDoc &&
       other.heading === this.heading &&
-      other.displayText === this.displayText &&
-      other.clickPos === this.clickPos
+      other.displayText === this.displayText
     );
   }
 }
@@ -1272,19 +1335,24 @@ class TransclusionWidget extends WidgetType {
 
     header.querySelector('[data-act="edit"]')?.addEventListener("click", (e) => {
       e.stopPropagation();
-      view.dispatch({ selection: { anchor: this.clickPos + 3 } });
+      const basePos = Number(card.dataset.from ?? this.clickPos);
+      view.dispatch({ selection: { anchor: Math.min(basePos + 3, view.state.doc.length) } });
       view.focus();
     });
 
     return card;
   }
 
+  updateDOM(dom: HTMLElement): boolean {
+    dom.dataset.from = String(this.clickPos);
+    return true;
+  }
+
   eq(other: TransclusionWidget) {
     return (
       other.targetDoc === this.targetDoc &&
       other.heading === this.heading &&
-      other.displayText === this.displayText &&
-      other.clickPos === this.clickPos
+      other.displayText === this.displayText
     );
   }
 }
@@ -1585,6 +1653,10 @@ class CodeBlockHeaderWidget extends WidgetType {
     langWrap.appendChild(langBtn);
     langWrap.appendChild(dropdown);
 
+    const macDots = document.createElement("span");
+    macDots.className = "code-mac-dots";
+    macDots.innerHTML = `<i class="dot-red"></i><i class="dot-amber"></i><i class="dot-green"></i>`;
+    leftWrap.appendChild(macDots);
     leftWrap.appendChild(foldBtn);
     leftWrap.appendChild(langWrap);
 
@@ -1717,7 +1789,6 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       other.stableKey === this.stableKey &&
       other.lang === this.lang &&
-      other.codeText === this.codeText &&
       other.fencePrefix === this.fencePrefix &&
       other.codeLinesCount === this.codeLinesCount &&
       other.isCollapsed === this.isCollapsed &&
@@ -1791,16 +1862,23 @@ class HorizontalRuleWidget extends WidgetType {
     hr.className = "md-hr";
     hr.style.cursor = "pointer";
     hr.title = "点击编辑分割线 (---)";
+    hr.dataset.lineFrom = String(this.lineFrom);
     hr.addEventListener("click", (e) => {
       e.stopPropagation();
-      view.dispatch({ selection: { anchor: this.lineFrom } });
+      const targetPos = Number(hr.dataset.lineFrom ?? this.lineFrom);
+      view.dispatch({ selection: { anchor: Math.min(targetPos, view.state.doc.length) } });
       view.focus();
     });
     return hr;
   }
 
-  eq(other: HorizontalRuleWidget) {
-    return other.lineFrom === this.lineFrom;
+  updateDOM(dom: HTMLElement): boolean {
+    dom.dataset.lineFrom = String(this.lineFrom);
+    return true;
+  }
+
+  eq(_other: HorizontalRuleWidget) {
+    return true;
   }
 }
 
@@ -1858,18 +1936,25 @@ class TocWidget extends WidgetType {
       card.appendChild(list);
     }
 
+    card.dataset.linePos = String(this.linePos);
     card.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).classList.contains("cm-toc-item")) return;
       e.stopPropagation();
-      view.dispatch({ selection: { anchor: this.linePos } });
+      const targetPos = Number(card.dataset.linePos ?? this.linePos);
+      view.dispatch({ selection: { anchor: Math.min(targetPos, view.state.doc.length) } });
       view.focus();
     });
 
     return card;
   }
 
+  updateDOM(dom: HTMLElement): boolean {
+    dom.dataset.linePos = String(this.linePos);
+    return true;
+  }
+
   eq(other: TocWidget) {
-    return other.linePos === this.linePos && other.headingsSignature === this.headingsSignature;
+    return other.headingsSignature === this.headingsSignature;
   }
 }
 
@@ -1910,7 +1995,7 @@ class FootnoteRefWidget extends WidgetType {
   }
 
   eq(other: FootnoteRefWidget) {
-    return other.label === this.label && other.clickPos === this.clickPos;
+    return other.label === this.label;
   }
 }
 
@@ -2067,6 +2152,19 @@ function buildDecorations(view: EditorView): DecorationSet {
     }
   } else {
     visibleLineIntervals.push({ startLine: 1, endLine: doc.lines });
+  }
+
+  // 对视口外但处于折叠章节内的行，同样施加 cm-folded-section-line 隐藏类，防止超长章节折叠后尾部溢出视口高度 (Bug 1 修复)
+  if (foldedLinesSet.size > 0) {
+    foldedLinesSet.forEach((fLine) => {
+      const inVisible = visibleLineIntervals.some(
+        (iv) => fLine >= iv.startLine && fLine <= iv.endLine
+      );
+      if (!inVisible && fLine >= 1 && fLine <= doc.lines) {
+        const flObj = doc.line(fLine);
+        addDeco(flObj.from, flObj.from, Decoration.line({ class: "cm-folded-section-line" }));
+      }
+    });
   }
 
   for (const interval of visibleLineIntervals) {

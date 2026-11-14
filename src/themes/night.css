@@ -1,5 +1,14 @@
 /* ================= Typora Night 经典夜间主题 (night.css) ================= */
 :root, body.theme-night {
+  --surface-canvas: #1e2024;
+  --surface-panel: #25282c;
+  --surface-raised: #2c3036;
+  --surface-overlay: #272a30;
+  --surface-glass: rgba(39, 42, 48, 0.94);
+  --surface-sunken: #181a1d;
+  --surface-input: #1b1d21;
+  --code-bg: #26292e;
+  --code-header-bg: #2e3239;
   --bg-color: #1e1e1e;
   --text-color: #d4d4d4;
   --side-bar-bg-color: #252526;

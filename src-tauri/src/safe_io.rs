@@ -154,6 +154,54 @@ impl SafeIO {
             .collect()
     }
 
+    /// 解析跨平台持久化应用数据根目录（彻底替代易被系统重启清空的 temp_dir，解决 Bug 6）
+    pub fn resolve_app_data_root() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(appdata) = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA")) {
+                let p = PathBuf::from(appdata).join("Quilla");
+                if fs::create_dir_all(&p).is_ok() {
+                    return p;
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                let p = PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Quilla");
+                if fs::create_dir_all(&p).is_ok() {
+                    return p;
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+                let p = PathBuf::from(xdg).join("quilla");
+                if fs::create_dir_all(&p).is_ok() {
+                    return p;
+                }
+            } else if let Ok(home) = std::env::var("HOME") {
+                let p = PathBuf::from(home).join(".local").join("share").join("quilla");
+                if fs::create_dir_all(&p).is_ok() {
+                    return p;
+                }
+            }
+        }
+        let fallback = std::env::temp_dir().join("quilla-appdata");
+        let _ = fs::create_dir_all(&fallback);
+        fallback
+    }
+
+    fn resolve_draft_dir() -> PathBuf {
+        let d = Self::resolve_app_data_root().join("recovery-drafts");
+        let _ = fs::create_dir_all(&d);
+        d
+    }
+
     /// 非阻塞快速保存后台崩溃快照 (Draft Snapshot)
     pub fn save_draft_snapshot(
         file_id: &str,
@@ -161,7 +209,7 @@ impl SafeIO {
         content: &str,
         title: Option<String>,
     ) -> io::Result<PathBuf> {
-        let draft_dir = std::env::temp_dir().join("quilla-recovery-drafts");
+        let draft_dir = Self::resolve_draft_dir();
         fs::create_dir_all(&draft_dir)?;
 
         let timestamp = SystemTime::now()
@@ -195,7 +243,7 @@ impl SafeIO {
 
     /// 清理指定会话或文件的崩溃恢复草稿
     pub fn remove_draft_snapshot(file_id: &str) -> io::Result<()> {
-        let draft_dir = std::env::temp_dir().join("quilla-recovery-drafts");
+        let draft_dir = Self::resolve_draft_dir();
         let draft_path = draft_dir.join(Self::build_draft_filename(file_id));
         if draft_path.exists() {
             let _ = fs::remove_file(draft_path);
@@ -211,7 +259,7 @@ impl SafeIO {
 
     /// 读取磁盘上所有有效的崩溃快照草稿（自动清理超过 7 天的过期快照）
     pub fn load_all_draft_snapshots() -> Vec<DraftSnapshotRecord> {
-        let draft_dir = std::env::temp_dir().join("quilla-recovery-drafts");
+        let draft_dir = Self::resolve_draft_dir();
         if !draft_dir.exists() {
             return Vec::new();
         }
@@ -255,7 +303,7 @@ impl SafeIO {
     fn build_history_store_path(file_path: &str) -> PathBuf {
         let norm = file_path.replace('\\', "/").to_lowercase();
         let hash = Self::fnv1a_hash(&norm);
-        let history_dir = std::env::temp_dir().join("quilla-version-history");
+        let history_dir = Self::resolve_app_data_root().join("version-history");
         let _ = fs::create_dir_all(&history_dir);
         history_dir.join(format!("hist_{:016x}.json", hash))
     }
@@ -332,5 +380,28 @@ impl SafeIO {
         let serialized = serde_json::to_string(&list)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Self::atomic_write_with_options(&store_path, &serialized, false)
+    }
+
+    /// 当文件或上级目录在侧边栏被重命名时，同步迁移该文件的本地时间机器历史快照（Bug 6 修复）
+    pub fn migrate_file_history(old_path: &Path, new_path: &Path) {
+        if new_path.is_file() {
+            let old_str = old_path.to_string_lossy().to_string();
+            let new_str = new_path.to_string_lossy().to_string();
+            let old_store = Self::build_history_store_path(&old_str);
+            let new_store = Self::build_history_store_path(&new_str);
+            if old_store.exists() && old_store != new_store {
+                if let Ok(raw) = fs::read_to_string(&old_store) {
+                    if let Ok(mut list) = serde_json::from_str::<Vec<HistorySnapshotRecord>>(&raw) {
+                        for item in &mut list {
+                            item.file_path = new_str.clone();
+                        }
+                        if let Ok(serialized) = serde_json::to_string(&list) {
+                            let _ = Self::atomic_write_with_options(&new_store, &serialized, false);
+                        }
+                    }
+                }
+                let _ = fs::remove_file(&old_store);
+            }
+        }
     }
 }

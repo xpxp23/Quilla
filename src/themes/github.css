@@ -1,5 +1,14 @@
 /* ================= GitHub 经典主题 (github.css) ================= */
 :root {
+  --surface-canvas: #ffffff;
+  --surface-panel: #f6f8fa;
+  --surface-raised: #f0f3f6;
+  --surface-overlay: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.94);
+  --surface-sunken: #f8fafc;
+  --surface-input: #ffffff;
+  --code-bg: #f6f8fa;
+  --code-header-bg: #eaeef2;
   --bg-color: #ffffff;
   --text-color: #24292f;
   --side-bar-bg-color: #f6f8fa;

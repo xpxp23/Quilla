@@ -1,5 +1,14 @@
 /* ================= Typora Clear 清新商务主题 (clear.css) ================= */
 :root {
+  --surface-canvas: #fcfcfc;
+  --surface-panel: #f4f5f7;
+  --surface-raised: #eceff3;
+  --surface-overlay: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.94);
+  --surface-sunken: #f6f7f9;
+  --surface-input: #ffffff;
+  --code-bg: #f4f6f8;
+  --code-header-bg: #e9edf2;
   --bg-color: #ffffff;
   --text-color: #1e293b;
   --side-bar-bg-color: #f8fafc;

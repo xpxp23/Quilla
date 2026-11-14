@@ -158,8 +158,8 @@ export async function runAllRegressionTests(): Promise<void> {
     const medicalSample =
       "**下地时间**：由于主承重骨胫骨正常，若未伤及膝关节韧带，术后通常在伤口疼痛缓解后（数天至1~2周内）即可借助拐杖保护性下地部分负重，日常生活自理恢复较快；但剧烈运动需等待植骨逐步愈合（约3~6个月后根据复查X光决定）。";
 
-    const tokens = extractLineInlineTokens(medicalSample, []);
-    const subTokens = tokens.filter((t) => t.kind === "sub");
+    const { tokens } = extractLineInlineTokens(medicalSample, 0);
+    const subTokens = tokens.filter((t) => t.type === "subscript");
     assert.equal(
       subTokens.length,
       0,
@@ -189,9 +189,9 @@ export async function runAllRegressionTests(): Promise<void> {
 
     // 验证合法化学式下标 H~2~O 与数学上标 x^2^ 在双端均正常解析
     const validChemSample = "水分子式为 H~2~O，面积公式为 R^2^。";
-    const validTokens = extractLineInlineTokens(validChemSample, []);
-    assert.equal(validTokens.some((t) => t.kind === "sub"), true, "H~2~O 应正确识别为下标 Token");
-    assert.equal(validTokens.some((t) => t.kind === "sup"), true, "R^2^ 应正确识别为上标 Token");
+    const { tokens: validTokens } = extractLineInlineTokens(validChemSample, 0);
+    assert.equal(validTokens.some((t) => t.type === "subscript"), true, "H~2~O 应正确识别为下标 Token");
+    assert.equal(validTokens.some((t) => t.type === "superscript"), true, "R^2^ 应正确识别为上标 Token");
     const validHtml = renderInlineASTSync(parseInlineAST(validChemSample), { mode: "export" });
     assert.equal(validHtml, "水分子式为 H<sub>2</sub>O，面积公式为 R<sup>2</sup>。");
   }

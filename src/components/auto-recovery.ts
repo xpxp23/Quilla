@@ -178,6 +178,7 @@ function flushPendingRecoverySnapshot() {
     fileId: bucketKey,
     filePath,
     title,
+    persistDisk: true,
   }).catch(() => {});
 }
 
@@ -214,6 +215,8 @@ export function saveRecoverySnapshot(
       deltas,
       fileId: bucketKey,
       filePath,
+      title,
+      persistDisk: false,
     }).catch(() => {});
   }
 

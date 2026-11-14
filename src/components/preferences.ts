@@ -1,3 +1,4 @@
+import { getFontSizeScale } from "./theme-studio";
 import { invoke } from "@tauri-apps/api/core";
 import { showToast } from "./save-dialog";
 import { openThemeStudioModal } from "./theme-studio";
@@ -118,7 +119,8 @@ export function onPreferencesChange(cb: (prefs: AppPreferences) => void) {
 export function applyPreferencesToDOM(prefs: AppPreferences = currentPrefs) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  root.style.setProperty("--editor-font-size", `${prefs.fontSize}px`);
+  const scale = getFontSizeScale();
+  root.style.setProperty("--editor-font-size", `${Math.round(prefs.fontSize * scale * 10) / 10}px`);
   root.style.setProperty("--editor-line-height", String(prefs.lineHeight));
   root.style.setProperty("--editor-max-width", prefs.maxWidth);
   root.classList.toggle("show-code-line-numbers", prefs.showCodeLineNumbers);

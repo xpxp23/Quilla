@@ -768,22 +768,34 @@ export const docStructureField = StateField.define<DocStructure>({
       const lineBEnd = tr.state.doc.lineAt(toB);
       pivotLineA = lineAEnd.number;
 
-      // 检查旧文档受影响的所有行是否触及任何块级结构
-      for (let ln = lineAStart.number; ln <= lineAEnd.number; ln++) {
-        if (
-          isLineTouchingCachedStructure(value, ln) ||
-          isStructuralLineText(tr.startState.doc.line(ln).text)
-        ) {
-          canIncrementalShift = false;
-          return;
-        }
-      }
+      // 若是代码块内部单行打字 (deltaLines === 0) 且不触碰首尾围栏行与 ```/~~~，允许直接走 O(K) mapPos 快速通道 (瓶颈 3 修复)
+      const isPureInteriorCodeEdit =
+        deltaLines === 0 &&
+        lineAStart.number === lineAEnd.number &&
+        value.codeRanges.some(
+          (cr) => lineAStart.number > cr.startLine && lineAStart.number < cr.endLine
+        ) &&
+        !/^\s*(?:>\s*)*(`{3,}|~{3,})/.test(tr.startState.doc.line(lineAStart.number).text) &&
+        !/^\s*(?:>\s*)*(`{3,}|~{3,})/.test(tr.state.doc.line(lineBStart.number).text);
 
-      // 检查新文档变更后的所有行是否引入了新的块级定界符 (#, >, ```, ~~~, $$, |, ---)
-      for (let ln = lineBStart.number; ln <= lineBEnd.number; ln++) {
-        if (isStructuralLineText(tr.state.doc.line(ln).text)) {
-          canIncrementalShift = false;
-          return;
+      if (!isPureInteriorCodeEdit) {
+        // 检查旧文档受影响的所有行是否触及任何块级结构
+        for (let ln = lineAStart.number; ln <= lineAEnd.number; ln++) {
+          if (
+            isLineTouchingCachedStructure(value, ln) ||
+            isStructuralLineText(tr.startState.doc.line(ln).text)
+          ) {
+            canIncrementalShift = false;
+            return;
+          }
+        }
+
+        // 检查新文档变更后的所有行是否引入了新的块级定界符 (#, >, ```, ~~~, $$, |, ---)
+        for (let ln = lineBStart.number; ln <= lineBEnd.number; ln++) {
+          if (isStructuralLineText(tr.state.doc.line(ln).text)) {
+            canIncrementalShift = false;
+            return;
+          }
         }
       }
     });

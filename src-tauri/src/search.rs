@@ -574,8 +574,12 @@ impl WorkspaceIndex {
             for (ws_root_key, cache) in guard.iter_mut() {
                 if file_key.starts_with(ws_root_key) {
                     if let Some(ref doc) = parsed {
-                        cache.docs.insert(file_key.clone(), doc.clone());
-                        cache.index_single_doc_tokens(&file_key, doc);
+                        let existed_before = cache.docs.insert(file_key.clone(), doc.clone()).is_some();
+                        if existed_before {
+                            cache.rebuild_inverted_indices();
+                        } else {
+                            cache.index_single_doc_tokens(&file_key, doc);
+                        }
                     } else {
                         cache.docs.remove(&file_key);
                         cache.rebuild_inverted_indices();
@@ -685,6 +689,8 @@ impl WorkspaceIndex {
                         Some(prev) => prev.intersection(tok_docs).cloned().collect(),
                         None => tok_docs.clone(),
                     });
+                } else {
+                    candidate_keys = Some(HashSet::new());
                 }
             }
         }
@@ -692,12 +698,17 @@ impl WorkspaceIndex {
         let mut results: Vec<SearchMatch> = Vec::new();
 
         let doc_iter: Vec<(&String, &IndexedDoc)> = match candidate_keys {
-            Some(ref keys) if !keys.is_empty() => cache
-                .docs
-                .iter()
-                .filter(|(k, _)| keys.contains(*k))
-                .collect(),
-            _ => cache.docs.iter().collect(),
+            Some(ref keys) => {
+                if keys.is_empty() {
+                    return Vec::new();
+                }
+                cache
+                    .docs
+                    .iter()
+                    .filter(|(k, _)| keys.contains(*k))
+                    .collect()
+            }
+            None => cache.docs.iter().collect(),
         };
 
         for (_, doc) in doc_iter {

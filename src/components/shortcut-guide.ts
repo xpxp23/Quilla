@@ -29,7 +29,10 @@ function getShortcutList(): ShortcutItem[] {
     { category: "常用操作", name: "保存文档", keys: [mod, "S"] },
     { category: "常用操作", name: "另存为", keys: [mod, "Shift", "S"] },
     { category: "常用操作", name: "版本历史 / 时间机器", keys: [mod, "Alt", "H"], desc: "Myers Diff 对比与一键回滚" },
+    { category: "常用操作", name: "Git / WebDAV 同步与冲突合并", keys: [mod, "Alt", "S"], desc: "免插件增量同步与三方可视化合并" },
     { category: "常用操作", name: "双链知识图谱", keys: [mod, "G"], desc: "可视化局部/全局笔记关系网络" },
+    { category: "常用操作", name: "Canvas 无限白板与卡片编排", keys: [mod, "Alt", "C"], desc: "拖拽笔记章节与 ^block-id 连线组合" },
+    { category: "常用操作", name: "幻灯片演示模式 (激光笔/备注)", keys: ["F5"], desc: `或 ${mod}+Alt+P · 按 --- 切换全屏演讲` },
     { category: "常用操作", name: "主题与排版预设工作坊", keys: [mod, "Shift", "T"], desc: "字号缩放/段距/主题色/水印签名微调" },
     { category: "常用操作", name: "快速文件漫游", keys: [mod, "P"] },
     { category: "常用操作", name: "偏好设置中心", keys: [mod, ","] },
@@ -105,7 +108,7 @@ export function openShortcutGuide() {
         <div class="modal-title">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect><line x1="6" y1="8" x2="6.01" y2="8"></line><line x1="10" y1="8" x2="10.01" y2="8"></line><line x1="14" y1="8" x2="14.01" y2="8"></line><line x1="18" y1="8" x2="18.01" y2="8"></line><line x1="8" y1="16" x2="16" y2="16"></line></svg>
           <span>快捷键速查指南</span>
-          <span class="modal-badge">Quilla v0.11.0</span>
+          <span class="modal-badge">Quilla v0.12.0</span>
         </div>
         <button type="button" class="modal-close-btn" title="关闭 (Esc)">✕</button>
       </div>
