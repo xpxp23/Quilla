@@ -34,5 +34,8 @@ Cargo.lock
 # Executables & archives
 *.exe
 *.zip
+*.deb
+*.tar.gz
+dist-ci-kylin/
 .preview/
 .workbuddy/
