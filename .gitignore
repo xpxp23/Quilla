@@ -1,31 +1,38 @@
-# Rust build artifacts
-target/
-src-tauri/target/
-**/*.rs.bk
-Cargo.lock
-
-# Node.js dependencies & build outputs
-node_modules/
-dist/
-dist-ssr/
-*.local
-
-# Executables, archives & release binaries
-*.exe
-*.zip
-release/
-out.txt
-
-# Editor & OS files
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
+# Logs
+logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
-# 主题验收截图
+node_modules
+dist
+dist-ssr
+dist-kylin
+.kylin-compat-sysroot
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri build artifacts
+src-tauri/target
+src-tauri/WixTools
+src-tauri/Cargo.lock
+Cargo.lock
+
+# Executables & archives
+*.exe
+*.zip
 .preview/
+.workbuddy/

@@ -149,6 +149,21 @@ async function refreshFileAssociationStatus(modal: HTMLElement) {
       contextCheck.checked = status.hasContextMenu;
     }
 
+    if (status.platform === "linux") {
+      const ctxLabelEl = modal.querySelector("#pref-context-menu-label") as HTMLElement | null;
+      const ctxDescEl = modal.querySelector("#pref-context-menu-desc") as HTMLElement | null;
+      const assocDescEl = modal.querySelector("#pref-assoc-desc") as HTMLElement | null;
+      if (ctxLabelEl) {
+        ctxLabelEl.textContent = "银河麒麟牡丹文件管理器 (Peony / XDG) 右键菜单集成";
+      }
+      if (ctxDescEl) {
+        ctxDescEl.textContent = "在银河麒麟 Peony / Nautilus 文件管理器右键菜单中注册「用 Quilla (羽墨) 打开」与工作区文件夹打开入口";
+      }
+      if (assocDescEl) {
+        assocDescEl.textContent = "自动生成 ~/.local/share/applications/quilla.desktop 与 XDG MIME 关联；双击任意 .md 自动由当前单实例秒开";
+      }
+    }
+
     const registered = Boolean(
       status.isDefaultMd || status.isRegisteredProgid || status.isRegistered
     );
@@ -316,7 +331,7 @@ export function openPreferencesModal() {
                 默认打开 Markdown 文件
                 <span class="pref-status-pill idle" id="pref-assoc-status-badge">检测中...</span>
               </span>
-              <span class="pref-desc">写入系统 ProgID / OpenWithProgids 注册表并唤起 OpenWith.exe 原生打开方式弹窗；双击任意 .md 自动由当前运行实例单窗口秒开</span>
+              <span class="pref-desc" id="pref-assoc-desc">写入系统 ProgID / OpenWithProgids 注册表并唤起 OpenWith.exe 原生打开方式弹窗；双击任意 .md 自动由当前运行实例单窗口秒开</span>
               <div class="pref-ext-checks" id="pref-ext-checks">
                 <label class="pref-ext-chip"><input type="checkbox" value=".md" checked /> .md</label>
                 <label class="pref-ext-chip"><input type="checkbox" value=".markdown" checked /> .markdown</label>
@@ -331,8 +346,8 @@ export function openPreferencesModal() {
 
           <div class="pref-row">
             <div class="pref-label-group">
-              <span class="pref-label">资源管理器右键菜单集成</span>
-              <span class="pref-desc">在 Windows 文件资源管理器右键菜单中添加「用 Quilla (羽墨) 打开」快捷入口</span>
+              <span class="pref-label" id="pref-context-menu-label">资源管理器右键菜单集成</span>
+              <span class="pref-desc" id="pref-context-menu-desc">在 Windows 文件资源管理器右键菜单中添加「用 Quilla (羽墨) 打开」快捷入口</span>
             </div>
             <div class="pref-control">
               <input type="checkbox" id="pref-context-menu-check" class="pref-checkbox" />

@@ -10,6 +10,30 @@ export interface DragDropCallbacks {
 }
 
 /**
+ * 将 Linux / 银河麒麟 Peony 文件管理器拖拽产生的 `file://` URI 解码为本地物理路径
+ */
+export function parseDroppedFileUri(rawUri: string): string | null {
+  const trimmed = rawUri.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+  if (trimmed.startsWith("file://localhost/")) {
+    try {
+      return decodeURIComponent(trimmed.slice("file://localhost".length));
+    } catch {
+      return trimmed.slice("file://localhost".length);
+    }
+  }
+  if (trimmed.startsWith("file://")) {
+    const rest = trimmed.slice("file://".length);
+    try {
+      return decodeURIComponent(rest);
+    } catch {
+      return rest;
+    }
+  }
+  return null;
+}
+
+/**
  * 将本地图片或 Base64 图像一键上传至当前配置的图床 (PicGo / GitHub / 自定义 Webhook)
  */
 export async function uploadImageAssetToBed(options: {
@@ -230,10 +254,15 @@ export function setupImageAndDropHandlers(
       // 标准浏览器环境静默降级
     });
 
-  // 3. 浏览器原生外部文件 drag/drop 事件兜底
+  // 3. 浏览器原生外部文件 drag/drop 事件兜底 (兼容银河麒麟 Peony / Linux XDG text/uri-list)
   dom.addEventListener("dragover", (e: DragEvent) => {
     const types = e.dataTransfer?.types;
-    if (!types || !Array.from(types).includes("Files")) return;
+    if (
+      !types ||
+      (!Array.from(types).includes("Files") && !Array.from(types).includes("text/uri-list"))
+    ) {
+      return;
+    }
     e.preventDefault();
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = "copy";
@@ -249,7 +278,8 @@ export function setupImageAndDropHandlers(
 
   dom.addEventListener("drop", async (e: DragEvent) => {
     const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
+    const uriList = e.dataTransfer?.getData("text/uri-list") || "";
+    if ((!files || files.length === 0) && !uriList.includes("file://")) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -258,11 +288,25 @@ export function setupImageAndDropHandlers(
     const dropPos =
       view.posAtCoords({ x: e.clientX, y: e.clientY }) ?? view.state.selection.main.head;
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const localPath = (file as any).path || "";
-      if (localPath) {
-        handleDroppedPath(localPath, dropPos);
+    let handledCount = 0;
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const localPath = (file as any).path || "";
+        if (localPath) {
+          handledCount++;
+          handleDroppedPath(localPath, dropPos);
+        }
+      }
+    }
+
+    // 银河麒麟 Peony / Linux WebKitGTK 下 File.path 可能为空，从 text/uri-list 提取本地路径
+    if (handledCount === 0 && uriList) {
+      for (const rawLine of uriList.split(/\r?\n/)) {
+        const parsed = parseDroppedFileUri(rawLine);
+        if (parsed) {
+          handleDroppedPath(parsed, dropPos);
+        }
       }
     }
   });

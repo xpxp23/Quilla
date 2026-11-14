@@ -1,7 +1,7 @@
 [package]
 name = "quilla"
-version = "0.12.0"
-description = "Quilla (羽墨) v0.11.0 - A lightweight, high-performance Markdown editor rewritten in Rust with Tauri v2"
+version = "0.13.0"
+description = "Quilla (羽墨) v0.13.0 - A lightweight, high-performance Markdown editor rewritten in Rust with Tauri v2 (Windows / Kylin OS Linux / Hygon C86 3350)"
 authors = ["Quilla Team"]
 edition = "2021"
 
@@ -14,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["custom-protocol"] }
+tauri-runtime = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ropey = "1.6"

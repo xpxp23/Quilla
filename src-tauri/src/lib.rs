@@ -14,6 +14,109 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 const SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:45789";
 
+/// 银河麒麟 (Kylin OS V10 / UKUI) 与海光 3350 (Hygon C86 3350) 运行时环境预初始化：
+/// 1. 自动注入 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（除非用户显式设置 `QUILLA_ALLOW_DMABUF=1`），
+///    彻底根治 WebKitGTK 在银河麒麟 V10 + 景嘉微 (JM7200/JM9) / 海光集显 / Mesa 驱动下的启动白屏、闪屏与 EGL BadMatch 崩溃；
+/// 2. 检测到景嘉微显卡、llvmpipe 软件渲染或传入 `--disable-gpu` / `--safe-render` 时，自动启用 `WEBKIT_DISABLE_COMPOSITING_MODE=1`；
+/// 3. 在 UKUI / Wayland 混合会话下优先注入 `GDK_BACKEND=x11,wayland`，确保无边框窗口拖拽、置顶 (`set_always_on_top`) 与多窗口定位稳定工作；
+/// 4. 默认禁用易在麒麟 UKUI D-Bus 下超时的 `GTK_USE_PORTAL`（除非设置 `QUILLA_USE_PORTAL=1`），使打开/保存文件对话框毫秒级响应；
+/// 5. 针对海光 3350 (8核16线程) 初始化 Rayon 全局并行线程池，最大化全文倒排索引与知识图谱计算吞吐量。
+pub fn init_linux_kylin_environment(args: &[String]) {
+    #[cfg(target_os = "linux")]
+    {
+        let allow_dmabuf = std::env::var("QUILLA_ALLOW_DMABUF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow_dmabuf && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+
+        let force_safe_render = args
+            .iter()
+            .any(|a| a == "--disable-gpu" || a == "--safe-render")
+            || std::env::var("QUILLA_SAFE_RENDER")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+        let has_jm_gpu = std::path::Path::new("/proc/driver/jmgpu").exists()
+            || std::path::Path::new("/dev/jmgpu").exists();
+
+        if (force_safe_render || has_jm_gpu)
+            && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none()
+        {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+
+        if std::env::var_os("GDK_BACKEND").is_none() {
+            if let Ok(session_type) = std::env::var("XDG_SESSION_TYPE") {
+                if session_type.eq_ignore_ascii_case("wayland") {
+                    std::env::set_var("GDK_BACKEND", "x11,wayland");
+                }
+            }
+        }
+
+        let use_portal = std::env::var("QUILLA_USE_PORTAL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !use_portal && std::env::var_os("GTK_USE_PORTAL").is_none() {
+            std::env::set_var("GTK_USE_PORTAL", "0");
+        }
+
+        // 兼容银河麒麟预装 Fcitx / Fcitx5 / 搜狗输入法信创版
+        if std::env::var_os("GTK_IM_MODULE").is_none() {
+            if let Ok(xmod) = std::env::var("XMODIFIERS") {
+                if xmod.contains("fcitx") {
+                    std::env::set_var("GTK_IM_MODULE", "fcitx");
+                } else if xmod.contains("ibus") {
+                    std::env::set_var("GTK_IM_MODULE", "ibus");
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = args;
+    }
+
+    // 针对海光 3350 (8C/16T) 或多核 CPU 配置 Rayon 并行工作线程池
+    let logical_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+        .clamp(2, 16);
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(logical_threads)
+        .thread_name(|idx| format!("quilla-hygon-worker-{}", idx))
+        .build_global();
+}
+
+/// 解析命令行或 Linux `.desktop` (`%U` / `%F`) 传入的文件/目录参数，
+/// 自动剥离 `file://` 协议头并解码 `%XX` UTF-8 中文路径（修复银河麒麟 Peony 文件管理器双击中文路径失效问题）
+pub fn normalize_cli_path_arg(raw_arg: &str) -> Option<String> {
+    let trimmed = raw_arg.trim().trim_matches('"').trim_matches('\'');
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return None;
+    }
+    let without_scheme = if let Some(rest) = trimmed.strip_prefix("file://localhost") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("file://") {
+        rest
+    } else {
+        trimmed
+    };
+    let decoded = commands::urlencoding_decode(without_scheme);
+    let path = std::path::Path::new(&decoded);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    if resolved.exists() {
+        Some(resolved.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
 /// 单实例文件接管守卫 (tauri-plugin-single-instance 原生零依赖实现)：
 /// - 当已有 Quilla 实例运行且未传入 `--new-window` 时，将双击打开的 `.md` 文件或工作区目录通过本地回环 IPC 秒级转发给主实例并立即退出；
 /// - 主实例监听本地回环端口，收到外部双击文件请求后自动唤醒窗口、置顶聚焦并派发 `quilla-open-external-file` 事件在新标签页打开。
@@ -77,6 +180,8 @@ fn start_single_instance_ipc_server(app_handle: tauri::AppHandle) {
 
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
+    init_linux_kylin_environment(&args);
+
     let mut initial_file = None;
     let mut cli_paths: Vec<String> = Vec::new();
     let mut is_new_window = false;
@@ -84,24 +189,11 @@ pub fn run() {
         for arg in &args[1..] {
             if arg == "--new-window" {
                 is_new_window = true;
-            } else if !arg.starts_with('-') {
-                let cleaned = arg
-                    .trim_matches('"')
-                    .trim_start_matches("file://")
-                    .to_string();
-                let path = std::path::Path::new(&cleaned);
-                let resolved = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    std::env::current_dir()
-                        .unwrap_or_default()
-                        .join(path)
-                };
-                if resolved.exists() {
-                    let s = resolved.to_string_lossy().to_string();
-                    cli_paths.push(s.clone());
-                    initial_file = Some(s);
-                }
+            } else if arg == "--disable-gpu" || arg == "--safe-render" {
+                continue;
+            } else if let Some(resolved_str) = normalize_cli_path_arg(arg) {
+                cli_paths.push(resolved_str.clone());
+                initial_file = Some(resolved_str);
             }
         }
     }
@@ -204,6 +296,9 @@ pub fn run() {
             commands::window_is_maximized,
             commands::window_close,
             commands::window_set_always_on_top,
+            commands::window_start_dragging,
+            commands::window_start_resize_dragging,
+            commands::get_runtime_platform_info,
             commands::create_file,
             commands::create_folder,
             commands::rename_path,

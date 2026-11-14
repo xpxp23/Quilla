@@ -5771,3 +5771,45 @@ body.theme-night .ty-recovery-banner {
   z-index: 30;
 }
 
+/* ================= v0.13.0 银河麒麟 UKUI / Linux 无边框窗口八向边缘缩放热区 ================= */
+#quilla-window-resize-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+body.window-is-maximized #quilla-window-resize-layer {
+  display: none !important;
+}
+
+.quilla-resize-handle {
+  position: fixed;
+  pointer-events: auto;
+  z-index: 9999;
+}
+
+.quilla-resize-handle.dir-n {
+  top: 0; left: 6px; right: 6px; height: 4px; cursor: ns-resize;
+}
+.quilla-resize-handle.dir-s {
+  bottom: 0; left: 6px; right: 6px; height: 4px; cursor: ns-resize;
+}
+.quilla-resize-handle.dir-w {
+  left: 0; top: 6px; bottom: 6px; width: 4px; cursor: ew-resize;
+}
+.quilla-resize-handle.dir-e {
+  right: 0; top: 6px; bottom: 6px; width: 4px; cursor: ew-resize;
+}
+.quilla-resize-handle.dir-nw {
+  top: 0; left: 0; width: 8px; height: 8px; cursor: nwse-resize;
+}
+.quilla-resize-handle.dir-se {
+  bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize;
+}
+.quilla-resize-handle.dir-ne {
+  top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize;
+}
+.quilla-resize-handle.dir-sw {
+  bottom: 0; left: 0; width: 8px; height: 8px; cursor: nesw-resize;
+}

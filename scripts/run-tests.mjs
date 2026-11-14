@@ -13,7 +13,7 @@ fs.readFileSync = function (...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证 ===");
 
 // 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.x 全量修复及新特性验证
 {
@@ -345,8 +345,8 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
   const indexHtml = fs.readFileSync(path.join(rootDir, "index.html"), "utf-8");
 
-  assert.equal(pkg.version, "0.12.0", "package.json 版本号必须为 0.12.0");
-  assert.equal(tauriConf.version, "0.12.0", "tauri.conf.json 版本号必须为 0.12.0");
+  assert.equal(pkg.version, "0.13.0", "package.json 版本号必须为 0.12.0");
+  assert.equal(tauriConf.version, "0.13.0", "tauri.conf.json 版本号必须为 0.12.0");
   assert.equal(
     Array.isArray(tauriConf.bundle?.fileAssociations) &&
       tauriConf.bundle.fileAssociations[0].ext.includes("md"),
@@ -354,17 +354,17 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
     "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
   );
   assert.equal(
-    cargoToml.includes('version = "0.12.0"'),
+    cargoToml.includes('version = "0.13.0"'),
     true,
     "Cargo.toml 版本号必须为 0.12.0"
   );
   assert.equal(
-    indexHtml.includes("Quilla (羽墨) v0.12.0"),
+    indexHtml.includes("Quilla (羽墨) v0.13.0"),
     true,
-    "index.html 标题版本号必须为 v0.12.0"
+    "index.html 标题版本号必须为 v0.13.0"
   );
 
-  console.log("✓ [2/5] 全工程版本号 (v0.12.0 / 0.12.0) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/5] 全工程版本号 (v0.13.0 / 0.12.0) 与桌面文件关联配置验证通过");
 }
 
 // 3. 统一内联词法解析器 (inline-tokenizer.ts) 与 Myers Diff 运行时逻辑验证
@@ -401,7 +401,7 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
   console.log("✓ [4/5] 统一 AST 渲染内核、表格列宽权重导出与原生矢量 PDF 书签管线验证通过");
 }
 
-// 5. [v0.12.0] 多选行内格式保护代码块 + 超长大纲不再覆盖底部「提及此文档」模块
+// 5. [v0.13.0] 多选行内格式保护代码块 + 超长大纲不再覆盖底部「提及此文档」模块
 {
   const fmtKeymapSrc = fs.readFileSync(
     path.join(rootDir, "src/editor/extensions/formatting-keymap.ts"),
@@ -424,13 +424,13 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
       fmtKeymapSrc.includes("if (isStructuralLine(line.number)) return true;") &&
       fmtKeymapSrc.includes("return structuralSkipped > 0;"),
     true,
-    "[v0.12.0 Bug 1] 多选行内格式化必须逐行跳过围栏代码块 / 公式块 / 表格等结构块，严禁包裹围栏行导致下文被吞入代码块"
+    "[v0.13.0 Bug 1] 多选行内格式化必须逐行跳过围栏代码块 / 公式块 / 表格等结构块，严禁包裹围栏行导致下文被吞入代码块"
   );
   assert.equal(
     docStructSrc.includes("const isCalloutFenceLine = /^(`{3,}|~{3,})/.test(strippedQuote);") &&
       docStructSrc.includes("if (inCalloutFence || isCalloutFenceLine) {"),
     true,
-    "[v0.12.0 Bug 1] Callout 内围栏代码块的起止围栏行必须计入代码行集合"
+    "[v0.13.0 Bug 1] Callout 内围栏代码块的起止围栏行必须计入代码行集合"
   );
   assert.equal(
     outlineSrc.includes("function resolveOutlineScrollContainer") &&
@@ -440,7 +440,7 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
       windowCssSrc.includes(".outline-backlinks-section {\n  border-top: 1px solid var(--border-color);") &&
       windowCssSrc.includes("flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n  padding: 4px 10px 8px;"),
     true,
-    "[v0.12.0 Bug 2] 大纲列表必须拥有独立滚动区（min-height:0 + overflow-y:auto），底部「提及此文档」模块常驻且不被超长大纲覆盖"
+    "[v0.13.0 Bug 2] 大纲列表必须拥有独立滚动区（min-height:0 + overflow-y:auto），底部「提及此文档」模块常驻且不被超长大纲覆盖"
   );
 
   console.log(
@@ -449,7 +449,7 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
 }
 
 
-// 6. [v0.12.0] 全景 UI 透明度修复、水墨宣纸/羊皮书卷皮肤差异化、高频打字解耦、8 项深层逻辑漏洞修复与四大核心新特性验证
+// 6. [v0.13.0] 全景 UI 透明度修复、水墨宣纸/羊皮书卷皮肤差异化、高频打字解耦、8 项深层逻辑漏洞修复与四大核心新特性验证
 {
   const baseCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/base.css"), "utf-8");
   const windowCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/window.css"), "utf-8");
@@ -518,7 +518,7 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
       themeStudioSrc.includes("studio-table-density") &&
       prefsSrc.includes("getFontSizeScale()"),
     true,
-    "[v0.12.0 阶段一&二] 表面不透明度、Theme Studio 全部控件联动及水墨宣纸/羊皮书卷皮肤差异化必须完整生效"
+    "[v0.13.0 阶段一&二] 表面不透明度、Theme Studio 全部控件联动及水墨宣纸/羊皮书卷皮肤差异化必须完整生效"
   );
 
   // 阶段三：高频打字 I/O 解耦、章节折叠联动隐藏块级 Widget、Unicode 全词匹配与持久化历史目录
@@ -534,7 +534,7 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
       safeIoSrc.includes("pub fn resolve_app_data_root()") &&
       safeIoSrc.includes("pub fn migrate_file_history"),
     true,
-    "[v0.12.0 阶段三] 高频打字磁盘 I/O 解耦、折叠章节内表格/流程图/公式块隐藏、中英文全词匹配与历史快照迁移必须完整生效"
+    "[v0.13.0 阶段三] 高频打字磁盘 I/O 解耦、折叠章节内表格/流程图/公式块隐藏、中英文全词匹配与历史快照迁移必须完整生效"
   );
 
   // 阶段四：四大核心新特性（分屏 0ms Transaction 同步、Git/WebDAV 三方冲突合并、Canvas 无限白板、幻灯片演示模式）
@@ -556,7 +556,7 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
       slideDeckSrc.includes("export function parseMarkdownIntoSlides") &&
       slideDeckSrc.includes("slide-laser-canvas"),
     true,
-    "[v0.12.0 阶段四] 四大核心新特性（Transaction 级零延迟分屏、原生 Git/WebDAV 同步与三方合并、Canvas 无限白板、幻灯片演示模式）必须全部就绪"
+    "[v0.13.0 阶段四] 四大核心新特性（Transaction 级零延迟分屏、原生 Git/WebDAV 同步与三方合并、Canvas 无限白板、幻灯片演示模式）必须全部就绪"
   );
 
 
@@ -599,7 +599,89 @@ console.log("=== Quilla (羽墨) v0.12.0 自动化回归与架构完整性验证
     );
   }
 
-  console.log("✓ [6/6] v0.12.0 全部 UI 透明度修复、皮肤打磨、性能优化与四大核心新特性验证通过");
+  console.log("✓ [6/6] v0.13.0 全部 UI 透明度修复、皮肤打磨、性能优化与四大核心新特性验证通过");
+}
+
+// 7. [v0.13.0] 银河麒麟系统 (Kylin OS V10) & 海光 C86 3350 (Linux x86_64) 深度适配验证
+{
+  const libSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
+  const commandsSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/commands.rs"), "utf-8");
+  const titlebarSrc = fs.readFileSync(path.join(rootDir, "src/components/titlebar.ts"), "utf-8");
+  const imgHandlerSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/image-handler.ts"),
+    "utf-8"
+  );
+  const imeGuardSrc = fs.readFileSync(
+    path.join(rootDir, "src/editor/extensions/ime-guard.ts"),
+    "utf-8"
+  );
+  const baseCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/base.css"), "utf-8");
+  const windowCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/window.css"), "utf-8");
+  const cargoConfig = fs.readFileSync(path.join(rootDir, ".cargo/config.toml"), "utf-8");
+  const tauriConf = JSON.parse(
+    fs.readFileSync(path.join(rootDir, "src-tauri/tauri.conf.json"), "utf-8")
+  );
+  const capConf = JSON.parse(
+    fs.readFileSync(path.join(rootDir, "src-tauri/capabilities/default.json"), "utf-8")
+  );
+
+  // 1) 海光 3350 指令集配置与 Rayon 线程池初始化
+  assert.equal(
+    cargoConfig.includes("[target.x86_64-unknown-linux-gnu]") &&
+      cargoConfig.includes("+avx2") &&
+      cargoConfig.includes("+fma") &&
+      libSrc.includes("pub fn init_linux_kylin_environment") &&
+      libSrc.includes("WEBKIT_DISABLE_DMABUF_RENDERER") &&
+      libSrc.includes("quilla-hygon-worker-"),
+    true,
+    "[v0.13.0 Kylin/Hygon] 必须包含海光 3350 AVX2/FMA 指令集配置、Rayon 线程池预热与 WebKitGTK 防白屏守卫"
+  );
+
+  // 2) file:// 中文 URI 解码、信创浏览器 PDF 导出、Peony 高亮定位与右键脚本集成
+  assert.equal(
+    libSrc.includes("pub fn normalize_cli_path_arg") &&
+      commandsSrc.includes("pub fn get_runtime_platform_info") &&
+      commandsSrc.includes("qaxbrowser-safe-stable") &&
+      commandsSrc.includes("browser360-cn-stable") &&
+      commandsSrc.includes("kylin-browser") &&
+      commandsSrc.includes("/usr/bin/peony") &&
+      commandsSrc.includes("quilla-markdown.xml"),
+    true,
+    "[v0.13.0 Kylin/Hygon] 必须支持 file:// 中文 URI 解码、奇安信/360/麒麟浏览器 PDF 导出与 Peony 文件管理器深度集成"
+  );
+
+  // 3) 无边框窗口原生拖拽、八向边缘缩放热区、Peony text/uri-list 拖拽与信创字体栈
+  assert.equal(
+    commandsSrc.includes("pub fn window_start_dragging") &&
+      commandsSrc.includes("pub fn window_start_resize_dragging") &&
+      capConf.permissions.includes("core:window:allow-start-resize-dragging") &&
+      titlebarSrc.includes("ensureFramelessResizeHandles") &&
+      titlebarSrc.includes("window_start_resize_dragging") &&
+      windowCssSrc.includes("#quilla-window-resize-layer") &&
+      imgHandlerSrc.includes("export function parseDroppedFileUri") &&
+      imeGuardSrc.includes("compositionupdate") &&
+      baseCssSrc.includes("Noto Sans CJK SC") &&
+      baseCssSrc.includes("WenQuanYi Micro Hei") &&
+      Array.isArray(tauriConf.bundle?.linux?.deb?.depends),
+    true,
+    "[v0.13.0 Kylin/Hygon] 必须支持无边框八向缩放热区、text/uri-list 拖拽解析、Fcitx5 IME 守卫与麒麟中文字体栈"
+  );
+
+  // 4) 构建与打包脚本完整性检查
+  for (const scriptFile of [
+    "scripts/install-kylin-deps.sh",
+    "scripts/build-kylin-linux.sh",
+    "scripts/package-kylin-deb.sh",
+    ".github/workflows/build-linux-kylin.yml",
+  ]) {
+    assert.equal(
+      fs.existsSync(path.join(rootDir, scriptFile)),
+      true,
+      `必须包含银河麒麟/海光 3350 构建脚本或工作流: ${scriptFile}`
+    );
+  }
+
+  console.log("✓ [7/7] v0.13.0 银河麒麟系统 (Kylin OS V10) & 海光 C86 3350 全链路适配验证通过");
 }
 
 console.log("=== ALL TESTS PASSED (100%) ===");

@@ -1,0 +1,12 @@
+# Quilla (羽墨) Cargo 构建与海光 3350 (Hygon C86 3350) / 银河麒麟 V10 硬件加速配置
+# 海光 3350 基于 x86_64 Zen 架构 (8核16线程)，完整支持 SSE4.2, AVX, AVX2, FMA, BMI1/2, LZCNT, POPCNT, AES, SHA 指令集。
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+  "-C", "target-feature=+sse4.2,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+popcnt,+aes",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN/lib:/opt/quilla/lib"
+]
+
+[env]
+# 默认为银河麒麟/Linux 构建开启增量与并行编译优化
+CARGO_TERM_COLOR = "always"

@@ -59,23 +59,36 @@ pub struct FileAssociationStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePlatformInfo {
+    pub platform: String,
+    pub arch: String,
+    pub distro_name: String,
+    pub desktop_env: String,
+    pub cpu_model: String,
+    pub is_kylin: bool,
+    pub is_hygon: bool,
+    pub logical_cores: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageBedConfig {
     pub provider: String, // "picgo" | "github" | "custom"
-    #[serde(default)]
+    #[serde(default, alias = "picgoUrl")]
     pub picgo_url: String,
-    #[serde(default)]
+    #[serde(default, alias = "githubRepo")]
     pub github_repo: String, // e.g. "username/repo"
-    #[serde(default)]
+    #[serde(default, alias = "githubBranch")]
     pub github_branch: String, // e.g. "main"
-    #[serde(default)]
+    #[serde(default, alias = "githubToken")]
     pub github_token: String,
-    #[serde(default)]
+    #[serde(default, alias = "githubPath", alias = "githubPathPrefix")]
     pub github_path: String, // e.g. "images"
-    #[serde(default)]
+    #[serde(default, alias = "githubCustomDomain")]
     pub github_custom_domain: String, // e.g. "https://fastly.jsdelivr.net/gh/username/repo@main"
-    #[serde(default)]
+    #[serde(default, alias = "customUploadUrl")]
     pub custom_upload_url: String,
-    #[serde(default)]
+    #[serde(default, alias = "customAuthHeader")]
     pub custom_auth_header: String,
 }
 
@@ -93,6 +106,89 @@ fn resolve_window_workspace(window: &tauri::Window, state: &AppState) -> Option<
         .lock()
         .ok()
         .and_then(|ws| ws.clone())
+}
+
+#[tauri::command]
+pub fn get_runtime_platform_info() -> RuntimePlatformInfo {
+    let platform = std::env::consts::OS.to_string();
+    let arch = std::env::consts::ARCH.to_string();
+    let logical_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut distro_name = String::from("Linux");
+        let mut is_kylin = Path::new("/etc/kylin-release").exists()
+            || Path::new("/etc/ukui-version").exists();
+        if let Ok(os_rel) = fs::read_to_string("/etc/os-release") {
+            let lower = os_rel.to_lowercase();
+            if lower.contains("kylin") || os_rel.contains("麒麟") {
+                is_kylin = true;
+            }
+            for line in os_rel.lines() {
+                if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
+                    distro_name = val.trim_matches('"').trim().to_string();
+                    break;
+                }
+            }
+        }
+
+        let desktop_env = std::env::var("XDG_CURRENT_DESKTOP")
+            .or_else(|_| std::env::var("DESKTOP_SESSION"))
+            .unwrap_or_else(|_| {
+                if is_kylin {
+                    "UKUI".to_string()
+                } else {
+                    "X11".to_string()
+                }
+            });
+
+        let mut cpu_model = String::from("x86_64 Processor");
+        let mut is_hygon = false;
+        if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
+            let lower = cpuinfo.to_lowercase();
+            if lower.contains("hygon") || lower.contains("3350") || cpuinfo.contains("海光") {
+                is_hygon = true;
+            }
+            for line in cpuinfo.lines() {
+                if line.starts_with("model name") {
+                    if let Some((_, val)) = line.split_once(':') {
+                        let trimmed = val.trim();
+                        if !trimmed.is_empty() {
+                            cpu_model = trimmed.to_string();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return RuntimePlatformInfo {
+            platform,
+            arch,
+            distro_name,
+            desktop_env,
+            cpu_model,
+            is_kylin,
+            is_hygon,
+            logical_cores,
+        };
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        RuntimePlatformInfo {
+            platform: platform.clone(),
+            arch,
+            distro_name: platform,
+            desktop_env: "Native".to_string(),
+            cpu_model: "Standard CPU".to_string(),
+            is_kylin: false,
+            is_hygon: false,
+            logical_cores,
+        }
+    }
 }
 
 #[tauri::command]
@@ -737,10 +833,11 @@ pub async fn select_export_pdf_path(default_name: Option<String>) -> Result<Opti
     Ok(file.map(|p| p.to_string_lossy().to_string()))
 }
 
-/// 出版级原生矢量 PDF 导出管线 (v0.9 增强)：
+/// 出版级原生矢量 PDF 导出管线 (v0.9 增强 & v0.13.0 银河麒麟信创浏览器全兼容)：
 /// - 支持 `--no-pdf-header-footer` 与 `--print-to-pdf-no-header` 彻底消除浏览器默认页眉页脚
 /// - 支持 `--generate-pdf-document-outline` 自动从 H1~H6 标题生成原生 PDF 书签大纲树 (Outline Tree)
 /// - 在 Windows 下启用 `CREATE_NO_WINDOW` 静默无黑框渲染
+/// - 在银河麒麟 V10 下自动探测 Chromium、Chrome、Edge、奇安信可信浏览器、360安全浏览器信创版、红莲花与麒麟浏览器，并兼容旧内核 `--headless` 回退
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfBookmarkEntry {
     pub level: usize,
@@ -818,57 +915,96 @@ pub async fn export_pdf_document(
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
             "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
             "/usr/bin/microsoft-edge",
+            "/usr/bin/microsoft-edge-stable",
+            "/usr/bin/brave-browser",
+            "/usr/bin/qaxbrowser-safe-stable",
+            "/usr/bin/qaxbrowser",
+            "/opt/qianxin.com/qaxbrowser/qaxbrowser",
+            "/usr/bin/browser360-cn-stable",
+            "/usr/bin/360se",
+            "/opt/360/360se/360se",
+            "/usr/bin/kylin-browser",
+            "/usr/bin/htbrowser",
+            "/opt/htbrowser/htbrowser",
         ] {
             let pb = PathBuf::from(bin_name);
-            if pb.exists() {
+            if pb.exists() && !candidate_bins.contains(&pb) {
                 candidate_bins.push(pb);
+            }
+        }
+        // 动态从 PATH 环境变量补充查找信创/Linux 浏览器
+        for cmd_name in [
+            "chromium",
+            "chromium-browser",
+            "google-chrome",
+            "google-chrome-stable",
+            "qaxbrowser-safe-stable",
+            "qaxbrowser",
+            "browser360-cn-stable",
+            "kylin-browser",
+            "microsoft-edge",
+        ] {
+            if let Ok(out) = std::process::Command::new("which").arg(cmd_name).output() {
+                if out.status.success() {
+                    let p_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !p_str.is_empty() {
+                        let pb = PathBuf::from(p_str);
+                        if pb.exists() && !candidate_bins.contains(&pb) {
+                            candidate_bins.push(pb);
+                        }
+                    }
+                }
             }
         }
     }
 
     let _page_sz = page_size.unwrap_or_else(|| "A4".to_string());
     let enable_outline = generate_outline.unwrap_or(true);
-    let mut last_err = String::from("未检测到系统原生 Chromium/Edge 矢量渲染组件");
+    let mut last_err = String::from("未检测到系统原生 Chromium/Edge/奇安信/麒麟 矢量渲染浏览器组件");
 
     for bin in candidate_bins {
-        let mut cmd = std::process::Command::new(&bin);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        // 优先尝试现代 `--headless=new`，若信创浏览器内核为旧版 Chromium 则自动回退 `--headless`
+        for headless_flag in ["--headless=new", "--headless"] {
+            let mut cmd = std::process::Command::new(&bin);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
 
-        cmd.arg("--headless=new")
-            .arg("--disable-gpu")
-            .arg("--no-sandbox")
-            .arg("--no-pdf-header-footer")
-            .arg("--print-to-pdf-no-header")
-            .arg("--run-all-compositor-stages-before-draw");
+            cmd.arg(headless_flag)
+                .arg("--disable-gpu")
+                .arg("--no-sandbox")
+                .arg("--no-pdf-header-footer")
+                .arg("--print-to-pdf-no-header")
+                .arg("--run-all-compositor-stages-before-draw");
 
-        if enable_outline {
-            cmd.arg("--generate-pdf-document-outline");
-        }
+            if enable_outline {
+                cmd.arg("--generate-pdf-document-outline");
+            }
 
-        cmd.arg(format!("--print-to-pdf={}", target_pdf.to_string_lossy()))
-            .arg(temp_html_path.to_string_lossy().to_string());
+            cmd.arg(format!("--print-to-pdf={}", target_pdf.to_string_lossy()))
+                .arg(temp_html_path.to_string_lossy().to_string());
 
-        match cmd.status() {
-            Ok(status) if status.success() && target_pdf.exists() => {
-                let _ = fs::remove_file(&temp_html_path);
-                if enable_outline {
-                    if let Some(ref bm_list) = bookmarks {
-                        let _ = ensure_pdf_bookmarks_metadata(&target_pdf, bm_list);
+            match cmd.status() {
+                Ok(status) if status.success() && target_pdf.exists() => {
+                    let _ = fs::remove_file(&temp_html_path);
+                    if enable_outline {
+                        if let Some(ref bm_list) = bookmarks {
+                            let _ = ensure_pdf_bookmarks_metadata(&target_pdf, bm_list);
+                        }
                     }
+                    return Ok(path);
                 }
-                return Ok(path);
-            }
-            Ok(status) => {
-                last_err = format!("PDF 渲染进程退出码: {}", status);
-            }
-            Err(e) => {
-                last_err = format!("启动 PDF 渲染引擎失败: {}", e);
+                Ok(status) => {
+                    last_err = format!("PDF 渲染进程退出码: {}", status);
+                }
+                Err(e) => {
+                    last_err = format!("启动 PDF 渲染引擎失败: {}", e);
+                }
             }
         }
     }
@@ -1089,6 +1225,7 @@ pub fn copy_image_to_assets(
 pub fn upload_image_to_bed(
     doc_path: Option<String>,
     image_path: Option<String>,
+    local_path: Option<String>,
     base64_data: Option<String>,
     filename: Option<String>,
     config: ImageBedConfig,
@@ -1099,8 +1236,9 @@ pub fn upload_image_to_bed(
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let mut temp_cleanup_path: Option<PathBuf> = None;
+    let effective_image_path = image_path.or(local_path);
 
-    let resolved_path: PathBuf = if let Some(ref raw_p) = image_path {
+    let resolved_path: PathBuf = if let Some(ref raw_p) = effective_image_path {
         let decoded = urlencoding_decode(raw_p);
         let clean = decoded.trim().trim_start_matches("./");
         let candidate = if Path::new(&decoded).is_absolute() {
@@ -1410,7 +1548,7 @@ pub fn read_image_base64(
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
 
-fn urlencoding_decode(input: &str) -> String {
+pub fn urlencoding_decode(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
     let raw = input.as_bytes();
     let mut i = 0;
@@ -1505,6 +1643,31 @@ pub fn window_close(window: tauri::Window, state: State<'_, AppState>) {
 pub fn window_set_always_on_top(window: tauri::Window, on_top: bool) -> Result<bool, String> {
     window.set_always_on_top(on_top).map_err(|e| e.to_string())?;
     Ok(on_top)
+}
+
+#[tauri::command]
+pub fn window_start_dragging(window: tauri::Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn window_start_resize_dragging(
+    window: tauri::Window,
+    direction: String,
+) -> Result<(), String> {
+    use tauri_runtime::ResizeDirection;
+    let dir = match direction.trim().to_lowercase().as_str() {
+        "n" | "north" => ResizeDirection::North,
+        "s" | "south" => ResizeDirection::South,
+        "e" | "east" => ResizeDirection::East,
+        "w" | "west" => ResizeDirection::West,
+        "ne" | "northeast" => ResizeDirection::NorthEast,
+        "nw" | "northwest" => ResizeDirection::NorthWest,
+        "se" | "southeast" => ResizeDirection::SouthEast,
+        "sw" | "southwest" => ResizeDirection::SouthWest,
+        _ => return Err(format!("不支持的窗口缩放方向: {}", direction)),
+    };
+    window.start_resize_dragging(dir).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1708,6 +1871,21 @@ pub fn delete_path(path: String, state: State<'_, AppState>) -> Result<(), Strin
                             let candidate = shared_assets.join(&img_name);
                             if candidate.exists() && candidate.is_file() {
                                 let _ = fs::remove_file(&candidate);
+                            } else if let Ok(entries) = fs::read_dir(&shared_assets) {
+                                // 兼容 Linux (ext4/xfs) 大小写敏感文件系统下大写图片扩展名或文件名的清理
+                                for entry in entries.flatten() {
+                                    let ep = entry.path();
+                                    if ep.is_file() {
+                                        let ename = ep
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy()
+                                            .to_lowercase();
+                                        if ename == img_name {
+                                            let _ = fs::remove_file(&ep);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1825,7 +2003,7 @@ pub fn cleanup_orphan_assets(
     })
 }
 
-/// 实时检测操作系统中 Quilla 的默认打开程序关联状态与右键菜单挂载状态 (v0.9 Typora 同款状态感知)
+/// 实时检测操作系统中 Quilla 的默认打开程序关联状态与右键菜单挂载状态 (v0.9 Typora 同款状态感知 & v0.13.0 银河麒麟 UKUI/Peony 增强)
 #[tauri::command]
 pub fn get_file_association_status() -> Result<FileAssociationStatus, String> {
     #[cfg(target_os = "windows")]
@@ -1917,19 +2095,44 @@ pub fn get_file_association_status() -> Result<FileAssociationStatus, String> {
         let current = out
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let has_desktop_entry = (!home.is_empty()
+            && Path::new(&home)
+                .join(".local/share/applications/quilla.desktop")
+                .exists())
+            || Path::new("/usr/share/applications/quilla.desktop").exists();
+        let has_peony_menu = !home.is_empty()
+            && (Path::new(&home)
+                .join(".local/share/nautilus/scripts/用 Quilla (羽墨) 打开")
+                .exists()
+                || Path::new(&home)
+                    .join(".config/peony/scripts/用 Quilla (羽墨) 打开")
+                    .exists()
+                || Path::new(&home)
+                    .join(".local/share/applications/quilla-workspace.desktop")
+                    .exists());
         let is_def = current.to_lowercase().contains("quilla");
         return Ok(FileAssociationStatus {
-            is_registered_progid: is_def,
+            is_registered_progid: is_def || has_desktop_entry,
             is_default_md: is_def,
-            current_progid: current,
-            has_context_menu: is_def,
-            associated_extensions: vec![".md".into(), ".markdown".into()],
+            current_progid: if current.is_empty() {
+                "quilla.desktop".to_string()
+            } else {
+                current
+            },
+            has_context_menu: has_peony_menu || is_def,
+            associated_extensions: vec![
+                ".md".into(),
+                ".markdown".into(),
+                ".mdown".into(),
+                ".mkd".into(),
+            ],
             platform: "linux".to_string(),
         });
     }
 }
 
-/// 独立切换 Windows 资源管理器右键菜单「用 Quilla (羽墨) 打开」（100% 免管理员权限立即生效）
+/// 独立切换系统文件管理器右键菜单「用 Quilla (羽墨) 打开」（支持 Windows Explorer 与银河麒麟 Peony / Nautilus / KDE 免 root 立即生效）
 #[tauri::command]
 pub fn toggle_explorer_context_menu(
     enabled: Option<bool>,
@@ -2020,16 +2223,82 @@ pub fn toggle_explorer_context_menu(
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::var("HOME").map_err(|_| "无法读取 HOME 环境变量".to_string())?;
+        let exe_path = std::env::current_exe().map_err(|e| format!("无法获取程序路径: {}", e))?;
+        let exe_str = exe_path.to_string_lossy().to_string();
+
+        let script_dirs = [
+            Path::new(&home).join(".config/peony/scripts"),
+            Path::new(&home).join(".local/share/nautilus/scripts"),
+            Path::new(&home).join(".config/caja/scripts"),
+        ];
+        let apps_dir = Path::new(&home).join(".local/share/applications");
+        let ws_desktop = apps_dir.join("quilla-workspace.desktop");
+        let kio_dir = Path::new(&home).join(".local/share/kio/servicemenus");
+        let kio_file = kio_dir.join("quilla.desktop");
+
+        if enabled {
+            let script_body = format!(
+                "#!/usr/bin/env bash\n# Quilla (羽墨) 银河麒麟 Peony / Nautilus 文件管理器右键打开脚本\nif [ -n \"$PEONY_SCRIPT_SELECTED_FILE_PATHS\" ]; then\n  IFS=$'\\n' read -d '' -r -a files <<< \"$PEONY_SCRIPT_SELECTED_FILE_PATHS\"\n  \"{}\" \"${{files[@]}}\" &\nelif [ -n \"$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS\" ]; then\n  IFS=$'\\n' read -d '' -r -a files <<< \"$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS\"\n  \"{}\" \"${{files[@]}}\" &\nelse\n  \"{}\" \"$@\" &\nfi\n",
+                exe_str, exe_str, exe_str
+            );
+            for sdir in &script_dirs {
+                if fs::create_dir_all(sdir).is_ok() {
+                    let sfile = sdir.join("用 Quilla (羽墨) 打开");
+                    if fs::write(&sfile, &script_body).is_ok() {
+                        let _ = fs::set_permissions(&sfile, fs::Permissions::from_mode(0o755));
+                    }
+                }
+            }
+
+            let _ = fs::create_dir_all(&apps_dir);
+            let ws_desktop_content = format!(
+                "[Desktop Entry]\nType=Application\nName=用 Quilla (羽墨) 作为工作区打开\nName[zh_CN]=用 Quilla (羽墨) 作为工作区打开\nComment=在 Quilla (羽墨) 中作为双链知识库工作区打开此文件夹\nExec=\"{}\" %f\nIcon=quilla\nTerminal=false\nNoDisplay=true\nMimeType=inode/directory;\nCategories=Utility;TextEditor;\n",
+                exe_str
+            );
+            let _ = fs::write(&ws_desktop, ws_desktop_content);
+
+            if fs::create_dir_all(&kio_dir).is_ok() {
+                let kio_content = format!(
+                    "[Desktop Entry]\nType=Service\nX-KDE-ServiceTypes=KonqPopupMenu/Plugin\nMimeType=text/markdown;text/x-markdown;text/plain;inode/directory;\nActions=openWithQuilla;\n\n[Desktop Action openWithQuilla]\nName=用 Quilla (羽墨) 打开\nName[zh_CN]=用 Quilla (羽墨) 打开\nIcon=quilla\nExec=\"{}\" %U\n",
+                    exe_str
+                );
+                let _ = fs::write(&kio_file, kio_content);
+                let _ = fs::set_permissions(&kio_file, fs::Permissions::from_mode(0o755));
+            }
+
+            let _ = std::process::Command::new("update-desktop-database")
+                .arg(&apps_dir)
+                .status();
+
+            return Ok("已注册银河麒麟文件管理器 (Peony / XDG) 右键菜单「用 Quilla (羽墨) 打开」".to_string());
+        } else {
+            for sdir in &script_dirs {
+                let _ = fs::remove_file(sdir.join("用 Quilla (羽墨) 打开"));
+            }
+            let _ = fs::remove_file(&ws_desktop);
+            let _ = fs::remove_file(&kio_file);
+            let _ = std::process::Command::new("update-desktop-database")
+                .arg(&apps_dir)
+                .status();
+            return Ok("已移除银河麒麟文件管理器右键菜单项".to_string());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     {
         let _ = enabled;
         Ok("当前系统已通过桌面环境集成打开方式".to_string())
     }
 }
 
-/// 将 Quilla 注册为操作系统默认的 Markdown (.md / .markdown / .mdown / .mkd) 打开程序 (v0.9 Typora 同款重构)
+/// 将 Quilla 注册为操作系统默认的 Markdown (.md / .markdown / .mdown / .mkd) 打开程序 (v0.9 Typora 同款重构 & v0.13.0 银河麒麟 XDG MIME 深度集成)
 /// - 完整写入 Windows RegisteredApplications + Capabilities\FileAssociations + FriendlyAppName + OpenWithProgids
 /// - 支持直接唤起针对 `.md` 的 Windows 原生 `OpenWith.exe` 选择框（用户只需一键勾选“始终”），无需在系统设置大海捞针
+/// - 在银河麒麟 V10 / Linux 下自动写入 `~/.local/share/applications/quilla.desktop` 与 `quilla-markdown.xml` MIME 定义并刷新 `xdg-mime`
 #[tauri::command]
 pub fn register_default_markdown_app(
     open_system_settings: Option<bool>,
@@ -2283,17 +2552,49 @@ pub fn register_default_markdown_app(
 
     #[cfg(target_os = "linux")]
     {
-        let _ = (open_system_settings, enable_context_menu, open_with_dialog, target_exts);
-        // 自动在 ~/.local/share/applications/ 生成 quilla.desktop，确保 AppImage 与便携版也能 100% 关联成功
+        let _ = (open_system_settings, open_with_dialog);
+        // 自动在 ~/.local/share/applications/ 生成 quilla.desktop 与自定义 MIME 包，确保银河麒麟 Peony、AppImage 与便携版 100% 关联成功
         if let Ok(home) = std::env::var("HOME") {
             let apps_dir = Path::new(&home).join(".local/share/applications");
             let _ = fs::create_dir_all(&apps_dir);
             let desktop_file = apps_dir.join("quilla.desktop");
+            let mut mime_list = vec![
+                "text/markdown".to_string(),
+                "text/x-markdown".to_string(),
+            ];
+            if target_exts.iter().any(|e| e == ".txt" || e == "txt") {
+                mime_list.push("text/plain".to_string());
+            }
             let desktop_content = format!(
-                "[Desktop Entry]\nName=Quilla (羽墨)\nComment=Modern WYSIWYG Markdown Editor\nExec=\"{}\" %U\nTerminal=false\nType=Application\nMimeType=text/markdown;text/x-markdown;text/plain;\nCategories=Office;TextEditor;Utility;\n",
+                "[Desktop Entry]\nName=Quilla (羽墨)\nName[zh_CN]=Quilla (羽墨)\nGenericName=Markdown Editor\nGenericName[zh_CN]=所见即所得 Markdown 编辑器\nComment=Modern WYSIWYG Markdown Editor & Knowledge Base\nComment[zh_CN]=现代化所见即所得 Markdown 编辑器与双链知识库\nExec=\"{}\" %U\nIcon=quilla\nTerminal=false\nType=Application\nStartupWMClass=quilla\nMimeType={};\nCategories=Office;TextEditor;Utility;\nKeywords=Markdown;Editor;Note;Quilla;羽墨;\nActions=NewWindow;\n\n[Desktop Action NewWindow]\nName=新建独立窗口\nName[zh_CN]=新建独立窗口\nExec=\"{}\" --new-window\n",
+                exe_str,
+                mime_list.join(";"),
                 exe_str
             );
             let _ = fs::write(&desktop_file, desktop_content);
+
+            let mime_pkg_dir = Path::new(&home).join(".local/share/mime/packages");
+            if fs::create_dir_all(&mime_pkg_dir).is_ok() {
+                let mime_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="text/markdown">
+    <comment>Markdown Document</comment>
+    <comment xml:lang="zh_CN">Markdown 文档 (Quilla 羽墨)</comment>
+    <glob pattern="*.md"/>
+    <glob pattern="*.markdown"/>
+    <glob pattern="*.mdown"/>
+    <glob pattern="*.mkd"/>
+  </mime-type>
+</mime-info>
+"#;
+                let _ = fs::write(mime_pkg_dir.join("quilla-markdown.xml"), mime_xml);
+                let _ = std::process::Command::new("update-mime-database")
+                    .arg(Path::new(&home).join(".local/share/mime"))
+                    .status();
+            }
+            let _ = std::process::Command::new("update-desktop-database")
+                .arg(&apps_dir)
+                .status();
         }
         let _ = std::process::Command::new("xdg-mime")
             .args(["default", "quilla.desktop", "text/markdown"])
@@ -2301,7 +2602,15 @@ pub fn register_default_markdown_app(
         let _ = std::process::Command::new("xdg-mime")
             .args(["default", "quilla.desktop", "text/x-markdown"])
             .status();
-        return Ok("已生成桌面入口并通过 xdg-mime 将 Quilla 设为默认 Markdown 程序".to_string());
+        if target_exts.iter().any(|e| e == ".txt" || e == "txt") {
+            let _ = std::process::Command::new("xdg-mime")
+                .args(["default", "quilla.desktop", "text/plain"])
+                .status();
+        }
+        if enable_context_menu.unwrap_or(true) {
+            let _ = toggle_explorer_context_menu(Some(true), None);
+        }
+        return Ok("已在银河麒麟/Linux 桌面环境注册 quilla.desktop，并通过 xdg-mime 设为默认 Markdown 程序".to_string());
     }
 }
 
@@ -2327,6 +2636,36 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let p = Path::new(&path);
+        if p.is_file() {
+            // 优先使用银河麒麟牡丹文件管理器 (Peony) 的 `--show-items` 参数高亮选中文件
+            if Path::new("/usr/bin/peony").exists() {
+                if std::process::Command::new("/usr/bin/peony")
+                    .args(["--show-items", &path])
+                    .spawn()
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+            // 备选：使用 FreeDesktop FileManager1 D-Bus 标准接口高亮选中目标文件
+            let file_uri = format!("file://{}", encode_uri_component(&path));
+            if let Ok(status) = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &format!("array:string:{}", file_uri),
+                    "string:",
+                ])
+                .status()
+            {
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
         let dir = if p.is_dir() {
             p
         } else {

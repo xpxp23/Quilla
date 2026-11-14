@@ -481,6 +481,13 @@ class App {
       const extPath = event.payload;
       if (extPath && typeof extPath === "string" && extPath.trim()) {
         const cleanPath = extPath.trim();
+        const isDir = await invoke<boolean>("check_is_directory", { path: cleanPath }).catch(
+          () => false
+        );
+        if (isDir) {
+          await this.loadWorkspace(cleanPath).catch(() => {});
+          return;
+        }
         await this.loadFile(cleanPath);
         if (!this.currentWorkspaceRoot) {
           const parentDir = cleanPath.replace(/[\\/][^\\/]+$/, "");
@@ -849,15 +856,22 @@ class App {
       }
     } else if (cliFile || urlOpen) {
       const target = cliFile || decodeURIComponent(urlOpen!);
-      const lastWorkspace = localStorage.getItem("typora_last_workspace");
-      if (lastWorkspace) {
-        await this.loadWorkspace(lastWorkspace, true).catch(() => {});
-      }
-      await this.loadFile(target);
-      if (!this.currentWorkspaceRoot) {
-        const parentDir = target.replace(/[\\/][^\\/]+$/, "");
-        if (parentDir && parentDir !== target) {
-          await this.loadWorkspace(parentDir, true).catch(() => {});
+      const isDir = await invoke<boolean>("check_is_directory", { path: target }).catch(
+        () => false
+      );
+      if (isDir) {
+        await this.loadWorkspace(target).catch(() => {});
+      } else {
+        const lastWorkspace = localStorage.getItem("typora_last_workspace");
+        if (lastWorkspace) {
+          await this.loadWorkspace(lastWorkspace, true).catch(() => {});
+        }
+        await this.loadFile(target);
+        if (!this.currentWorkspaceRoot) {
+          const parentDir = target.replace(/[\\/][^\\/]+$/, "");
+          if (parentDir && parentDir !== target) {
+            await this.loadWorkspace(parentDir, true).catch(() => {});
+          }
         }
       }
     } else if (isNewWin || urlNew === "1") {
