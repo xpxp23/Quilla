@@ -119,10 +119,10 @@ setup_webkit_compat_bridge
 echo -e "${CYAN}[1/3] 构建前端工程并运行架构回归验证...${NC}"
 if command -v pnpm >/dev/null 2>&1; then
   if [ ! -d "node_modules" ]; then
-    pnpm install
+    pnpm install || pnpm install --config.ignore-scripts=false || npm install
   fi
   node scripts/run-tests.mjs
-  pnpm build
+  pnpm build || npm run build
 else
   if [ ! -d "node_modules" ]; then
     npm install
