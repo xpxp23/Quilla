@@ -37,5 +37,7 @@ Cargo.lock
 *.deb
 *.tar.gz
 dist-ci-kylin/
+dist-ci-kylin-v0.14.0/
+ABI-VERIFICATION-REPORT.txt
 .preview/
 .workbuddy/
