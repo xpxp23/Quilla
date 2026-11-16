@@ -1,13 +1,52 @@
 {
-  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
-  "productName": "Quilla",
-  "version": "0.13.0",
-  "identifier": "app.quilla.editor",
+  "$schema": "https://schema.tauri.app/config/1",
   "build": {
     "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "pnpm dev",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist",
+    "withGlobalTauri": true
   },
-  "app": {
+  "package": {
+    "productName": "Quilla",
+    "version": "0.14.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "window": {
+        "all": true
+      },
+      "dialog": {
+        "all": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "app.quilla.editor",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.png",
+        "icons/icon.ico"
+      ],
+      "category": "Utility",
+      "shortDescription": "Quilla (羽墨) - 现代化所见即所得 Markdown 编辑器与本地双链知识库",
+      "longDescription": "基于 Rust + Tauri v1 (webkit2gtk-4.0 / libsoup-2.4 / glibc 2.31) + CodeMirror 6 Lezer AST 打造的高性能所见即所得 Markdown 编辑器与双链知识库工作台，原生适配银河麒麟桌面操作系统 V10 SP1 与海光 C86 3350 处理器。",
+      "deb": {
+        "depends": [
+          "libgtk-3-0",
+          "libwebkit2gtk-4.0-37",
+          "libsoup2.4-1",
+          "xdg-utils"
+        ]
+      }
+    },
+    "security": {
+      "csp": null
+    },
     "windows": [
       {
         "label": "main",
@@ -18,55 +57,8 @@
         "minHeight": 480,
         "decorations": false,
         "transparent": false,
-        "center": true
-      }
-    ],
-    "security": {
-      "csp": null,
-      "capabilities": [
-        "default"
-      ]
-    }
-  },
-  "bundle": {
-    "active": true,
-    "targets": ["deb", "rpm", "appimage", "nsis", "msi", "app", "dmg"],
-    "category": "Utility",
-    "shortDescription": "Quilla (羽墨) - 现代化所见即所得 Markdown 编辑器与本地双链知识库",
-    "longDescription": "基于 Rust + Tauri v2 + CodeMirror 6 Lezer AST 打造的高性能所见即所得 Markdown 编辑器与双链知识库工作台，深度适配银河麒麟桌面操作系统 V10 与海光 C86 3350 处理器。",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.png",
-      "icons/icon.ico"
-    ],
-    "linux": {
-      "deb": {
-        "section": "editors",
-        "priority": "optional",
-        "depends": [
-          "libgtk-3-0",
-          "libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37",
-          "xdg-utils"
-        ]
-      },
-      "rpm": {
-        "release": "1.kylin.hygon3350"
-      }
-    },
-    "fileAssociations": [
-      {
-        "ext": [
-          "md",
-          "markdown",
-          "mdown",
-          "mkd"
-        ],
-        "name": "Markdown Document",
-        "description": "Quilla Markdown Document",
-        "role": "Editor",
-        "mimeType": "text/markdown"
+        "center": true,
+        "fileDropEnabled": true
       }
     ]
   }

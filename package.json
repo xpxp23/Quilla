@@ -1,8 +1,8 @@
 {
   "name": "quilla",
   "private": true,
-  "version": "0.13.0",
-  "description": "Quilla (羽墨) v0.13.0 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust (Windows / Kylin OS Linux / Hygon C86 3350)",
+  "version": "0.14.0",
+  "description": "Quilla (羽墨) v0.14.0 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust (Kylin OS V10 SP1 glibc 2.31 & webkit2gtk-4.0 / Hygon C86 3350)",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "test": "node scripts/run-tests.mjs",
     "build:kylin": "bash scripts/build-kylin-linux.sh",
     "package:kylin-deb": "bash scripts/package-kylin-deb.sh",
-    "install:kylin-deps": "bash scripts/install-kylin-deps.sh"
+    "install:kylin-deps": "bash scripts/install-kylin-deps.sh",
+    "verify:kylin-abi": "bash scripts/verify-kylin-abi.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.4",

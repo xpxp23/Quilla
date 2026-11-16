@@ -8,7 +8,8 @@ const RESIZE_DIRECTIONS = ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const;
 
 /**
  * 注入无边框窗口八向边缘拉伸热区：
- * 解决银河麒麟 (Kylin OS UKUI) / Linux X11 & Wayland 下 `decorations: false` 窗口无法从四边与四角鼠标拖拽调整大小的问题
+ * 同时兼容 Tauri v1 (`get_window_outer_rect` / `set_window_outer_rect` 物理坐标实时拉伸，原生支持银河麒麟 V10 SP1 webkit2gtk-4.0)
+ * 与 `window_start_resize_dragging` 接口。
  */
 function ensureFramelessResizeHandles() {
   if (typeof document === "undefined") return;
@@ -22,11 +23,79 @@ function ensureFramelessResizeHandles() {
     const handle = document.createElement("div");
     handle.className = `quilla-resize-handle dir-${dir}`;
     handle.dataset.resizeDir = dir;
-    handle.addEventListener("mousedown", (e: MouseEvent) => {
+    handle.addEventListener("mousedown", async (e: MouseEvent) => {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
+
       invoke("window_start_resize_dragging", { direction: dir }).catch(() => {});
+
+      const startScreenX = e.screenX;
+      const startScreenY = e.screenY;
+      let startRect: [number, number, number, number] | null = null;
+      try {
+        startRect = await invoke<[number, number, number, number]>("get_window_outer_rect");
+      } catch {
+        return;
+      }
+      if (!startRect) return;
+
+      const [initX, initY, initW, initH] = startRect;
+      const dpr = window.devicePixelRatio || 1;
+      let rafPending = false;
+
+      const onMouseMove = (moveEv: MouseEvent) => {
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(() => {
+          rafPending = false;
+          const dx = Math.round((moveEv.screenX - startScreenX) * dpr);
+          const dy = Math.round((moveEv.screenY - startScreenY) * dpr);
+
+          let newX = initX;
+          let newY = initY;
+          let newW = initW;
+          let newH = initH;
+          const minW = Math.round(640 * dpr);
+          const minH = Math.round(480 * dpr);
+
+          if (dir.includes("e")) {
+            newW = Math.max(minW, initW + dx);
+          }
+          if (dir.includes("s")) {
+            newH = Math.max(minH, initH + dy);
+          }
+          if (dir.includes("w")) {
+            const candidateW = initW - dx;
+            if (candidateW >= minW) {
+              newW = candidateW;
+              newX = initX + dx;
+            }
+          }
+          if (dir.includes("n")) {
+            const candidateH = initH - dy;
+            if (candidateH >= minH) {
+              newH = candidateH;
+              newY = initY + dy;
+            }
+          }
+
+          invoke("set_window_outer_rect", {
+            x: newX,
+            y: newY,
+            width: newW,
+            height: newH,
+          }).catch(() => {});
+        });
+      };
+
+      const onMouseUp = () => {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      };
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
     });
     layer.appendChild(handle);
   }
@@ -37,7 +106,7 @@ function ensureFramelessResizeHandles() {
 /**
  * 沉浸式标题栏控制器：
  * 支持原生窗口最小化、最大化/还原图标动态同步、双击标题栏最大化还原、系统级关闭事件拦截、置顶锁定，
- * 以及针对银河麒麟 WebKitGTK 的原生 `window_start_dragging` 无边框拖拽与八向边缘缩放支持
+ * 以及针对银河麒麟 WebKitGTK 4.0 的原生 `window_start_dragging` 无边框拖拽与八向边缘缩放支持
  */
 export function initTitlebar(callbacks?: { onClose?: () => void }) {
   const titlebar = document.getElementById("top-titlebar");
@@ -105,7 +174,7 @@ export function initTitlebar(callbacks?: { onClose?: () => void }) {
 
   maxBtn?.addEventListener("click", toggleMaximize);
 
-  // Linux WebKitGTK 兼容：显式绑定左键单击拖拽标题栏（WebKitGTK 不支持 Chromium 专有 -webkit-app-region: drag）
+  // Linux WebKitGTK 4.0 兼容：显式绑定左键单击拖拽标题栏
   titlebar?.addEventListener("mousedown", (e: MouseEvent) => {
     if (e.button !== 0 || e.detail > 1) return;
     const target = e.target as HTMLElement | null;

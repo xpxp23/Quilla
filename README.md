@@ -1,4 +1,4 @@
-# Quilla (羽墨) v0.13.0 🖋️
+# Quilla (羽墨) v0.14.0 🖋️
 
 > **轻巧灵动，落墨成章** —— 基于 Rust + Tauri v2 + CodeMirror 6 Lezer AST 打造的高性能现代化所见即所得（WYSIWYG）Markdown 编辑器与本地双链知识库工作台。
 
@@ -8,7 +8,7 @@
 
 **Quilla（羽墨）** 是一款追求极致书写沉浸感、毫秒级冷启动与本地知识网络连接的现代 Markdown 桌面编辑器。
 
-**Quilla v0.13.0** 选用 **Rust** 作为底层系统核心（基于 `ropey` $O(\log N)$ UTF-16 精准增量文本绳与 `rayon` 多线程检索引擎），依托 **Tauri v2** 轻量级系统 WebView 架构，并在前端全面接入 **CodeMirror 6 原生 Lezer 增量语法树（`syntaxTree(state)`）** 与 **真实 DOM 几何 + Pointer Events 统一交互引擎**，完整实现了 **块手柄与右键批量命令菜单（Turn Into / 克隆 / 移动）**、**思源笔记式大纲多选与带子标题一键点选转换**、**顶部多文档标签右键管理**、**多语言代码块智能格式化与超长代码折叠**、**`![[文档#标题]]` 块级嵌入引用**、**YAML 属性原位编辑卡片**、**交互式双链知识图谱 (`Ctrl+G`)**、**本地时间机器版本历史 (`Ctrl+Alt+H`)** 以及 **深度兼容的 Word (`.doc`) / 社交长图海报 (`.png`) / 微信公众号富文本发布套件**。
+**Quilla v0.14.0** 选用 **Rust** 作为底层系统核心（基于 `ropey` $O(\log N)$ UTF-16 精准增量文本绳与 `rayon` 多线程检索引擎），依托 **Tauri v2** 轻量级系统 WebView 架构，并在前端全面接入 **CodeMirror 6 原生 Lezer 增量语法树（`syntaxTree(state)`）** 与 **真实 DOM 几何 + Pointer Events 统一交互引擎**，完整实现了 **块手柄与右键批量命令菜单（Turn Into / 克隆 / 移动）**、**思源笔记式大纲多选与带子标题一键点选转换**、**顶部多文档标签右键管理**、**多语言代码块智能格式化与超长代码折叠**、**`![[文档#标题]]` 块级嵌入引用**、**YAML 属性原位编辑卡片**、**交互式双链知识图谱 (`Ctrl+G`)**、**本地时间机器版本历史 (`Ctrl+Alt+H`)** 以及 **深度兼容的 Word (`.doc`) / 社交长图海报 (`.png`) / 微信公众号富文本发布套件**。
 
 ---
 
@@ -48,11 +48,11 @@
 
 ## 🐧 银河麒麟桌面系统 V10 & 海光 C86 3350 (Linux x86_64) 编译与安装指南
 
-**Quilla v0.13.0** 已针对 **银河麒麟桌面操作系统 V10 (SP1/SP2/SP3 · UKUI / 牡丹文件管理器 Peony)** 与 **海光 3350 (`Hygon C86 3350`, 8核16线程 `x86_64`)** 进行了全链路深度适配：
+**Quilla v0.14.0** 已针对 **银河麒麟桌面操作系统 V10 (SP1/SP2/SP3 · UKUI / 牡丹文件管理器 Peony)** 与 **海光 3350 (`Hygon C86 3350`, 8核16线程 `x86_64`)** 进行了全链路深度适配：
 
 ### 1. 核心适配特性
 - **海光 C86 3350 硬件指令集与多核加速**：`.cargo/config.toml` 默认开启 `SSE4.2 / AVX / AVX2 / FMA / BMI1 / BMI2 / LZCNT / POPCNT / AES` 向量化加速，并根据海光 3350 逻辑核心数自动初始化 `rayon` 全文倒排索引工作线程池。
-- **WebKitGTK 4.0 ↔ 4.1 双向兼容桥接**：解决银河麒麟 V10 SP1 软件源仅提供 `libwebkit2gtk-4.0-37` 而 Tauri v2 依赖 `libwebkit2gtk-4.1-0` 的编译与安装报错问题，编译期自动生成 `.kylin-compat-sysroot`，安装期通过 `DEBIAN/postinst` 自动在 `/opt/quilla/lib` 建立私有符号链接。
+- **原生 `glibc 2.31` + `libwebkit2gtk-4.0-37` + `libsoup-2.4-1` 架构 (Tauri v1.8)**：彻底解决银河麒麟 V10 SP1 (`0kylin9.1k22.0`) 缺失 `GLIBC_2.34`、`libwebkit2gtk-4.1.so.0` (`webkit_uri_scheme_request_get_http_body`) 与 `libsoup-3.0.so.0` 的问题。CI 与构建脚本在 `ubuntu:20.04` (Focal) 基线容器内原生编译并由 `scripts/verify-kylin-abi.sh` 强制执行 ABI 门禁校验。
 - **国产显卡/驱动防白屏守卫**：启动时自动注入 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（检测到景嘉微 `jmgpu` 或传入 `--safe-render` 时自动附加 `WEBKIT_DISABLE_COMPOSITING_MODE=1`），并在 Wayland 会话下自适应切换 `GDK_BACKEND=x11,wayland`。
 - **UKUI 无边框窗口拖拽与八向边缘缩放**：内置原生 `window_start_dragging` 与八向边缘拖拽缩放热区 (`window_start_resize_dragging`)，解决 Linux WebKitGTK 不支持 `-webkit-app-region: drag` 及无边框窗口无法拉伸边缘的问题。
 - **牡丹文件管理器 (Peony) 深度集成**：支持在 Peony 中高亮定位文件 (`peony --show-items`)、右键菜单「用 Quilla (羽墨) 打开」、拖拽文件 (`text/uri-list`) 与双击中文路径 `.md` 单实例秒开。
@@ -67,11 +67,11 @@ bash scripts/install-kylin-deps.sh
 bash scripts/build-kylin-linux.sh
 ```
 构建完成后，产物位于 `dist-kylin/` 目录：
-- `dist-kylin/quilla_0.13.0_amd64_kylin_hygon3350.deb`：支持双击通过「麒麟软件包安装器」或 `sudo dpkg -i` 一键安装。
-- `dist-kylin/quilla-v0.13.0-kylin-hygon3350-portable-x86_64.tar.gz`：免 root 绿色便携版，解压后运行 `./quilla` 即可启动。
+- `dist-kylin/quilla_0.14.0_amd64_kylin_hygon3350.deb`：支持双击通过「麒麟软件包安装器」或 `sudo dpkg -i` 一键安装。
+- `dist-kylin/quilla-v0.14.0-kylin-hygon3350-portable-x86_64.tar.gz`：免 root 绿色便携版，解压后运行 `./quilla` 即可启动。
 
 ### 3. 通过 GitHub Actions 云端自动构建
-将代码推送到 GitHub 仓库后，仓库内置的 `.github/workflows/build-linux-kylin.yml` 工作流会自动编译并上传 `Quilla-v0.13.0-Kylin-Hygon3350-Linux-x86_64` 制品包。
+将代码推送到 GitHub 仓库后，仓库内置的 `.github/workflows/build-linux-kylin.yml` 工作流会自动编译并上传 `Quilla-v0.14.0-Kylin-Hygon3350-Linux-x86_64` 制品包。
 
 ---
 

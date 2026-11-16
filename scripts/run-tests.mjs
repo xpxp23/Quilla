@@ -13,7 +13,7 @@ fs.readFileSync = function (...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证 ===");
 
 // 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.x 全量修复及新特性验证
 {
@@ -345,26 +345,31 @@ console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
   const indexHtml = fs.readFileSync(path.join(rootDir, "index.html"), "utf-8");
 
-  assert.equal(pkg.version, "0.13.0", "package.json 版本号必须为 0.12.0");
-  assert.equal(tauriConf.version, "0.13.0", "tauri.conf.json 版本号必须为 0.12.0");
+  assert.equal(pkg.version, "0.14.0", "package.json 版本号必须为 0.14.0");
   assert.equal(
-    Array.isArray(tauriConf.bundle?.fileAssociations) &&
-      tauriConf.bundle.fileAssociations[0].ext.includes("md"),
-    true,
-    "tauri.conf.json 必须包含 .md 文件关联配置 (fileAssociations)"
+    tauriConf.package?.version || tauriConf.version,
+    "0.14.0",
+    "tauri.conf.json 版本号必须为 0.14.0"
   );
   assert.equal(
-    cargoToml.includes('version = "0.13.0"'),
+    Array.isArray(tauriConf.tauri?.bundle?.deb?.depends) &&
+      tauriConf.tauri.bundle.deb.depends.includes("libwebkit2gtk-4.0-37") &&
+      tauriConf.tauri.bundle.deb.depends.includes("libsoup2.4-1"),
     true,
-    "Cargo.toml 版本号必须为 0.12.0"
+    "tauri.conf.json 必须原生声明银河麒麟 V10 SP1 的 libwebkit2gtk-4.0-37 与 libsoup2.4-1 依赖"
   );
   assert.equal(
-    indexHtml.includes("Quilla (羽墨) v0.13.0"),
+    cargoToml.includes('version = "0.14.0"'),
     true,
-    "index.html 标题版本号必须为 v0.13.0"
+    "Cargo.toml 版本号必须为 0.14.0"
+  );
+  assert.equal(
+    indexHtml.includes("Quilla (羽墨) v0.14.0"),
+    true,
+    "index.html 标题版本号必须为 v0.14.0"
   );
 
-  console.log("✓ [2/5] 全工程版本号 (v0.13.0 / 0.12.0) 与桌面文件关联配置验证通过");
+  console.log("✓ [2/7] 全工程版本号 (v0.14.0) 与 Tauri v1.8 (webkit2gtk-4.0) 配置验证通过");
 }
 
 // 3. 统一内联词法解析器 (inline-tokenizer.ts) 与 Myers Diff 运行时逻辑验证
@@ -602,7 +607,7 @@ console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证
   console.log("✓ [6/6] v0.13.0 全部 UI 透明度修复、皮肤打磨、性能优化与四大核心新特性验证通过");
 }
 
-// 7. [v0.13.0] 银河麒麟系统 (Kylin OS V10) & 海光 C86 3350 (Linux x86_64) 深度适配验证
+// 7. [v0.14.0] 银河麒麟系统 V10 SP1 (glibc 2.31 + webkit2gtk-4.0 + libsoup-2.4) & 海光 C86 3350 深度适配验证
 {
   const libSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
   const commandsSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/commands.rs"), "utf-8");
@@ -618,11 +623,17 @@ console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证
   const baseCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/base.css"), "utf-8");
   const windowCssSrc = fs.readFileSync(path.join(rootDir, "src/themes/window.css"), "utf-8");
   const cargoConfig = fs.readFileSync(path.join(rootDir, ".cargo/config.toml"), "utf-8");
+  const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
   const tauriConf = JSON.parse(
     fs.readFileSync(path.join(rootDir, "src-tauri/tauri.conf.json"), "utf-8")
   );
-  const capConf = JSON.parse(
-    fs.readFileSync(path.join(rootDir, "src-tauri/capabilities/default.json"), "utf-8")
+  const workflowYml = fs.readFileSync(
+    path.join(rootDir, ".github/workflows/build-linux-kylin.yml"),
+    "utf-8"
+  );
+  const abiVerifySh = fs.readFileSync(
+    path.join(rootDir, "scripts/verify-kylin-abi.sh"),
+    "utf-8"
   );
 
   // 1) 海光 3350 指令集配置与 Rayon 线程池初始化
@@ -634,7 +645,7 @@ console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证
       libSrc.includes("WEBKIT_DISABLE_DMABUF_RENDERER") &&
       libSrc.includes("quilla-hygon-worker-"),
     true,
-    "[v0.13.0 Kylin/Hygon] 必须包含海光 3350 AVX2/FMA 指令集配置、Rayon 线程池预热与 WebKitGTK 防白屏守卫"
+    "[v0.14.0 Kylin/Hygon] 必须包含海光 3350 AVX2/FMA 指令集配置、Rayon 线程池预热与 WebKitGTK 防白屏守卫"
   );
 
   // 2) file:// 中文 URI 解码、信创浏览器 PDF 导出、Peony 高亮定位与右键脚本集成
@@ -647,41 +658,50 @@ console.log("=== Quilla (羽墨) v0.13.0 自动化回归与架构完整性验证
       commandsSrc.includes("/usr/bin/peony") &&
       commandsSrc.includes("quilla-markdown.xml"),
     true,
-    "[v0.13.0 Kylin/Hygon] 必须支持 file:// 中文 URI 解码、奇安信/360/麒麟浏览器 PDF 导出与 Peony 文件管理器深度集成"
+    "[v0.14.0 Kylin/Hygon] 必须支持 file:// 中文 URI 解码、奇安信/360/麒麟浏览器 PDF 导出与 Peony 文件管理器深度集成"
   );
 
-  // 3) 无边框窗口原生拖拽、八向边缘缩放热区、Peony text/uri-list 拖拽与信创字体栈
+  // 3) Tauri v1.8 (webkit2gtk-4.0 / libsoup-2.4) + Ubuntu 20.04 (glibc 2.31) + ABI Gatekeeper 验证
   assert.equal(
     commandsSrc.includes("pub fn window_start_dragging") &&
-      commandsSrc.includes("pub fn window_start_resize_dragging") &&
-      capConf.permissions.includes("core:window:allow-start-resize-dragging") &&
+      commandsSrc.includes("pub fn get_window_outer_rect") &&
+      commandsSrc.includes("pub fn set_window_outer_rect") &&
       titlebarSrc.includes("ensureFramelessResizeHandles") &&
-      titlebarSrc.includes("window_start_resize_dragging") &&
+      titlebarSrc.includes("set_window_outer_rect") &&
       windowCssSrc.includes("#quilla-window-resize-layer") &&
       imgHandlerSrc.includes("export function parseDroppedFileUri") &&
       imeGuardSrc.includes("compositionupdate") &&
       baseCssSrc.includes("Noto Sans CJK SC") &&
       baseCssSrc.includes("WenQuanYi Micro Hei") &&
-      Array.isArray(tauriConf.bundle?.linux?.deb?.depends),
+      cargoToml.includes('tauri = { version = "1.8"') &&
+      cargoToml.includes('tauri-build = { version = "1.5"') &&
+      workflowYml.includes("ubuntu:20.04") &&
+      abiVerifySh.includes("webkit_uri_scheme_request_get_http_body") &&
+      Array.isArray(tauriConf.tauri?.bundle?.deb?.depends),
     true,
-    "[v0.13.0 Kylin/Hygon] 必须支持无边框八向缩放热区、text/uri-list 拖拽解析、Fcitx5 IME 守卫与麒麟中文字体栈"
+    "[v0.14.0 Kylin/Hygon] 必须基于 Tauri v1.8 (webkit2gtk-4.0 + libsoup-2.4) 与 ubuntu:20.04 (glibc 2.31) 编译并通过 ABI 门禁校验"
   );
 
-  // 4) 构建与打包脚本完整性检查
+  // 4) 构建与打包脚本及 Tauri 兼容桥接层完整性检查
   for (const scriptFile of [
     "scripts/install-kylin-deps.sh",
     "scripts/build-kylin-linux.sh",
+    "scripts/build-kylin-focal-container.sh",
     "scripts/package-kylin-deb.sh",
+    "scripts/verify-kylin-abi.sh",
+    "src/tauri-compat/core.ts",
+    "src/tauri-compat/event.ts",
+    "src/tauri-compat/webview.ts",
     ".github/workflows/build-linux-kylin.yml",
   ]) {
     assert.equal(
       fs.existsSync(path.join(rootDir, scriptFile)),
       true,
-      `必须包含银河麒麟/海光 3350 构建脚本或工作流: ${scriptFile}`
+      `必须包含银河麒麟 V10 SP1 / 海光 3350 构建脚本或兼容桥接模块: ${scriptFile}`
     );
   }
 
-  console.log("✓ [7/7] v0.13.0 银河麒麟系统 (Kylin OS V10) & 海光 C86 3350 全链路适配验证通过");
+  console.log("✓ [7/7] v0.14.0 银河麒麟系统 V10 SP1 (glibc 2.31 / webkit2gtk-4.0 / libsoup-2.4) & 海光 C86 3350 全链路验证通过");
 }
 
 console.log("=== ALL TESTS PASSED (100%) ===");

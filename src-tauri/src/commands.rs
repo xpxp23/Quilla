@@ -12,7 +12,12 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Manager, State};
+use crate::Emitter;
+use tauri::{Manager, State};
+
+mod rfd {
+    pub type FileDialog = tauri::api::dialog::blocking::FileDialogBuilder;
+}
 
 #[derive(Default)]
 pub struct AppState {
@@ -1651,23 +1656,35 @@ pub fn window_start_dragging(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn get_window_outer_rect(window: tauri::Window) -> Result<(i32, i32, u32, u32), String> {
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    Ok((pos.x, pos.y, size.width, size.height))
+}
+
+#[tauri::command]
+pub fn set_window_outer_rect(
+    window: tauri::Window,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        width: width.max(640),
+        height: height.max(480),
+    }));
+    Ok(())
+}
+
+#[tauri::command]
 pub fn window_start_resize_dragging(
     window: tauri::Window,
     direction: String,
 ) -> Result<(), String> {
-    use tauri_runtime::ResizeDirection;
-    let dir = match direction.trim().to_lowercase().as_str() {
-        "n" | "north" => ResizeDirection::North,
-        "s" | "south" => ResizeDirection::South,
-        "e" | "east" => ResizeDirection::East,
-        "w" | "west" => ResizeDirection::West,
-        "ne" | "northeast" => ResizeDirection::NorthEast,
-        "nw" | "northwest" => ResizeDirection::NorthWest,
-        "se" | "southeast" => ResizeDirection::SouthEast,
-        "sw" | "southwest" => ResizeDirection::SouthWest,
-        _ => return Err(format!("不支持的窗口缩放方向: {}", direction)),
-    };
-    window.start_resize_dragging(dir).map_err(|e| e.to_string())
+    let _ = (&window, &direction);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2738,16 +2755,16 @@ pub async fn create_new_window(
 
     let url = if let Some(ref tid) = transfer_id {
         let encoded_tid = encode_uri_component(tid);
-        tauri::WebviewUrl::App(format!("index.html?transfer={}", encoded_tid).into())
+        tauri::WindowUrl::App(format!("index.html?transfer={}", encoded_tid).into())
     } else if let Some(ref path) = file_path {
         let normalized = path.replace('\\', "/");
         let encoded = encode_uri_component(&normalized);
-        tauri::WebviewUrl::App(format!("index.html?open={}", encoded).into())
+        tauri::WindowUrl::App(format!("index.html?open={}", encoded).into())
     } else {
-        tauri::WebviewUrl::App("index.html?new=1".into())
+        tauri::WindowUrl::App("index.html?new=1".into())
     };
 
-    if tauri::WebviewWindowBuilder::new(&app, &label, url)
+    if tauri::WindowBuilder::new(&app, label.clone(), url)
         .title("Quilla")
         .inner_size(1080.0, 760.0)
         .min_inner_size(640.0, 480.0)

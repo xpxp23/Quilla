@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2020",
     "useDefineForClassFields": true,
     "module": "ESNext",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
@@ -13,7 +13,13 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noImplicitReturns": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tauri-apps/api/core": ["src/tauri-compat/core.ts"],
+      "@tauri-apps/api/event": ["src/tauri-compat/event.ts"],
+      "@tauri-apps/api/webview": ["src/tauri-compat/webview.ts"]
+    }
   },
   "include": ["src"]
 }

@@ -10,17 +10,53 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Manager, WindowEvent};
 
 const SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:45789";
 
-/// 银河麒麟 (Kylin OS V10 / UKUI) 与海光 3350 (Hygon C86 3350) 运行时环境预初始化：
+/// Tauri v1 / v2 统一事件广播适配 Trait：
+/// 将 `app_handle.emit(...)` 与 `app_handle.emit_to(...)` 映射至 `tauri::Manager::emit_all` / `emit_to`
+pub trait Emitter {
+    fn emit<S: serde::Serialize + Clone>(&self, event: &str, payload: S) -> tauri::Result<()>;
+    fn emit_to<S: serde::Serialize + Clone>(
+        &self,
+        label: &str,
+        event: &str,
+        payload: S,
+    ) -> tauri::Result<()>;
+}
+
+impl Emitter for tauri::AppHandle {
+    fn emit<S: serde::Serialize + Clone>(&self, event: &str, payload: S) -> tauri::Result<()> {
+        tauri::Manager::emit_all(self, event, payload)
+    }
+
+    fn emit_to<S: serde::Serialize + Clone>(
+        &self,
+        label: &str,
+        event: &str,
+        payload: S,
+    ) -> tauri::Result<()> {
+        tauri::Manager::emit_to(self, label, event, payload)
+    }
+}
+
+pub trait WebviewWindowCompat {
+    fn get_webview_window(&self, label: &str) -> Option<tauri::Window>;
+}
+
+impl WebviewWindowCompat for tauri::AppHandle {
+    fn get_webview_window(&self, label: &str) -> Option<tauri::Window> {
+        tauri::Manager::get_window(self, label)
+    }
+}
+
+/// 银河麒麟 (Kylin OS V10 SP1 / UKUI / glibc 2.31 / webkit2gtk-4.0) 与海光 3350 (Hygon C86 3350) 运行时环境预初始化：
 /// 1. 自动注入 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（除非用户显式设置 `QUILLA_ALLOW_DMABUF=1`），
-///    彻底根治 WebKitGTK 在银河麒麟 V10 + 景嘉微 (JM7200/JM9) / 海光集显 / Mesa 驱动下的启动白屏、闪屏与 EGL BadMatch 崩溃；
+///    规避 WebKitGTK 在银河麒麟 V10 + 景嘉微 (JM7200/JM9) / 海光集显 / Mesa 驱动下的启动白屏与闪屏；
 /// 2. 检测到景嘉微显卡、llvmpipe 软件渲染或传入 `--disable-gpu` / `--safe-render` 时，自动启用 `WEBKIT_DISABLE_COMPOSITING_MODE=1`；
 /// 3. 在 UKUI / Wayland 混合会话下优先注入 `GDK_BACKEND=x11,wayland`，确保无边框窗口拖拽、置顶 (`set_always_on_top`) 与多窗口定位稳定工作；
-/// 4. 默认禁用易在麒麟 UKUI D-Bus 下超时的 `GTK_USE_PORTAL`（除非设置 `QUILLA_USE_PORTAL=1`），使打开/保存文件对话框毫秒级响应；
-/// 5. 针对海光 3350 (8核16线程) 初始化 Rayon 全局并行线程池，最大化全文倒排索引与知识图谱计算吞吐量。
+/// 4. 针对海光 3350 (8核16线程) 初始化 Rayon 全局并行线程池，最大化全文倒排索引与知识图谱计算吞吐量。
 pub fn init_linux_kylin_environment(args: &[String]) {
     #[cfg(target_os = "linux")]
     {
@@ -53,13 +89,6 @@ pub fn init_linux_kylin_environment(args: &[String]) {
                     std::env::set_var("GDK_BACKEND", "x11,wayland");
                 }
             }
-        }
-
-        let use_portal = std::env::var("QUILLA_USE_PORTAL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !use_portal && std::env::var_os("GTK_USE_PORTAL").is_none() {
-            std::env::set_var("GTK_USE_PORTAL", "0");
         }
 
         // 兼容银河麒麟预装 Fcitx / Fcitx5 / 搜狗输入法信创版
@@ -117,7 +146,7 @@ pub fn normalize_cli_path_arg(raw_arg: &str) -> Option<String> {
     }
 }
 
-/// 单实例文件接管守卫 (tauri-plugin-single-instance 原生零依赖实现)：
+/// 单实例文件接管守卫 (原生零依赖实现)：
 /// - 当已有 Quilla 实例运行且未传入 `--new-window` 时，将双击打开的 `.md` 文件或工作区目录通过本地回环 IPC 秒级转发给主实例并立即退出；
 /// - 主实例监听本地回环端口，收到外部双击文件请求后自动唤醒窗口、置顶聚焦并派发 `quilla-open-external-file` 事件在新标签页打开。
 fn try_forward_to_existing_instance(cli_paths: &[String], is_new_window: bool) -> bool {
@@ -231,27 +260,30 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
-                let state = window.state::<AppState>();
-                let label = window.label().to_string();
-                let should_allow = state
-                    .force_closing_windows
-                    .lock()
-                    .map(|mut set| set.remove(&label))
-                    .unwrap_or(false);
+        .on_window_event(|event| {
+            let window = event.window();
+            match event.event() {
+                WindowEvent::CloseRequested { api, .. } => {
+                    let state = window.state::<AppState>();
+                    let label = window.label().to_string();
+                    let should_allow = state
+                        .force_closing_windows
+                        .lock()
+                        .map(|mut set| set.remove(&label))
+                        .unwrap_or(false);
 
-                if !should_allow {
-                    api.prevent_close();
-                    let _ = window.emit("window-close-requested", ());
+                    if !should_allow {
+                        api.prevent_close();
+                        let _ = window.emit("window-close-requested", ());
+                    }
                 }
-            }
-            WindowEvent::Resized(_) => {
-                if let Ok(maximized) = window.is_maximized() {
-                    let _ = window.emit("window-maximized-changed", maximized);
+                WindowEvent::Resized(_) => {
+                    if let Ok(maximized) = window.is_maximized() {
+                        let _ = window.emit("window-maximized-changed", maximized);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::save_file_content,
@@ -298,6 +330,8 @@ pub fn run() {
             commands::window_set_always_on_top,
             commands::window_start_dragging,
             commands::window_start_resize_dragging,
+            commands::get_window_outer_rect,
+            commands::set_window_outer_rect,
             commands::get_runtime_platform_info,
             commands::create_file,
             commands::create_folder,

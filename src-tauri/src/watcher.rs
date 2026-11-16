@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use crate::Emitter;
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FsChangePayload {
