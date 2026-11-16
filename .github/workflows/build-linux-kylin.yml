@@ -12,6 +12,8 @@ jobs:
   build-kylin-v10-sp1-hygon3350:
     name: Build Kylin V10 SP1 (glibc 2.31 + webkit2gtk-4.0 + Hygon 3350)
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -52,3 +54,13 @@ jobs:
             dist-kylin/*.tar.gz
             dist-kylin/ABI-VERIFICATION-REPORT.txt
           if-no-files-found: error
+
+      - name: Publish Release Assets to GitHub Release v0.14.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v0.14.0 \
+            dist-kylin/*.deb \
+            dist-kylin/*.tar.gz \
+            dist-kylin/ABI-VERIFICATION-REPORT.txt \
+            --clobber || true
