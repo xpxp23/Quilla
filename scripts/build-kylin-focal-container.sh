@@ -50,7 +50,7 @@ fi
 
 rustc --version
 cargo --version
-ldd --version | head -n1
+ldd --version | head -n1 || true
 
 echo "=== [Ubuntu 20.04 Focal / glibc 2.31 Container] 3. 编译 Quilla v0.14.0 (Tauri v1.8 + 海光 3350 AVX2/FMA) ==="
 CORES="$(nproc 2>/dev/null || echo 8)"
