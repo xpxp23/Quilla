@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Quilla (羽墨) v0.14.0 — 银河麒麟桌面系统 V10 SP1 二进制 ABI 门禁校验器
+# Quilla (羽墨) v0.15.0 — 银河麒麟桌面系统 V10 SP1 二进制 ABI 门禁校验器
 # 严格校验编译产出的 `quilla` 二进制是否 100% 满足银河麒麟 V10 SP1 实机基线：
 # 1. GLIBC 符号最高版本必须 <= 2.31（严禁出现 GLIBC_2.32 / 2.33 / 2.34 / 2.35）；
 # 2. 动态库依赖 (DT_NEEDED) 必须为原生 `libwebkit2gtk-4.0.so.37` 与 `libsoup-2.4.so.1`
@@ -9,6 +9,9 @@
 #    `webkit_cookie_manager_get_all_cookies` 与 `soup_message_headers_ref`。
 # ==============================================================================
 set -euo pipefail
+QUILLA_TARGET_KYLIN="${QUILLA_TARGET_KYLIN:-v10}"
+MAX_GLIBC_MINOR=31
+if [[ "${QUILLA_TARGET_KYLIN}" == "v11" ]]; then MAX_GLIBC_MINOR=38; fi
 
 BIN_FILE="${1:-src-tauri/target/release/quilla}"
 REPORT_FILE="${2:-}"
@@ -23,14 +26,14 @@ if [ ! -f "$BIN_FILE" ]; then
   exit 1
 fi
 
-echo -e "${CYAN}=== Quilla v0.14.0 · 银河麒麟 V10 SP1 (glibc 2.31 / webkit2gtk-4.0) ABI 门禁校验 ===${NC}"
+echo -e "${CYAN}=== Quilla v0.15.0 · 银河麒麟 V10 SP1 (glibc 2.31 / webkit2gtk-4.0) ABI 门禁校验 ===${NC}"
 
 # 1. 检查 GLIBC 版本上限 (必须 <= 2.31)
 GLIBC_VERSIONS="$(objdump -T "$BIN_FILE" | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/GLIBC_//' | sort -uV)"
 MAX_GLIBC="$(echo "$GLIBC_VERSIONS" | tail -n1)"
 echo -e "检测到最高 GLIBC 符号版本: ${GREEN}GLIBC_${MAX_GLIBC}${NC}"
 
-FORBIDDEN_GLIBC="$(echo "$GLIBC_VERSIONS" | awk -F. '($1 > 2) || ($1 == 2 && $2 > 31) {print "GLIBC_"$0}')"
+FORBIDDEN_GLIBC="$(echo "$GLIBC_VERSIONS" | awk -F. -v max_minor="${MAX_GLIBC_MINOR}" '($1 > 2) || ($1 == 2 && $2 > max_minor) {print "GLIBC_"$0}')"
 if [ -n "$FORBIDDEN_GLIBC" ]; then
   echo -e "${RED}✗ [ABI Gatekeeper] 检测到高于银河麒麟 V10 SP1 (glibc 2.31) 的符号版本:${NC}"
   echo "$FORBIDDEN_GLIBC"
@@ -75,7 +78,7 @@ echo -e "${GREEN}✓ [3/3] 符号表纯净度校验通过 (零 4.1/soup3 专有�
 if [ -n "$REPORT_FILE" ]; then
   mkdir -p "$(dirname "$REPORT_FILE")"
   {
-    echo "Quilla (羽墨) v0.14.0 — 银河麒麟桌面 V10 SP1 (海光 C86 3350) 二进制 ABI 校验报告"
+    echo "Quilla (羽墨) v0.15.0 — 银河麒麟桌面 V10 SP1 (海光 C86 3350) 二进制 ABI 校验报告"
     echo "================================================================================"
     echo "Build Timestamp : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     echo "Binary MD5      : $(md5sum "$BIN_FILE" | awk '{print $1}')"

@@ -23,12 +23,16 @@ export function parseDroppedFileUri(rawUri: string): string | null {
     }
   }
   if (trimmed.startsWith("file://")) {
-    const rest = trimmed.slice("file://".length);
+    let rest = trimmed.slice("file://".length);
     try {
-      return decodeURIComponent(rest);
+      rest = decodeURIComponent(rest);
     } catch {
-      return rest;
+      // keep raw
     }
+    if (/^\/[a-zA-Z]:[\\/]/.test(rest)) {
+      rest = rest.slice(1);
+    }
+    return rest;
   }
   return null;
 }
@@ -74,12 +78,14 @@ export function setupImageAndDropHandlers(
   callbacks?: DragDropCallbacks
 ) {
   const dom = view.dom;
-  let lastDroppedPathTime = 0;
+  const recentDroppedPaths = new Map<string, number>();
 
   const handleDroppedPath = async (filePath: string, insertPos: number) => {
     const now = Date.now();
-    if (now - lastDroppedPathTime < 250) return;
-    lastDroppedPathTime = now;
+    const prev = recentDroppedPaths.get(filePath);
+    if (prev !== undefined && now - prev < 250) return;
+    recentDroppedPaths.set(filePath, now);
+    if (recentDroppedPaths.size > 32) recentDroppedPaths.clear();
 
     const lowerName = filePath.toLowerCase();
     const fileName = filePath.split(/[\\/]/).pop() || "file";

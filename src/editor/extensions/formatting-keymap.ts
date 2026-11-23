@@ -454,17 +454,22 @@ export function smartToggleFormat(
   const escB = escapeRegex(before);
   const escA = escapeRegex(after);
   const singleChar = before.length === 1 ? escapeRegex(before[0]) : "";
+  const guardPrevChar =
+    before === "*" || before === "**" ? "*" : before.length === 1 ? before[0] : "";
   const regex =
     before === "*"
-      ? /(?<!\*)\*([^*]+?)\*(?!\*)/g
+      ? /\*([^*]+?)\*(?!\*)/g
       : before === "**"
-      ? /(?<!\*)\*\*([^*]+?)\*\*(?!\*)/g
+      ? /\*\*([^*]+?)\*\*(?!\*)/g
       : singleChar
-      ? new RegExp(`(?<!${singleChar})${escB}([^${singleChar}]+?)${escA}(?!${singleChar})`, "g")
+      ? new RegExp(`${escB}([^${singleChar}]+?)${escA}(?!${singleChar})`, "g")
       : new RegExp(`${escB}(.+?)${escA}`, "g");
 
   let m: RegExpExecArray | null;
   while ((m = regex.exec(lineText)) !== null) {
+    if (guardPrevChar && m.index > 0 && lineText[m.index - 1] === guardPrevChar) {
+      continue;
+    }
     const matchStart = m.index;
     const matchEnd = m.index + m[0].length;
     if (relPos >= matchStart && relPos <= matchEnd) {

@@ -11,7 +11,7 @@ import { isInsideCodeContextAST } from "./doc-structure";
 const markdownCloseBracketsConfig = markdownLanguage.data.of({
   closeBrackets: {
     brackets: ["(", "[", "{", "'", '"', "`"],
-    before: ")]}:;>.,!?，。；：！？、）】》”’\u4e00-\u9fa5",
+    before: ")]}:;>.,!?，。；：！？、）】》”’ ",
   },
 });
 
@@ -23,6 +23,7 @@ const markdownCloseBracketsConfig = markdownLanguage.data.of({
  */
 const markdownSurroundHandler = EditorView.domEventHandlers({
   keydown: (event: KeyboardEvent, view: EditorView) => {
+    if (event.isComposing || event.keyCode === 229 || view.composing) return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
     const { from, to } = view.state.selection.main;
 
@@ -126,8 +127,18 @@ const markdownSurroundHandler = EditorView.domEventHandlers({
       }
     }
 
-    // 2.1 LaTeX 数学公式美元符成对自动补全与跳过
+    // 2.1 LaTeX 数学公式美元符成对自动补全与 $$ 块级公式扩展
     if (event.key === "$") {
+      const prevCharDollar = pos > 0 ? view.state.sliceDoc(pos - 1, pos) : "";
+      if (prevCharDollar === "$" && nextChar === "$") {
+        // 已处于 $|$ 内再输入 $ 时自动扩展为 $$|$$ 块级公式，避免阻断多行公式输入
+        event.preventDefault();
+        view.dispatch({
+          changes: { from: pos, to: pos, insert: "$$" },
+          selection: { anchor: pos + 1 },
+        });
+        return true;
+      }
       if (nextChar === "$") {
         event.preventDefault();
         view.dispatch({ selection: { anchor: pos + 1 } });

@@ -64,11 +64,18 @@ export function serializeMarkdownTable(
   alignments: Array<"left" | "center" | "right">,
   colWidthRatios?: number[] | null
 ): string {
-  const sanitizeCell = (s: string) =>
-    s
-      .replace(/\r?\n/g, "<br>")
-      .replace(/(?<!\\)\|/g, "\\|")
-      .trim();
+  const sanitizeCell = (s: string) => {
+    const normalized = s.replace(/\r?\n/g, "<br>");
+    let out = "";
+    for (let i = 0; i < normalized.length; i++) {
+      if (normalized[i] === "|" && (i === 0 || normalized[i - 1] !== "\\")) {
+        out += "\\|";
+      } else {
+        out += normalized[i];
+      }
+    }
+    return out.trim();
+  };
 
   const colCount = Math.max(headers.length, ...rows.map((r) => r.length), 1);
   const normalizedHeaders = new Array(colCount)
@@ -1404,6 +1411,8 @@ class InteractiveTableWidget extends WidgetType {
     };
 
     container.addEventListener("keydown", (e: KeyboardEvent) => {
+      // 中文输入法合成态中严禁拦截键盘事件，防止吞字或误触单元格跳转
+      if (e.isComposing || e.keyCode === 229) return;
       // 1. 优先捕获 Ctrl+Z 撤销 与 Ctrl+Y / Ctrl+Shift+Z 重做
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -1421,6 +1430,10 @@ class InteractiveTableWidget extends WidgetType {
           undo(view);
         } finally {
           view.scrollDOM.scrollTop = savedScrollTop;
+          // 无论撤销栈是否为空，必须在下个微任务/帧复位锁，杜绝单元格永久无法输入
+          setTimeout(() => {
+            isUndoingOrRedoing = false;
+          }, 0);
         }
         refocusTableAfterUndoRedo(savedR, savedC, savedScrollTop);
         return;
@@ -1444,6 +1457,9 @@ class InteractiveTableWidget extends WidgetType {
           redo(view);
         } finally {
           view.scrollDOM.scrollTop = savedScrollTop;
+          setTimeout(() => {
+            isUndoingOrRedoing = false;
+          }, 0);
         }
         refocusTableAfterUndoRedo(savedR, savedC, savedScrollTop);
         return;

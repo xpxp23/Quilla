@@ -401,8 +401,10 @@ function openBatchOutlineContextMenu(
       const text = sorted
         .map((i) => `${"#".repeat(headings[i].level)} ${headings[i].text}`)
         .join("\n");
-      navigator.clipboard.writeText(text).catch(() => {});
-      showToast(`已复制 ${sorted.length} 个章节标题`, "success");
+      navigator.clipboard
+        .writeText(text)
+        .then(() => showToast(`已复制 ${sorted.length} 个章节标题`, "success"))
+        .catch(() => showToast("复制失败，请检查剪贴板权限", "error"));
       return;
     }
 
@@ -595,8 +597,10 @@ function openOutlineItemContextMenu(
       const fromPos = doc.line(startLine).from;
       const toPos = doc.line(endLine).to;
       const sectionMd = view.state.sliceDoc(fromPos, toPos);
-      navigator.clipboard.writeText(sectionMd).catch(() => {});
-      showToast("已复制整章 Markdown", "success");
+      navigator.clipboard
+        .writeText(sectionMd)
+        .then(() => showToast("已复制整章 Markdown", "success"))
+        .catch(() => showToast("复制失败，请检查剪贴板权限", "error"));
       return;
     }
 
@@ -610,8 +614,10 @@ function openOutlineItemContextMenu(
         : "";
       const refBody = docName ? `${docName}#${heading.text}` : `#${heading.text}`;
       const syntax = action === "copy-transclusion" ? `![[${refBody}]]` : `[[${refBody}]]`;
-      navigator.clipboard.writeText(syntax).catch(() => {});
-      showToast(`已复制 ${syntax}`, "success");
+      navigator.clipboard
+        .writeText(syntax)
+        .then(() => showToast(`已复制 ${syntax}`, "success"))
+        .catch(() => showToast("复制失败，请检查剪贴板权限", "error"));
       return;
     }
 

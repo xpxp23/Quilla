@@ -161,11 +161,13 @@ export function scanLineInlineAtomicSpans(
     });
   }
 
-  // 4. 行内数学公式 $...$
-  const mathRe = /(?<!\\|\$)\$(?!\$)([^\$\n]+?)(?<!\\|\$)\$(?!\$)/g;
+  // 4. 行内数学公式 $...$（无后行断言实现，兼容旧版 WebKitGTK / Safari 13）
+  const mathRe = /\$(?!\$)([^\$\n]+?)\$(?!\$)/g;
   while ((m = mathRe.exec(lineText)) !== null) {
     const s = m.index;
     const e = s + m[0].length;
+    if (s > 0 && (lineText[s - 1] === "\\" || lineText[s - 1] === "$")) continue;
+    if (e >= 2 && (lineText[e - 2] === "\\" || lineText[e - 2] === "$")) continue;
     if (!isRangeFree(s, e)) continue;
     markOccupied(s, e);
     spans.push({
@@ -182,18 +184,20 @@ export function scanLineInlineAtomicSpans(
     type: InlineAtomicSpan["type"];
     re: RegExp;
     delimLen: number;
+    forbidPrev?: string;
   }> = [
     { type: "bold_italic", re: /\*\*\*([^*]+?)\*\*\*/g, delimLen: 3 },
-    { type: "bold", re: /(?<!\*)\*\*([^*]+?)\*\*(?!\*)/g, delimLen: 2 },
+    { type: "bold", re: /\*\*([^*]+?)\*\*(?!\*)/g, delimLen: 2, forbidPrev: "*" },
     { type: "strikethrough", re: /~~([^~]+?)~~/g, delimLen: 2 },
     { type: "highlight", re: /==([^=]+?)==/g, delimLen: 2 },
-    { type: "italic", re: /(?<!\*)\*([^*]+?)\*(?!\*)/g, delimLen: 1 },
+    { type: "italic", re: /\*([^*]+?)\*(?!\*)/g, delimLen: 1, forbidPrev: "*" },
   ];
 
   for (const fmt of inlineFormats) {
     while ((m = fmt.re.exec(lineText)) !== null) {
       const s = m.index;
       const e = s + m[0].length;
+      if (fmt.forbidPrev && s > 0 && lineText[s - 1] === fmt.forbidPrev) continue;
       if (!isRangeFree(s, e)) continue;
       markOccupied(s, e);
       spans.push({

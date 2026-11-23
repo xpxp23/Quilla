@@ -111,8 +111,8 @@ body.theme-night.theme-inkstone-xuanzhi {
 
   /* ---------- 字体 ---------- */
   --font-sans: var(--font-serif);
-  --font-sans-ui: var(--font-serif);
-  --font-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STZhongsong", "STSong", "SimSun", Georgia, serif;
+  --font-sans-ui: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans CN", "WenQuanYi Micro Hei", sans-serif;
+  --font-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STZhongsong", "STSong", "CESI_SS_GB18030", "SimSun", Georgia, serif;
   --font-quote: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "Source Han Serif SC", "Noto Serif CJK SC", Georgia, serif;
   --paragraph-spacing: 0.46em;
 }

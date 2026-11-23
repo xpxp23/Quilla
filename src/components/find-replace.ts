@@ -130,20 +130,29 @@ export function initFindReplace(defaultView: EditorView, getActiveView?: () => E
     const docText = view.state.doc.toString();
 
     try {
-      let pattern = isRegex ? query : escapeRegExp(query);
-      if (isWholeWord) {
-        pattern = `(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])`;
-      }
-      const flags = isCaseSensitive ? "gu" : "giu";
+      const pattern = isRegex ? query : escapeRegExp(query);
+      const flags = isCaseSensitive ? "g" : "gi";
       const re = new RegExp(pattern, flags);
       activeRegex = re;
+      const isWordChar = (ch: string) => /[0-9a-zA-Z_\u4e00-\u9fa5]/.test(ch);
+      const MAX_MATCHES = 5000;
       let m: RegExpExecArray | null;
       while ((m = re.exec(docText)) !== null) {
         if (m[0].length === 0) {
           re.lastIndex++;
           continue;
         }
-        matches.push({ from: m.index, to: m.index + m[0].length });
+        const from = m.index;
+        const to = m.index + m[0].length;
+        if (isWholeWord) {
+          const prevCh = from > 0 ? docText[from - 1] : "";
+          const nextCh = to < docText.length ? docText[to] : "";
+          if ((prevCh && isWordChar(prevCh)) || (nextCh && isWordChar(nextCh))) {
+            continue;
+          }
+        }
+        matches.push({ from, to });
+        if (matches.length >= MAX_MATCHES) break;
       }
     } catch {
       findInput.classList.add("regex-error");
@@ -246,7 +255,14 @@ export function initFindReplace(defaultView: EditorView, getActiveView?: () => E
     performSearch(true);
   }
 
-  findInput.addEventListener("input", () => performSearch(true));
+  let findDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  findInput.addEventListener("input", () => {
+    if (findDebounceTimer) clearTimeout(findDebounceTimer);
+    findDebounceTimer = setTimeout(() => {
+      findDebounceTimer = null;
+      performSearch(true);
+    }, 140);
+  });
 
   findInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -349,10 +365,15 @@ export function initFindReplace(defaultView: EditorView, getActiveView?: () => E
   };
 
   window.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+    if (e.key === "Escape" && !bar.classList.contains("hidden")) {
+      e.preventDefault();
+      controller.close();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
       e.preventDefault();
       controller.open(false);
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "h") {
+    } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
       e.preventDefault();
       controller.open(true);
     }

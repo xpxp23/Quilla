@@ -26,7 +26,7 @@
 body.theme-night, body {
   background-color: var(--bg-color);
   color: var(--text-color);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei", Helvetica, Arial, sans-serif;
 }
 
 #write {
@@ -35,7 +35,7 @@ body.theme-night, body {
 
 #write h1, #write h2, #write h3, #write h4, #write h5, #write h6,
 .cm-line.cm-heading {
-  color: #ffffff !important;
+  color: #f0f3f6;
   font-weight: 600;
 }
 
@@ -57,7 +57,7 @@ body.theme-night, body {
 
 #write strong, .cm-strong, strong {
   font-weight: 700 !important;
-  color: #ffffff !important;
+  color: #f0f3f6;
 }
 
 #write blockquote, .cm-line.cm-blockquote {
@@ -98,7 +98,7 @@ body.theme-night, body {
 
 table.md-table th, .custom-table-root th {
   background-color: #2d3237 !important;
-  color: #ffffff !important;
+  color: #f0f3f6;
   border: 1px solid #474d54 !important;
   font-weight: 600;
 }

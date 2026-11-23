@@ -202,6 +202,10 @@ class MermaidWidget extends WidgetType {
         mermaid
           .render(id, this.code.trim())
           .then(({ svg }) => {
+            if (svgRenderCache.size >= 100) {
+              const oldestKey = svgRenderCache.keys().next().value;
+              if (oldestKey !== undefined) svgRenderCache.delete(oldestKey);
+            }
             svgRenderCache.set(cacheKey, svg);
             chartBox.innerHTML = svg;
             view.requestMeasure();

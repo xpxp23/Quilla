@@ -2,11 +2,9 @@ import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { forceRefreshEffect } from "./refresh-effect";
 
 /**
- * IME 防护守卫 (v0.6 & v0.13.0 银河麒麟 Fcitx5 / 搜狗输入法信创版 WebKitGTK 专项增强)：
- * - 支持多视图实例独立跟踪 CompositionState
- * - 针对 Linux WebKitGTK 下 Fcitx5 / 搜狗输入法候选词上屏时 `compositionend` 与 `input` 事件微秒级交错，
- *   采用带防抖取消的延迟解锁机制，防止连续词组输入中途实时预览闪烁
- * - 增加 blur 与 Escape 失焦自动释放锁，根治输入法选词中途切换标签页导致实时预览永久冻结的 Bug
+ * IME 防护守卫 (v0.15.0 重构版)：
+ * - 多视图独立追踪 CompositionState，互不串台；
+ * - 完整实现 Escape 键失焦解锁与 `destroy()` 卸载监听与定时器，彻底杜绝切换文档时的监听器叠加泄漏。
  */
 const composingViews = new WeakMap<EditorView, boolean>();
 const pendingUnlockTimers = new WeakMap<EditorView, ReturnType<typeof setTimeout>>();
@@ -25,7 +23,15 @@ export const imeState = new IMEState();
 
 export const imeGuardPlugin = ViewPlugin.fromClass(
   class {
+    private view: EditorView;
+    private startComposition: () => void;
+    private finishComposition: () => void;
+    private onKeyDown: (e: KeyboardEvent) => void;
+
     constructor(view: EditorView) {
+      this.view = view;
+      composingViews.set(view, false);
+
       const clearUnlockTimer = () => {
         const timer = pendingUnlockTimers.get(view);
         if (timer !== undefined) {
@@ -34,33 +40,58 @@ export const imeGuardPlugin = ViewPlugin.fromClass(
         }
       };
 
-      const startComposition = () => {
+      this.startComposition = () => {
         clearUnlockTimer();
         composingViews.set(view, true);
         imeState.isComposing = true;
       };
 
-      const finishComposition = () => {
+      this.finishComposition = () => {
         clearUnlockTimer();
         if (!composingViews.get(view) && !imeState.isComposing) return;
         const timer = setTimeout(() => {
           pendingUnlockTimers.delete(view);
           composingViews.set(view, false);
           imeState.isComposing = false;
-          view.dispatch({
-            effects: forceRefreshEffect.of(true),
-          });
-          view.requestMeasure();
+          try {
+            view.dispatch({
+              effects: forceRefreshEffect.of(true),
+            });
+            view.requestMeasure();
+          } catch {
+            // 视图可能已在定时器回调前销毁
+          }
         }, 32);
         pendingUnlockTimers.set(view, timer);
       };
 
-      view.dom.addEventListener("compositionstart", startComposition);
-      view.dom.addEventListener("compositionupdate", startComposition);
-      view.dom.addEventListener("compositionend", finishComposition);
-      view.contentDOM.addEventListener("blur", finishComposition);
+      this.onKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Escape" && (composingViews.get(view) || imeState.isComposing)) {
+          this.finishComposition();
+        }
+      };
+
+      view.dom.addEventListener("compositionstart", this.startComposition);
+      view.dom.addEventListener("compositionupdate", this.startComposition);
+      view.dom.addEventListener("compositionend", this.finishComposition);
+      view.dom.addEventListener("keydown", this.onKeyDown);
+      view.contentDOM.addEventListener("blur", this.finishComposition);
     }
 
     update(_update: ViewUpdate) {}
+
+    destroy() {
+      const timer = pendingUnlockTimers.get(this.view);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        pendingUnlockTimers.delete(this.view);
+      }
+      composingViews.delete(this.view);
+      this.view.dom.removeEventListener("compositionstart", this.startComposition);
+      this.view.dom.removeEventListener("compositionupdate", this.startComposition);
+      this.view.dom.removeEventListener("compositionend", this.finishComposition);
+      this.view.dom.removeEventListener("keydown", this.onKeyDown);
+      this.view.contentDOM.removeEventListener("blur", this.finishComposition);
+    }
   }
 );

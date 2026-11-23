@@ -1,8 +1,8 @@
 {
   "name": "quilla",
   "private": true,
-  "version": "0.14.0",
-  "description": "Quilla (羽墨) v0.14.0 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust (Kylin OS V10 SP1 glibc 2.31 & webkit2gtk-4.0 / Hygon C86 3350)",
+  "version": "0.15.0",
+  "description": "Quilla (羽墨) v0.15.0 - Modern WYSIWYG Markdown Editor & Local Knowledge Base rewritten in Rust (Windows & Kylin OS V10 SP1 / V11 2503 Multi-Arch)",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "test": "node scripts/run-tests.mjs",
     "build:kylin": "bash scripts/build-kylin-linux.sh",
+    "build:kylin-v11": "bash scripts/build-kylin-v11.sh",
     "package:kylin-deb": "bash scripts/package-kylin-deb.sh",
     "install:kylin-deps": "bash scripts/install-kylin-deps.sh",
     "verify:kylin-abi": "bash scripts/verify-kylin-abi.sh"
@@ -23,14 +24,12 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.4",
     "@lezer/highlight": "^1.2.1",
-    "@tauri-apps/api": "^2.2.0",
-    "@tauri-apps/plugin-dialog": "^2.2.0",
-    "@tauri-apps/plugin-fs": "^2.2.0",
+    "@tauri-apps/api": "^1.6.0",
     "katex": "^0.16.21",
     "mermaid": "^12.1.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.2.4",
+    "@tauri-apps/cli": "^1.6.3",
     "@types/katex": "^0.16.7",
     "@types/node": "^22.10.5",
     "typescript": "^5.7.2",

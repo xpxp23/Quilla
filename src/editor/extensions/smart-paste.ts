@@ -199,6 +199,9 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => {
   if (e.key === "Shift") isShiftDown = false;
 });
+window.addEventListener("blur", () => {
+  isShiftDown = false;
+});
 
 /**
  * 监听剪贴板粘贴事件：
@@ -253,7 +256,7 @@ export function initSmartPaste(view: EditorView) {
 
       const html = clipboardData.getData("text/html");
 
-      if (html && html.trim().length > 0) {
+      if (html && html.trim().length > 0 && !isInsideCodeContextAST(view.state, view.state.selection.main.from)) {
         const hasStructure =
           /<(h[1-6]|p|table|ul|ol|li|blockquote|pre|strong|b|em|i|del|mark|sub|sup|a|img)[^>]*>/i.test(
             html

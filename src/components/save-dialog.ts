@@ -92,13 +92,21 @@ export function showDeleteConfirmDialog(itemName: string): Promise<boolean> {
         e.stopPropagation();
         finish(false);
       } else if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopPropagation();
-        finish(true);
+        // 仅当焦点显式位于「确认删除」按钮上时回车才执行不可逆删除，避免误按回车毁文件
+        if (document.activeElement === confirmBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(true);
+        } else if (document.activeElement === cancelBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(false);
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
-    setTimeout(() => confirmBtn?.focus(), 20);
+    // 默认聚焦安全的「取消」按钮
+    setTimeout(() => cancelBtn?.focus(), 20);
   });
 }
 

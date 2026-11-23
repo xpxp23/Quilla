@@ -413,7 +413,17 @@ export async function openTimeMachineModal(options: {
       </div>
     `;
 
-    const close = () => tmModalEl?.classList.add("hidden");
+    const close = () => {
+      tmModalEl?.classList.add("hidden");
+      window.removeEventListener("keydown", onEscClose);
+    };
+    const onEscClose = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && tmModalEl && !tmModalEl.classList.contains("hidden")) {
+        e.preventDefault();
+        close();
+      }
+    };
+    window.addEventListener("keydown", onEscClose);
     tmModalEl.querySelector("#tm-close-btn")?.addEventListener("click", close);
     tmModalEl.querySelector("#tm-cancel-btn")?.addEventListener("click", close);
 

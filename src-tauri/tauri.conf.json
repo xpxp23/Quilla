@@ -9,7 +9,7 @@
   },
   "package": {
     "productName": "Quilla",
-    "version": "0.14.0"
+    "version": "0.15.0"
   },
   "tauri": {
     "allowlist": {
@@ -34,7 +34,7 @@
       ],
       "category": "Utility",
       "shortDescription": "Quilla (羽墨) - 现代化所见即所得 Markdown 编辑器与本地双链知识库",
-      "longDescription": "基于 Rust + Tauri v1 (webkit2gtk-4.0 / libsoup-2.4 / glibc 2.31) + CodeMirror 6 Lezer AST 打造的高性能所见即所得 Markdown 编辑器与双链知识库工作台，原生适配银河麒麟桌面操作系统 V10 SP1 与海光 C86 3350 处理器。",
+      "longDescription": "基于 Rust + Tauri v1.8 + CodeMirror 6 Lezer AST 打造的高性能所见即所得 Markdown 编辑器与双链知识库工作台，深度适配 Windows 与银河麒麟操作系统 V10 SP1 / V11 2503（x86_64 / AArch64 / LoongArch64）。",
       "deb": {
         "depends": [
           "libgtk-3-0",
@@ -45,7 +45,7 @@
       }
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https: http:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: http://127.0.0.1:*"
     },
     "windows": [
       {

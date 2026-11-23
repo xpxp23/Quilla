@@ -1,8 +1,7 @@
 /**
- * Quilla (羽墨) v0.14.0 — 跨版本 Tauri Core IPC 兼容桥接层 (Tauri v1 webkit2gtk-4.0 & Tauri v2 双栈自适应)
- * - 在银河麒麟 V10 SP1 (glibc 2.31 + libwebkit2gtk-4.0-37 + libsoup-2.4) 下自动走 Tauri v1 `window.__TAURI__` / `window.__TAURI_IPC__`
- *   (`webkit_user_content_manager_register_script_message_handler` postMessage 通道)，彻底摆脱对 `webkit_uri_scheme_request_get_http_body` 的依赖；
- * - 在 Tauri v2 环境下自动感知 `window.__TAURI_INTERNALS__.invoke`。
+ * Quilla (羽墨) v0.15.0 — 跨版本 Tauri Core IPC 兼容桥接层 (Tauri v1 & Tauri v2 双栈自适应)
+ * - 兼容银河麒麟 V10 SP1 (webkit2gtk-4.0 / libsoup-2.4) 与银河麒麟 V11 2503 (glibc 2.38 / webkit2gtk-4.1)
+ * - 修复了底层 __TAURI_IPC__ 展开参数可能覆盖 cmd/callback/error 协议字段的安全隐患
  */
 
 function registerIpcCallback(
@@ -52,7 +51,7 @@ export async function invoke<T = any>(
     return win.__TAURI_INTERNALS__.invoke(cmd, args);
   }
 
-  // 3. 兼容 Tauri v1 底层原始 window.__TAURI_IPC__ (WebKitGTK 4.0 script message handler)
+  // 3. 兼容 Tauri v1 底层原始 window.__TAURI_IPC__ (WebKitGTK script message handler)
   if (typeof win.__TAURI_IPC__ === "function") {
     return new Promise<T>((resolve, reject) => {
       const callback = registerIpcCallback((r) => {
@@ -64,11 +63,12 @@ export async function invoke<T = any>(
         Reflect.deleteProperty(win, `_${callback}`);
       }, true);
 
+      // 安全顺序：先展开业务参数，再用协议保留字段覆盖，防止 args 中同名字段劫持 IPC 回调
       win.__TAURI_IPC__({
+        ...args,
         cmd,
         callback,
         error,
-        ...args,
       });
     });
   }

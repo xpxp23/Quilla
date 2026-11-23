@@ -119,7 +119,17 @@ export function isTableDelimiter(lineText: string): boolean {
   let inner = t;
   if (inner.startsWith("|")) inner = inner.slice(1);
   if (inner.endsWith("|") && !inner.endsWith("\\|")) inner = inner.slice(0, -1);
-  const parts = inner.split(/(?<!\\)\|/);
+  const parts: string[] = [];
+  let cur = "";
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] === "|" && (i === 0 || inner[i - 1] !== "\\")) {
+      parts.push(cur);
+      cur = "";
+    } else {
+      cur += inner[i];
+    }
+  }
+  parts.push(cur);
   if (parts.length === 0) return false;
   return parts.every((cell) => /^:?-{1,}:?$/.test(cell.trim()));
 }

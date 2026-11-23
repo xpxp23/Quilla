@@ -1439,6 +1439,10 @@ class ImageWidget extends WidgetType {
           relPath: this.src,
         })
           .then((base64) => {
+            if (imageBase64Cache.size >= 100) {
+              const oldestKey = imageBase64Cache.keys().next().value;
+              if (oldestKey !== undefined) imageBase64Cache.delete(oldestKey);
+            }
             imageBase64Cache.set(cacheKey, base64);
             img.src = base64;
             view.requestMeasure();

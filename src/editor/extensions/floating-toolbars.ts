@@ -29,7 +29,9 @@ function sanitizeLinkUrl(raw: string): string {
 
 function resolveLocalImagePath(src: string, docPath: string | null): string | undefined {
   if (!src || /^https?:\/\/|^data:/i.test(src)) return undefined;
-  const cleaned = src.replace(/^file:\/\/\/?/i, "");
+  const cleaned = src
+    .replace(/^file:\/\/\/([a-zA-Z]:[\\/])/i, "$1")
+    .replace(/^file:\/\//i, "");
   if (/^[a-zA-Z]:[\\/]/.test(cleaned) || cleaned.startsWith("/")) {
     return cleaned;
   }

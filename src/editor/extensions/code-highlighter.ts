@@ -33,7 +33,7 @@ const COMMON_KEYWORDS = new Set([
   "function", "typeof", "instanceof", "void", "readonly", "keyof", "infer", "is",
   "def", "lambda", "pass", "with", "global", "nonlocal", "assert", "del", "except",
   "raise", "and", "or", "not", "then", "fi", "do", "done", "esac", "echo", "local",
-  "select", "insert", "update", " into", "values", "where", "join", "left", "right",
+  "select", "insert", "update", "into", "values", "where", "join", "left", "right",
   "inner", "outer", "on", "group", "by", "order", "having", "limit", "offset",
   "create", "table", "drop", "alter", "index", "primary", "key", "foreign", "distinct",
 ]);
@@ -43,7 +43,7 @@ const COMMON_TYPES_AND_CONSTS = new Set([
   "Some", "Ok", "Err", "Option", "Result", "Vec", "String", "str", "usize", "isize",
   "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "f32", "f64",
   "bool", "char", "Box", "Rc", "Arc", "Mutex", "HashMap", "HashSet", "BTreeMap",
-  "int", "long", "short", "float", "double", "byte", "boolean", " void", "any", "unknown",
+  "int", "long", "short", "float", "double", "byte", "boolean", "void", "any", "unknown",
   "never", "number", "string", "symbol", "bigint", "Promise", "Array", "Map", "Set",
   "Record", "Partial", "Required", "Readonly", "Pick", "Omit", "HTMLElement", "Document",
   "Window", "Event", "list", "dict", "tuple", "set", "bytes", "object",

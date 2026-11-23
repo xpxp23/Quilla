@@ -1195,14 +1195,14 @@ em, .cm-emphasis {
   background-color: var(--search-pulse-bg) !important;
   color: var(--search-hit-fg) !important;
   border-radius: 3px;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--search-pulse-bg) 55%, transparent);
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.35);
   animation: searchPulseGlow 1.8s ease-out forwards;
 }
 
 @keyframes searchPulseGlow {
-  0% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--search-pulse-bg) 85%, transparent); }
-  60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--search-pulse-bg) 35%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--search-pulse-bg) 0%, transparent); }
+  0% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.55); }
+  60% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
 }
 
 /* 任务列表复选框 */

@@ -48,18 +48,20 @@ jobs:
       - name: Upload Kylin OS V10 SP1 (Hygon 3350) Release Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Quilla-v0.14.0-Kylin-V10-SP1-Hygon3350-Linux-x86_64
+          name: Quilla-v0.15.0-Kylin-V10-SP1-Hygon3350-Linux-x86_64
           path: |
             dist-kylin/*.deb
             dist-kylin/*.tar.gz
             dist-kylin/ABI-VERIFICATION-REPORT.txt
           if-no-files-found: error
 
-      - name: Publish Release Assets to GitHub Release v0.14.0
+      - name: Publish Release Assets to GitHub Release v0.15.0
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload v0.14.0 \
+          TAG_NAME="${GITHUB_REF_NAME:-v0.15.0}"
+          if [[ "$TAG_NAME" != v* ]]; then TAG_NAME="v0.15.0"; fi
+          gh release upload "$TAG_NAME" \
             dist-kylin/*.deb \
             dist-kylin/*.tar.gz \
             dist-kylin/ABI-VERIFICATION-REPORT.txt \

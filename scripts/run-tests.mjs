@@ -13,7 +13,7 @@ fs.readFileSync = function (...args) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 
-console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证 ===");
+console.log("=== Quilla (羽墨) v0.15.0 自动化回归与架构完整性验证 ===");
 
 // 1. 静态源码架构、历史防回归与 v0.8 / v0.9 / v0.10.x 全量修复及新特性验证
 {
@@ -345,11 +345,11 @@ console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证
   const cargoToml = fs.readFileSync(path.join(rootDir, "src-tauri/Cargo.toml"), "utf-8");
   const indexHtml = fs.readFileSync(path.join(rootDir, "index.html"), "utf-8");
 
-  assert.equal(pkg.version, "0.14.0", "package.json 版本号必须为 0.14.0");
+  assert.equal(pkg.version, "0.15.0", "package.json 版本号必须为 0.15.0");
   assert.equal(
     tauriConf.package?.version || tauriConf.version,
-    "0.14.0",
-    "tauri.conf.json 版本号必须为 0.14.0"
+    "0.15.0",
+    "tauri.conf.json 版本号必须为 0.15.0"
   );
   assert.equal(
     Array.isArray(tauriConf.tauri?.bundle?.deb?.depends) &&
@@ -359,17 +359,17 @@ console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证
     "tauri.conf.json 必须原生声明银河麒麟 V10 SP1 的 libwebkit2gtk-4.0-37 与 libsoup2.4-1 依赖"
   );
   assert.equal(
-    cargoToml.includes('version = "0.14.0"'),
+    cargoToml.includes('version = "0.15.0"'),
     true,
-    "Cargo.toml 版本号必须为 0.14.0"
+    "Cargo.toml 版本号必须为 0.15.0"
   );
   assert.equal(
-    indexHtml.includes("Quilla (羽墨) v0.14.0"),
+    indexHtml.includes("Quilla (羽墨) v0.15.0"),
     true,
-    "index.html 标题版本号必须为 v0.14.0"
+    "index.html 标题版本号必须为 v0.15.0"
   );
 
-  console.log("✓ [2/7] 全工程版本号 (v0.14.0) 与 Tauri v1.8 (webkit2gtk-4.0) 配置验证通过");
+  console.log("✓ [2/7] 全工程版本号 (v0.15.0) 与 Tauri v1.8 (webkit2gtk-4.0) 配置验证通过");
 }
 
 // 3. 统一内联词法解析器 (inline-tokenizer.ts) 与 Myers Diff 运行时逻辑验证
@@ -492,97 +492,62 @@ console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证
     "utf-8"
   );
   const tabsSrc = fs.readFileSync(path.join(rootDir, "src/components/tabs-manager.ts"), "utf-8");
-  const syncCenterSrc = fs.readFileSync(
-    path.join(rootDir, "src/components/sync-center.ts"),
-    "utf-8"
-  );
-  const canvasSrc = fs.readFileSync(
-    path.join(rootDir, "src/components/knowledge-canvas.ts"),
-    "utf-8"
-  );
-  const slideDeckSrc = fs.readFileSync(
-    path.join(rootDir, "src/components/slide-deck.ts"),
-    "utf-8"
-  );
   const safeIoSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/safe_io.rs"), "utf-8");
   const commandsSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/commands.rs"), "utf-8");
   const libSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
+  const saveDialogSrc = fs.readFileSync(path.join(rootDir, "src/components/save-dialog.ts"), "utf-8");
 
-  // 阶段一 & 二：不透明表面变量、sticky 代码块顶栏、水墨宣纸 vs 羊皮书卷皮肤解耦与 Theme Studio 联动
+  // 阶段一 & 二：不透明表面变量、Theme Studio 与皮肤解耦
   assert.equal(
     baseCssSrc.includes("--surface-overlay:") &&
       baseCssSrc.includes("--surface-glass:") &&
-      baseCssSrc.includes("html[data-code-card-style=\"mac\"]") &&
-      baseCssSrc.includes("html[data-table-density=\"compact\"]") &&
+      !baseCssSrc.includes("color-mix(") &&
+      baseCssSrc.includes('html[data-code-card-style="mac"]') &&
+      baseCssSrc.includes('html[data-table-density="compact"]') &&
       windowCssSrc.includes(".poster-ink-seal") &&
-      windowCssSrc.includes(".poster-card-stage.skin-ivory") &&
-      windowCssSrc.includes(".poster-card-stage.skin-ink") &&
+      windowCssSrc.includes(".titlebar-divider") &&
+      !windowCssSrc.includes("-webkit-app-region") &&
       pubExportSrc.includes("SYNTAX_COLOR_MAP_INK") &&
-      pubExportSrc.includes("SYNTAX_COLOR_MAP_IVORY") &&
       themeStudioSrc.includes("export function getFontSizeScale") &&
-      themeStudioSrc.includes("studio-table-density") &&
       prefsSrc.includes("getFontSizeScale()"),
     true,
-    "[v0.13.0 阶段一&二] 表面不透明度、Theme Studio 全部控件联动及水墨宣纸/羊皮书卷皮肤差异化必须完整生效"
+    "[v0.15.0] 表面不透明度、WebKitGTK 4.0 兼容样式（无 color-mix）、无冲突拖拽样式与 Theme Studio 联动必须完整生效"
   );
 
-  // 阶段三：高频打字 I/O 解耦、章节折叠联动隐藏块级 Widget、Unicode 全词匹配与持久化历史目录
+  // 阶段三：高频打字 I/O 解耦、折叠联动、无后行断言全词匹配、防误删与安全持久化
   assert.equal(
     autoRecSrc.includes("persistDisk: false") &&
+      autoRecSrc.includes("pendingSnapshots = new Map") &&
       commandsSrc.includes("persist_disk: Option<bool>") &&
       livePreviewSrc.includes("export const headingFoldStateField") &&
-      livePreviewSrc.includes("export function isLineInsideFoldedSection") &&
       tableEditorSrc.includes("isLineInsideFoldedSection(state, t.startLine)") &&
+      tableEditorSrc.includes("isUndoingOrRedoing = false") &&
       mermaidSrc.includes("isLineInsideFoldedSection(state, b.startLine)") &&
       mathBlockSrc.includes("isLineInsideFoldedSection(state, b.startLine)") &&
-      findReplaceSrc.includes("(?<![\\\\p{L}\\\\p{N}_])") &&
+      !findReplaceSrc.includes("(?<!") &&
+      findReplaceSrc.includes("!e.shiftKey && !e.altKey") &&
+      saveDialogSrc.includes("cancelBtn?.focus()") &&
       safeIoSrc.includes("pub fn resolve_app_data_root()") &&
       safeIoSrc.includes("pub fn migrate_file_history"),
     true,
-    "[v0.13.0 阶段三] 高频打字磁盘 I/O 解耦、折叠章节内表格/流程图/公式块隐藏、中英文全词匹配与历史快照迁移必须完整生效"
+    "[v0.15.0] 多槽草稿防覆盖、表格撤销解锁、无后行断言查找、快捷键防劫持与安全删除确认必须完整生效"
   );
 
-  // 阶段四：四大核心新特性（分屏 0ms Transaction 同步、Git/WebDAV 三方冲突合并、Canvas 无限白板、幻灯片演示模式）
+  // 阶段四：主航道精简（已移除知识白板、多端同步、幻灯片演示模式）与 0ms 分屏同步保留
   assert.equal(
     tabsSrc.includes("handlePrimaryImmediateTransaction") &&
       tabsSrc.includes("alignSplitViewScrollByTopLine") &&
-      tabsSrc.includes("splitSyncAnnotation") &&
-      syncCenterSrc.includes("export async function openSyncCenterModal") &&
-      syncCenterSrc.includes("export function computeThreeWayMergeHunks") &&
-      commandsSrc.includes("pub fn workspace_git_status") &&
-      commandsSrc.includes("pub fn workspace_git_sync") &&
-      commandsSrc.includes("pub fn parse_git_conflict_file") &&
-      commandsSrc.includes("pub fn webdav_sync_workspace") &&
-      libSrc.includes("commands::workspace_git_sync") &&
-      libSrc.includes("commands::webdav_sync_workspace") &&
-      canvasSrc.includes("export async function openKnowledgeCanvasModal") &&
-      canvasSrc.includes("export function buildInitialCanvasFromDocument") &&
-      slideDeckSrc.includes("export function openSlideDeckMode") &&
-      slideDeckSrc.includes("export function parseMarkdownIntoSlides") &&
-      slideDeckSrc.includes("slide-laser-canvas"),
+      !fs.existsSync(path.join(rootDir, "src/components/sync-center.ts")) &&
+      !fs.existsSync(path.join(rootDir, "src/components/knowledge-canvas.ts")) &&
+      !fs.existsSync(path.join(rootDir, "src/components/slide-deck.ts")) &&
+      !commandsSrc.includes("pub fn workspace_git_sync") &&
+      !commandsSrc.includes("pub fn webdav_sync_workspace") &&
+      !libSrc.includes("commands::workspace_git_sync"),
     true,
-    "[v0.13.0 阶段四] 四大核心新特性（Transaction 级零延迟分屏、原生 Git/WebDAV 同步与三方合并、Canvas 无限白板、幻灯片演示模式）必须全部就绪"
+    "[v0.15.0] 已彻底移除知识白板、多端同步与幻灯片演示模式，并保留 0ms 分屏同步"
   );
 
-
-  // 运行时验证：1) Git 冲突标记解析器、2) 幻灯片 --- 分页与演讲备注提取、3) Canvas 贝塞尔连线与块锚点提取
-  const sampleConflictDoc = [
-    "# 架构设计笔记",
-    "<<<<<<< HEAD",
-    "- 采用 CodeMirror 6 Transaction 0ms 分屏同步",
-    "=======",
-    "- 采用原生 WebDAV / Git 三方冲突合并视图",
-    ">>>>>>> origin/main",
-    "尾部公共段落 ^arch-footer",
-  ].join("\n");
-  assert.equal(
-    sampleConflictDoc.includes("<<<<<<<") &&
-      sampleConflictDoc.includes("=======") &&
-      sampleConflictDoc.includes(">>>>>>>"),
-    true
-  );
-
-  // 验证全部 6 套墨观主题与 5 套经典主题均已补齐不透明 --surface-overlay 与 --surface-glass
+  // 验证全部 6 套墨观主题与 5 套经典主题均包含 --surface-overlay 与 --surface-glass
   for (const themeFile of [
     "src/themes/inkstone/xuanzhi.css",
     "src/themes/inkstone/xuanzhi-dim.css",
@@ -604,10 +569,10 @@ console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证
     );
   }
 
-  console.log("✓ [6/6] v0.13.0 全部 UI 透明度修复、皮肤打磨、性能优化与四大核心新特性验证通过");
+  console.log("✓ [6/7] v0.15.0 架构精简、防假死/防误删/防快捷键劫持与主题兼容性验证通过");
 }
 
-// 7. [v0.14.0] 银河麒麟系统 V10 SP1 (glibc 2.31 + webkit2gtk-4.0 + libsoup-2.4) & 海光 C86 3350 深度适配验证
+// 7. [v0.15.0] Windows 防拖动假死 + 银河麒麟 V10 SP1 / V11 2503（glibc 2.38 / 多架构 / KVM）全链路验证
 {
   const libSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/lib.rs"), "utf-8");
   const commandsSrc = fs.readFileSync(path.join(rootDir, "src-tauri/src/commands.rs"), "utf-8");
@@ -627,82 +592,79 @@ console.log("=== Quilla (羽墨) v0.14.0 自动化回归与架构完整性验证
   const tauriConf = JSON.parse(
     fs.readFileSync(path.join(rootDir, "src-tauri/tauri.conf.json"), "utf-8")
   );
-  const workflowYml = fs.readFileSync(
-    path.join(rootDir, ".github/workflows/build-linux-kylin.yml"),
-    "utf-8"
-  );
   const abiVerifySh = fs.readFileSync(
     path.join(rootDir, "scripts/verify-kylin-abi.sh"),
     "utf-8"
   );
 
-  // 1) 海光 3350 指令集配置与 Rayon 线程池初始化
+  // 1) 多架构安全编译（不强制 AVX2）+ KVM/QEMU 虚拟 GPU 检测 + 非阻塞文件对话框 + 异步命令
   assert.equal(
     cargoConfig.includes("[target.x86_64-unknown-linux-gnu]") &&
-      cargoConfig.includes("+avx2") &&
-      cargoConfig.includes("+fma") &&
-      libSrc.includes("pub fn init_linux_kylin_environment") &&
-      libSrc.includes("WEBKIT_DISABLE_DMABUF_RENDERER") &&
-      libSrc.includes("quilla-hygon-worker-"),
+      cargoConfig.includes("[target.aarch64-unknown-linux-gnu]") &&
+      cargoConfig.includes("[target.loongarch64-unknown-linux-gnu]") &&
+      !cargoConfig.includes("+avx2") &&
+      libSrc.includes("is_virtualized_or_software_gpu") &&
+      libSrc.includes("WEBKIT_DISABLE_COMPOSITING_MODE") &&
+      libSrc.includes("window_maximized_state") &&
+      commandsSrc.includes("pub async fn save_file_content") &&
+      commandsSrc.includes("pub async fn sync_document_buffer") &&
+      commandsSrc.includes("tauri::api::dialog::FileDialogBuilder::new()"),
     true,
-    "[v0.14.0 Kylin/Hygon] 必须包含海光 3350 AVX2/FMA 指令集配置、Rayon 线程池预热与 WebKitGTK 防白屏守卫"
+    "[v0.15.0 Dual-Platform] 必须支持多架构/KVM 安全编译与渲染检测、非阻塞文件对话框与异步 Rust 命令"
   );
 
-  // 2) file:// 中文 URI 解码、信创浏览器 PDF 导出、Peony 高亮定位与右键脚本集成
+  // 2) Windows 平台拖拽隔离、Linux 边缘缩放失焦保护、IME 清理与安全 CSP
   assert.equal(
-    libSrc.includes("pub fn normalize_cli_path_arg") &&
-      commandsSrc.includes("pub fn get_runtime_platform_info") &&
-      commandsSrc.includes("qaxbrowser-safe-stable") &&
-      commandsSrc.includes("browser360-cn-stable") &&
-      commandsSrc.includes("kylin-browser") &&
-      commandsSrc.includes("/usr/bin/peony") &&
-      commandsSrc.includes("quilla-markdown.xml"),
-    true,
-    "[v0.14.0 Kylin/Hygon] 必须支持 file:// 中文 URI 解码、奇安信/360/麒麟浏览器 PDF 导出与 Peony 文件管理器深度集成"
-  );
-
-  // 3) Tauri v1.8 (webkit2gtk-4.0 / libsoup-2.4) + Ubuntu 20.04 (glibc 2.31) + ABI Gatekeeper 验证
-  assert.equal(
-    commandsSrc.includes("pub fn window_start_dragging") &&
-      commandsSrc.includes("pub fn get_window_outer_rect") &&
-      commandsSrc.includes("pub fn set_window_outer_rect") &&
-      titlebarSrc.includes("ensureFramelessResizeHandles") &&
-      titlebarSrc.includes("set_window_outer_rect") &&
+    titlebarSrc.includes("isLinuxDesktop()") &&
+      titlebarSrc.includes('window.addEventListener("blur", cleanup)') &&
       windowCssSrc.includes("#quilla-window-resize-layer") &&
-      imgHandlerSrc.includes("export function parseDroppedFileUri") &&
-      imeGuardSrc.includes("compositionupdate") &&
+      imgHandlerSrc.includes("recentDroppedPaths") &&
+      imeGuardSrc.includes("destroy()") &&
       baseCssSrc.includes("Noto Sans CJK SC") &&
-      baseCssSrc.includes("WenQuanYi Micro Hei") &&
       cargoToml.includes('tauri = { version = "1.8"') &&
-      cargoToml.includes('tauri-build = { version = "1.5"') &&
-      workflowYml.includes("ubuntu:20.04") &&
-      abiVerifySh.includes("webkit_uri_scheme_request_get_http_body") &&
-      Array.isArray(tauriConf.tauri?.bundle?.deb?.depends),
+      typeof tauriConf.tauri?.security?.csp === "string" &&
+      tauriConf.tauri.security.csp.includes("default-src 'self'") &&
+      abiVerifySh.includes("QUILLA_TARGET_KYLIN"),
     true,
-    "[v0.14.0 Kylin/Hygon] 必须基于 Tauri v1.8 (webkit2gtk-4.0 + libsoup-2.4) 与 ubuntu:20.04 (glibc 2.31) 编译并通过 ABI 门禁校验"
+    "[v0.15.0 Dual-Platform] Windows 拖拽隔离、IME 卸载、严格 CSP 与 V11 ABI 兼容校验必须完整就绪"
   );
 
-  // 4) 构建与打包脚本及 Tauri 兼容桥接层完整性检查
+  // 3) 全量扫描 src/ 确认零正则后行断言
+  const walkTs = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walkTs(full);
+      else if (entry.name.endsWith(".ts")) {
+        const content = fs.readFileSync(full, "utf-8");
+        assert.equal(
+          content.includes("(?<=") || content.includes("(?<!"),
+          false,
+          `文件 ${full} 仍包含不兼容旧 WebKitGTK 的正则后行断言`
+        );
+      }
+    }
+  };
+  walkTs(path.join(rootDir, "src"));
+
   for (const scriptFile of [
     "scripts/install-kylin-deps.sh",
     "scripts/build-kylin-linux.sh",
+    "scripts/build-kylin-v11.sh",
     "scripts/build-kylin-focal-container.sh",
     "scripts/package-kylin-deb.sh",
     "scripts/verify-kylin-abi.sh",
     "src/tauri-compat/core.ts",
     "src/tauri-compat/event.ts",
     "src/tauri-compat/webview.ts",
-    ".github/workflows/build-linux-kylin.yml",
   ]) {
     assert.equal(
       fs.existsSync(path.join(rootDir, scriptFile)),
       true,
-      `必须包含银河麒麟 V10 SP1 / 海光 3350 构建脚本或兼容桥接模块: ${scriptFile}`
+      `必须包含银河麒麟构建脚本或兼容桥接模块: ${scriptFile}`
     );
   }
 
-  console.log("✓ [7/7] v0.14.0 银河麒麟系统 V10 SP1 (glibc 2.31 / webkit2gtk-4.0 / libsoup-2.4) & 海光 C86 3350 全链路验证通过");
+  console.log("✓ [7/7] v0.15.0 Windows 防假死与银河麒麟 V10 SP1 / V11 2503 全链路验证通过");
 }
 
 console.log("=== ALL TESTS PASSED (100%) ===");
-

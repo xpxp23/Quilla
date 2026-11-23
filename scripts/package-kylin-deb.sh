@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Quilla (羽墨) v0.14.0 — 银河麒麟桌面系统 V10 SP1 (海光 3350 amd64) DEB & 便携包构建器
-# 核心修正 (v0.14.0)：
+# Quilla (羽墨) v0.15.0 — 银河麒麟桌面系统 V10 SP1 (海光 3350 amd64) DEB & 便携包构建器
+# 核心修正 (v0.15.0)：
 # 1. 二进制基于 Tauri v1.8 + Ubuntu 20.04 (glibc 2.31) 原生链接 `libwebkit2gtk-4.0.so.37`
 #    与 `libsoup-2.4.so.1`，彻底移除 v0.13.0 中无效的 4.0->4.1 软链伪装；
 # 2. `DEBIAN/control` 精确声明银河麒麟 V10 SP1 原生库依赖：
@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="0.14.0"
+VERSION="0.15.0"
 PKG_NAME="quilla"
 ARCH_DEB="amd64"
 BIN_PATH="$ROOT_DIR/src-tauri/target/release/quilla"
@@ -63,7 +63,7 @@ cp -f "$ROOT_DIR/src-tauri/icons/128x128@2x.png" "$STAGE_DEB/usr/share/icons/hic
 # 3. 生成银河麒麟 V10 SP1 + 海光 3350 启动包装器 /usr/bin/quilla
 cat > "$STAGE_DEB/usr/bin/quilla" <<'EOF'
 #!/usr/bin/env bash
-# Quilla (羽墨) v0.14.0 — 银河麒麟桌面 V10 SP1 (glibc 2.31 / webkit2gtk-4.0 / 海光 3350) 启动器
+# Quilla (羽墨) v0.15.0 — 银河麒麟桌面 V10 SP1 (glibc 2.31 / webkit2gtk-4.0 / 海光 3350) 启动器
 APP_DIR="/opt/quilla"
 export LD_LIBRARY_PATH="${APP_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
@@ -144,7 +144,7 @@ Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Quilla Team <support@quilla.app>
 Depends: libc6 (>= 2.31), libgtk-3-0, libwebkit2gtk-4.0-37, libsoup2.4-1, xdg-utils
 Recommends: git, curl, chromium | chromium-browser | qaxbrowser-safe-stable | browser360-cn-stable | google-chrome-stable
-Description: Quilla (羽墨) v0.14.0 - 现代化所见即所得 Markdown 编辑器与双链知识库 (银河麒麟 V10 SP1 & 海光 3350 原生版)
+Description: Quilla (羽墨) v0.15.0 - 现代化所见即所得 Markdown 编辑器与双链知识库 (银河麒麟 V10 SP1 & 海光 3350 原生版)
  基于 Rust + Tauri v1.8 + CodeMirror 6 Lezer AST 构建的高性能 Markdown 编辑器。
  原生基于 glibc 2.31 + libwebkit2gtk-4.0-37 + libsoup-2.4-1 编译，100% 兼容银河麒麟桌面操作系统 V10 SP1 与海光 C86 3350。
 EOF

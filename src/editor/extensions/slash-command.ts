@@ -520,6 +520,7 @@ class SlashMenuOverlay {
   }
 
   public handleKeyDown(e: KeyboardEvent, view: EditorView): boolean {
+    if (e.isComposing || e.keyCode === 229) return false;
     if (!this.isOpen || this.filteredItems.length === 0) return false;
     this.currentView = view;
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Quilla (羽墨) v0.14.0 — Ubuntu 20.04 Focal (glibc 2.31 + webkit2gtk-4.0) 容器内构建脚本
+# Quilla (羽墨) v0.15.0 — Ubuntu 20.04 Focal (glibc 2.31 + webkit2gtk-4.0) 容器内构建脚本
 # 说明：
 # 银河麒麟桌面操作系统 V10 SP1 的运行期基线为：
 # - glibc 2.31 (`0kylin9.1k22.0`)
@@ -52,7 +52,7 @@ rustc --version
 cargo --version
 ldd --version | head -n1 || true
 
-echo "=== [Ubuntu 20.04 Focal / glibc 2.31 Container] 3. 编译 Quilla v0.14.0 (Tauri v1.8 + 海光 3350 AVX2/FMA) ==="
+echo "=== [Ubuntu 20.04 Focal / glibc 2.31 Container] 3. 编译 Quilla v0.15.0 (Tauri v1.8 + 海光 3350 AVX2/FMA) ==="
 CORES="$(nproc 2>/dev/null || echo 8)"
 export RUSTFLAGS="-C target-feature=+sse4.2,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+popcnt,+aes -C link-arg=-Wl,-rpath,\$ORIGIN/lib:/opt/quilla/lib"
 

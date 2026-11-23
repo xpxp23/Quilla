@@ -162,7 +162,8 @@ export function triggerInlineCreateInTree(
       finalName += ".md";
     }
     const sep = dir.includes("\\") ? "\\" : "/";
-    const fullPath = `${dir}${sep}${finalName}`;
+    const cleanDir = dir.replace(/[\\/]+$/, "");
+    const fullPath = `${cleanDir}${sep}${finalName}`;
     try {
       if (isFolder) {
         await invoke("create_folder", { path: fullPath });
@@ -236,7 +237,7 @@ function startInlineRename(rowEl: HTMLElement, item: FileItem, options: FileTree
     }
 
     const sep = item.path.includes("\\") ? "\\" : "/";
-    const parentDir = item.path.replace(/[\\/][^\\/]+$/, "");
+    const parentDir = item.path.replace(/[\\/][^\\/]+$/, "").replace(/[\\/]+$/, "");
     const newPath = `${parentDir}${sep}${finalName}`;
     try {
       await invoke("rename_path", { oldPath: item.path, newPath });

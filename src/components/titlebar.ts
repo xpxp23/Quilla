@@ -6,13 +6,18 @@ const SVG_RESTORE = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none"
 
 const RESIZE_DIRECTIONS = ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const;
 
+function isLinuxDesktop(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent);
+}
+
 /**
- * 注入无边框窗口八向边缘拉伸热区：
- * 同时兼容 Tauri v1 (`get_window_outer_rect` / `set_window_outer_rect` 物理坐标实时拉伸，原生支持银河麒麟 V10 SP1 webkit2gtk-4.0)
- * 与 `window_start_resize_dragging` 接口。
+ * 仅在 Linux (WebKitGTK) 下注入无边框窗口八向边缘拉伸热区：
+ * - Windows / macOS 使用系统原生边框与 Tauri 原生窗口机制，彻底消除顶部 4px 热区遮挡标题栏导致的拖动假死；
+ * - 在 Linux 下先绑定释放监听器再 await 窗口矩形，并监听 blur / pointercancel 防止 mousemove 残留死循环。
  */
 function ensureFramelessResizeHandles() {
-  if (typeof document === "undefined") return;
+  if (typeof document === "undefined" || !isLinuxDesktop()) return;
   if (document.getElementById("quilla-window-resize-layer")) return;
 
   const layer = document.createElement("div");
@@ -28,7 +33,21 @@ function ensureFramelessResizeHandles() {
       e.preventDefault();
       e.stopPropagation();
 
-      invoke("window_start_resize_dragging", { direction: dir }).catch(() => {});
+      let aborted = false;
+      let moveHandler: ((ev: MouseEvent) => void) | null = null;
+      const cleanup = () => {
+        aborted = true;
+        if (moveHandler) {
+          window.removeEventListener("mousemove", moveHandler);
+          moveHandler = null;
+        }
+        window.removeEventListener("mouseup", cleanup);
+        window.removeEventListener("blur", cleanup);
+      };
+
+      // 先注册释放与失焦守卫，杜绝 await 期间松开鼠标造成监听器永久泄漏
+      window.addEventListener("mouseup", cleanup);
+      window.addEventListener("blur", cleanup);
 
       const startScreenX = e.screenX;
       const startScreenY = e.screenY;
@@ -36,19 +55,24 @@ function ensureFramelessResizeHandles() {
       try {
         startRect = await invoke<[number, number, number, number]>("get_window_outer_rect");
       } catch {
+        cleanup();
         return;
       }
-      if (!startRect) return;
+      if (!startRect || aborted) {
+        cleanup();
+        return;
+      }
 
       const [initX, initY, initW, initH] = startRect;
       const dpr = window.devicePixelRatio || 1;
       let rafPending = false;
 
-      const onMouseMove = (moveEv: MouseEvent) => {
-        if (rafPending) return;
+      moveHandler = (moveEv: MouseEvent) => {
+        if (aborted || rafPending) return;
         rafPending = true;
         requestAnimationFrame(() => {
           rafPending = false;
+          if (aborted) return;
           const dx = Math.round((moveEv.screenX - startScreenX) * dpr);
           const dy = Math.round((moveEv.screenY - startScreenY) * dpr);
 
@@ -89,13 +113,7 @@ function ensureFramelessResizeHandles() {
         });
       };
 
-      const onMouseUp = () => {
-        window.removeEventListener("mousemove", onMouseMove);
-        window.removeEventListener("mouseup", onMouseUp);
-      };
-
-      window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp);
+      window.addEventListener("mousemove", moveHandler);
     });
     layer.appendChild(handle);
   }
@@ -104,9 +122,10 @@ function ensureFramelessResizeHandles() {
 }
 
 /**
- * 沉浸式标题栏控制器：
- * 支持原生窗口最小化、最大化/还原图标动态同步、双击标题栏最大化还原、系统级关闭事件拦截、置顶锁定，
- * 以及针对银河麒麟 WebKitGTK 4.0 的原生 `window_start_dragging` 无边框拖拽与八向边缘缩放支持
+ * 沉浸式标题栏控制器 (v0.15.0 双平台防假死重构)：
+ * - Windows / macOS：仅使用 Tauri 原生 `data-tauri-drag-region`，不再叠加 CSS `-webkit-app-region: drag`
+ *   和手动 `window_start_dragging` IPC，彻底根治 Windows 拖动窗口重入死锁与数秒假死；
+ * - Linux / 银河麒麟：保留原生 `window_start_dragging` 与带失焦保护的边缘拉伸热区。
  */
 export function initTitlebar(callbacks?: { onClose?: () => void }) {
   const titlebar = document.getElementById("top-titlebar");
@@ -117,6 +136,7 @@ export function initTitlebar(callbacks?: { onClose?: () => void }) {
   const closeBtn = document.getElementById("w-close");
 
   let isAlwaysOnTop = false;
+  const linuxPlatform = isLinuxDesktop();
 
   ensureFramelessResizeHandles();
 
@@ -135,7 +155,6 @@ export function initTitlebar(callbacks?: { onClose?: () => void }) {
     syncMaximizeIcon(Boolean(event.payload));
   }).catch(() => {});
 
-  // 监听操作系统级关闭请求 (如 Alt+F4、任务栏关闭窗口)，统一走未保存改动确认弹窗
   listen("window-close-requested", () => {
     if (callbacks?.onClose) {
       callbacks.onClose();
@@ -145,14 +164,15 @@ export function initTitlebar(callbacks?: { onClose?: () => void }) {
   }).catch(() => {});
 
   pinBtn?.addEventListener("click", async () => {
-    isAlwaysOnTop = !isAlwaysOnTop;
+    const nextState = !isAlwaysOnTop;
     try {
-      await invoke("window_set_always_on_top", { onTop: isAlwaysOnTop });
+      await invoke("window_set_always_on_top", { onTop: nextState });
+      isAlwaysOnTop = nextState;
+      pinBtn.classList.toggle("pinned", isAlwaysOnTop);
+      pinBtn.title = isAlwaysOnTop ? "取消置顶 (已开启置顶)" : "窗口置顶";
     } catch (e) {
       console.error("置顶切换失败:", e);
     }
-    pinBtn.classList.toggle("pinned", isAlwaysOnTop);
-    pinBtn.title = isAlwaysOnTop ? "取消置顶 (已开启置顶)" : "窗口置顶";
   });
 
   minBtn?.addEventListener("click", async () => {
@@ -174,32 +194,33 @@ export function initTitlebar(callbacks?: { onClose?: () => void }) {
 
   maxBtn?.addEventListener("click", toggleMaximize);
 
-  // Linux WebKitGTK 4.0 兼容：显式绑定左键单击拖拽标题栏
-  titlebar?.addEventListener("mousedown", (e: MouseEvent) => {
-    if (e.button !== 0 || e.detail > 1) return;
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    if (target.closest("#w-traffic-lights, #w-menu-btn, button, input, select, a")) {
-      return;
-    }
-    invoke("window_start_dragging").catch(() => {});
-  });
+  // 仅在 Linux (WebKitGTK) 下手动触发 window_start_dragging；Windows 下交由 Tauri 原生 data-tauri-drag-region 处理
+  if (linuxPlatform) {
+    titlebar?.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0 || e.detail > 1) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("#w-traffic-lights, #w-menu-btn, button, input, select, a")) {
+        return;
+      }
+      invoke("window_start_dragging").catch(() => {});
+    });
 
-  // 允许拖拽多文档标签栏右侧空白区域移动窗口
-  tabsBar?.addEventListener("mousedown", (e: MouseEvent) => {
-    if (e.button !== 0 || e.detail > 1) return;
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    if (target.closest(".doc-tab-item, .doc-tabs-actions, button, input")) {
-      return;
-    }
-    invoke("window_start_dragging").catch(() => {});
-  });
+    tabsBar?.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0 || e.detail > 1) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest(".doc-tab-item, .doc-tabs-actions, button, input")) {
+        return;
+      }
+      invoke("window_start_dragging").catch(() => {});
+    });
+  }
 
   // 双击标题栏空白处切换最大化/还原
   titlebar?.addEventListener("dblclick", (e) => {
     const target = e.target as HTMLElement;
-    if (target.closest("#w-traffic-lights, #w-menu-btn")) return;
+    if (target.closest("#w-traffic-lights, #w-menu-btn, button")) return;
     toggleMaximize();
   });
 

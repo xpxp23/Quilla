@@ -126,7 +126,15 @@ const MAX_SEARCH_MATCHES: usize = 500;
 const MAX_LINE_PREVIEW_CHARS: usize = 220;
 
 fn normalize_path_key(p: &str) -> String {
-    p.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    let unified = p.replace('\\', "/").trim_end_matches('/').to_string();
+    #[cfg(target_os = "windows")]
+    {
+        unified.to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        unified
+    }
 }
 
 fn get_file_modified_ms(path: &Path) -> u64 {
@@ -572,17 +580,33 @@ impl WorkspaceIndex {
 
         if let Ok(mut guard) = self.caches.lock() {
             for (ws_root_key, cache) in guard.iter_mut() {
-                if file_key.starts_with(ws_root_key) {
-                    if let Some(ref doc) = parsed {
-                        let existed_before = cache.docs.insert(file_key.clone(), doc.clone()).is_some();
-                        if existed_before {
-                            cache.rebuild_inverted_indices();
-                        } else {
-                            cache.index_single_doc_tokens(&file_key, doc);
+                let prefix = format!("{}/", ws_root_key);
+                if file_key == *ws_root_key || file_key.starts_with(&prefix) {
+                    // O(1) 增量移除旧文档在倒排表与标签表中的引用，避免持锁全量重建
+                    if let Some(prev_doc) = cache.docs.remove(&file_key) {
+                        for (tag, _) in &prev_doc.tags {
+                            let low_tag = tag.to_lowercase();
+                            if let Some(set) = cache.tag_index.get_mut(&low_tag) {
+                                set.remove(&file_key);
+                            }
+                            let mut prefix = String::new();
+                            for part in low_tag.split('/') {
+                                if !prefix.is_empty() {
+                                    prefix.push('/');
+                                }
+                                prefix.push_str(part);
+                                if let Some(set) = cache.tag_index.get_mut(&prefix) {
+                                    set.remove(&file_key);
+                                }
+                            }
                         }
-                    } else {
-                        cache.docs.remove(&file_key);
-                        cache.rebuild_inverted_indices();
+                        for set in cache.inverted_tokens.values_mut() {
+                            set.remove(&file_key);
+                        }
+                    }
+                    if let Some(ref doc) = parsed {
+                        cache.docs.insert(file_key.clone(), doc.clone());
+                        cache.index_single_doc_tokens(&file_key, doc);
                     }
                 }
             }
@@ -595,12 +619,22 @@ impl WorkspaceIndex {
         let prefix = format!("{}/", target_key);
         if let Ok(mut guard) = self.caches.lock() {
             for cache in guard.values_mut() {
-                let before_len = cache.docs.len();
-                cache
+                let removed_keys: Vec<String> = cache
                     .docs
-                    .retain(|k, _| k != &target_key && !k.starts_with(&prefix));
-                if cache.docs.len() != before_len {
-                    cache.rebuild_inverted_indices();
+                    .keys()
+                    .filter(|k| *k == &target_key || k.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                if !removed_keys.is_empty() {
+                    for rk in &removed_keys {
+                        cache.docs.remove(rk);
+                        for set in cache.tag_index.values_mut() {
+                            set.remove(rk);
+                        }
+                        for set in cache.inverted_tokens.values_mut() {
+                            set.remove(rk);
+                        }
+                    }
                 }
             }
         }
@@ -677,6 +711,10 @@ impl WorkspaceIndex {
                     Some(prev) => prev.intersection(tag_docs).cloned().collect(),
                     None => tag_docs.clone(),
                 });
+            } else {
+                // 不存在的标签应直接返回空集，而非退化为全库扫描
+                candidate_keys = Some(HashSet::new());
+                break;
             }
         }
 

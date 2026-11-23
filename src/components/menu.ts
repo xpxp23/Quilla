@@ -32,10 +32,7 @@ export interface MenuActions {
   onExportSharePoster?: () => void;
   onCopyWeChatHtml?: () => void;
   onOpenTimeMachine?: () => void;
-  onOpenSyncCenter?: () => void;
   onOpenKnowledgeGraph?: () => void;
-  onOpenKnowledgeCanvas?: () => void;
-  onOpenSlideDeck?: () => void;
   onOpenThemeStudio?: () => void;
   onPrint?: () => void;
   onQuickOpen?: () => void;
@@ -127,8 +124,6 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
         <div class="menu-item-left"><span class="m-icon">${SVG.history}</span><span>版本历史 / 时间机器...</span></div>
         <span class="shortcut">${mod}+Alt+H</span>
       </div>
-      <div class="menu-item" data-action="sync-center">
-        <div class="menu-item-left"><span class="m-icon">${SVG.sync}</span><span>Git / WebDAV 同步与冲突合并...</span></div>
         <span class="shortcut">${mod}+Alt+S</span>
       </div>
       <div class="menu-divider"></div>
@@ -163,12 +158,8 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
         <div class="menu-item-left"><span class="m-icon">${SVG.graph}</span><span>双链知识图谱...</span></div>
         <span class="shortcut">${mod}+G</span>
       </div>
-      <div class="menu-item" data-action="knowledge-canvas">
-        <div class="menu-item-left"><span class="m-icon">${SVG.canvas}</span><span>Canvas 无限白板与卡片编排...</span></div>
         <span class="shortcut">${mod}+Alt+C</span>
       </div>
-      <div class="menu-item" data-action="slide-deck">
-        <div class="menu-item-left"><span class="m-icon">${SVG.slides}</span><span>幻灯片演示模式 (激光笔/备注)...</span></div>
         <span class="shortcut">F5</span>
       </div>
       <div class="menu-item" data-action="theme-studio">
@@ -278,10 +269,7 @@ export function initMenus(defaultView: EditorView, actions: MenuActions) {
     else if (action === "save") actions.onSaveFile();
     else if (action === "save-as") actions.onSaveFileAs?.();
     else if (action === "time-machine") actions.onOpenTimeMachine?.();
-    else if (action === "sync-center") actions.onOpenSyncCenter?.();
     else if (action === "knowledge-graph") actions.onOpenKnowledgeGraph?.();
-    else if (action === "knowledge-canvas") actions.onOpenKnowledgeCanvas?.();
-    else if (action === "slide-deck") actions.onOpenSlideDeck?.();
     else if (action === "theme-studio")
       actions.onOpenThemeStudio ? actions.onOpenThemeStudio() : openThemeStudioModal();
     else if (action === "copy-wechat") actions.onCopyWeChatHtml?.();

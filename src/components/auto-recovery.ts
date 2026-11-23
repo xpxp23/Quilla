@@ -53,8 +53,9 @@ function initActiveSessionHeartbeat() {
   };
 
   beat();
-  window.setInterval(beat, 3000);
+  const heartbeatTimer = window.setInterval(beat, 8000);
   window.addEventListener("focus", beat);
+  window.addEventListener("unload", () => window.clearInterval(heartbeatTimer));
   window.addEventListener("beforeunload", () => {
     try {
       const raw = localStorage.getItem(ACTIVE_SESSIONS_KEY);
@@ -142,13 +143,15 @@ function writeSnapshotMap(map: Record<string, RecoverySnapshot>) {
   }
 }
 
-let pendingPersistTimer: any = null;
-let pendingSnapshotData: {
+interface PendingSnapshotItem {
   bucketKey: string;
   filePath: string | null;
   content: string;
   title: string;
-} | null = null;
+}
+
+let pendingPersistTimer: any = null;
+const pendingSnapshots = new Map<string, PendingSnapshotItem>();
 const initializedRopeKeys = new Set<string>();
 
 function flushPendingRecoverySnapshot() {
@@ -156,36 +159,38 @@ function flushPendingRecoverySnapshot() {
     clearTimeout(pendingPersistTimer);
     pendingPersistTimer = null;
   }
-  if (!pendingSnapshotData) return;
-  const { bucketKey, filePath, content, title } = pendingSnapshotData;
-  pendingSnapshotData = null;
+  if (pendingSnapshots.size === 0) return;
+
+  const batch = Array.from(pendingSnapshots.values());
+  pendingSnapshots.clear();
 
   const map = readSnapshotMap();
-  map[bucketKey] = {
-    sessionId: CURRENT_SESSION_ID,
-    filePath,
-    content,
-    timestamp: Date.now(),
-    title,
-  };
+  const now = Date.now();
+  for (const item of batch) {
+    map[item.bucketKey] = {
+      sessionId: CURRENT_SESSION_ID,
+      filePath: item.filePath,
+      content: item.content,
+      timestamp: now,
+      title: item.title,
+    };
+    initializedRopeKeys.add(item.bucketKey);
+
+    invoke("sync_document_buffer", {
+      content: item.content,
+      fileId: item.bucketKey,
+      filePath: item.filePath,
+      title: item.title,
+      persistDisk: true,
+    }).catch(() => {});
+  }
   writeSnapshotMap(map);
-
-  initializedRopeKeys.add(bucketKey);
-
-  // 同步至 Rust Ropey 缓冲区与磁盘级快照文件
-  invoke("sync_document_buffer", {
-    content,
-    fileId: bucketKey,
-    filePath,
-    title,
-    persistDisk: true,
-  }).catch(() => {});
 }
 
-// 窗口失焦或关闭前立即落盘防丢
+// 窗口失焦时延迟一帧落盘（避免拖拽瞬间阻塞帧），关闭前同步落盘防丢
 if (typeof window !== "undefined") {
   window.addEventListener("blur", () => {
-    flushPendingRecoverySnapshot();
+    setTimeout(() => flushPendingRecoverySnapshot(), 16);
   });
   window.addEventListener("beforeunload", () => {
     flushPendingRecoverySnapshot();
@@ -220,12 +225,12 @@ export function saveRecoverySnapshot(
     }).catch(() => {});
   }
 
-  pendingSnapshotData = {
+  pendingSnapshots.set(bucketKey, {
     bucketKey,
     filePath,
     content,
     title,
-  };
+  });
 
   if (pendingPersistTimer) {
     clearTimeout(pendingPersistTimer);
@@ -239,11 +244,17 @@ export function saveRecoverySnapshot(
  * 当当前窗口的文件正常保存或放弃更改时，仅清除当前文件/会话对应的快照
  */
 export function clearRecoverySnapshot(filePath?: string | null, tabId?: string) {
-  if (pendingPersistTimer) {
+  if (filePath) {
+    pendingSnapshots.delete(`file::${filePath.replace(/\\/g, "/").toLowerCase()}`);
+  }
+  if (tabId) {
+    pendingSnapshots.delete(`${CURRENT_SESSION_ID}::${tabId}`);
+  }
+  pendingSnapshots.delete(CURRENT_SESSION_ID);
+  if (pendingSnapshots.size === 0 && pendingPersistTimer) {
     clearTimeout(pendingPersistTimer);
     pendingPersistTimer = null;
   }
-  pendingSnapshotData = null;
 
   const map = readSnapshotMap();
   delete map[CURRENT_SESSION_ID];

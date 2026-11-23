@@ -470,7 +470,17 @@ export function openThemeStudioModal() {
       </div>
     `;
 
-    const close = () => studioModalEl?.classList.add("hidden");
+    const close = () => {
+      studioModalEl?.classList.add("hidden");
+      window.removeEventListener("keydown", onStudioEsc);
+    };
+    const onStudioEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && studioModalEl && !studioModalEl.classList.contains("hidden")) {
+        e.preventDefault();
+        close();
+      }
+    };
+    window.addEventListener("keydown", onStudioEsc);
     studioModalEl.querySelector("#studio-close-btn")?.addEventListener("click", close);
     studioModalEl.querySelector("#studio-done-btn")?.addEventListener("click", close);
 

@@ -34,86 +34,91 @@ const MAX_HISTORY_SNAPSHOTS_PER_FILE: usize = 25;
 pub struct SafeIO;
 
 impl SafeIO {
-    /// 原子写入文件（支持可选硬件级 sync_all 落盘、符号链接真实目标解析与 Windows 隐藏属性安全回退）
+    /// 平台感知的路径归一化键：Windows 大小写不敏感，Linux/macOS 保留原始大小写防止哈希碰撞
+    fn normalize_history_key(file_path: &str) -> String {
+        let unified = file_path.replace('\\', "/");
+        #[cfg(target_os = "windows")]
+        {
+            unified.to_lowercase()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            unified
+        }
+    }
+
+    /// 原子写入文件：
+    /// 1. 软链接先解析真实目标路径，再对其执行同等原子临时文件替换（避免截断覆写断电丢数据）；
+    /// 2. 使用 `tempfile::Builder` 生成进程与线程隔离的唯一临时文件，彻底消除多窗口并发保存踩踏。
     pub fn atomic_write_with_options<P: AsRef<Path>>(
         path: P,
         content: &str,
         force_fsync: bool,
     ) -> io::Result<()> {
         let raw_path = path.as_ref();
-
-        // 若目标为软链接 (Symlink)，优先通过 canonicalize 解析真实指向目标，确保软链接本身不被普通文件覆盖销毁
-        if let Ok(meta) = fs::symlink_metadata(raw_path) {
+        let target_buf: PathBuf = if let Ok(meta) = fs::symlink_metadata(raw_path) {
             if meta.file_type().is_symlink() {
-                let real_target = fs::canonicalize(raw_path).unwrap_or_else(|_| raw_path.to_path_buf());
-                let mut f = File::create(&real_target)?;
-                f.write_all(content.as_bytes())?;
-                if force_fsync {
-                    f.sync_all()?;
-                }
-                return Ok(());
+                fs::canonicalize(raw_path).unwrap_or_else(|_| raw_path.to_path_buf())
+            } else {
+                raw_path.to_path_buf()
             }
-        }
+        } else {
+            raw_path.to_path_buf()
+        };
 
-        let path = raw_path;
+        let path = target_buf.as_path();
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         if !parent.exists() {
             fs::create_dir_all(parent)?;
         }
 
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let tmp_path = parent.join(format!(".{}.quilla.tmp", file_name));
+        let prefix_str = format!(".{}.", file_name);
+        let mut tmp_builder = tempfile::Builder::new();
+        tmp_builder
+            .prefix(&prefix_str)
+            .suffix(".quilla.tmp");
 
-        {
-            let mut tmp_file = match File::create(&tmp_path) {
-                Ok(f) => f,
-                Err(_) => {
-                    // 若目录禁止创建点文件临时文件，直接降级写入原文件
-                    let mut direct = File::create(path)?;
-                    direct.write_all(content.as_bytes())?;
-                    if force_fsync {
-                        direct.sync_all()?;
-                    }
-                    return Ok(());
+        let named_tmp = match tmp_builder.tempfile_in(parent) {
+            Ok(mut tmp) => {
+                tmp.write_all(content.as_bytes())?;
+                if force_fsync {
+                    tmp.as_file().sync_all()?;
                 }
-            };
-            tmp_file.write_all(content.as_bytes())?;
-            if force_fsync {
-                tmp_file.sync_all()?;
+                tmp
             }
-        }
+            Err(_) => {
+                // 目录禁止创建临时文件时的安全降级
+                let mut direct = File::create(path)?;
+                direct.write_all(content.as_bytes())?;
+                if force_fsync {
+                    direct.sync_all()?;
+                }
+                return Ok(());
+            }
+        };
 
         if path.exists() {
             if let Ok(orig_meta) = fs::metadata(path) {
-                let _ = fs::set_permissions(&tmp_path, orig_meta.permissions());
+                let _ = fs::set_permissions(named_tmp.path(), orig_meta.permissions());
             }
-            let backup_path = parent.join(format!(".{}.quilla.bak", file_name));
-            let _ = fs::rename(path, &backup_path);
-            if let Err(_e) = fs::rename(&tmp_path, path) {
-                let _ = fs::rename(&backup_path, path);
-                // Windows 隐藏文件或跨卷锁定回退：直接流式覆盖写入目标文件并移除临时文件
-                if let Err(_copy_err) = fs::copy(&tmp_path, path) {
+        }
+
+        match named_tmp.persist(path) {
+            Ok(_) => Ok(()),
+            Err(persist_err) => {
+                // Windows 隐藏/只读锁或跨卷场景回退：从已落盘的临时文件复制并清理
+                let tmp_file = persist_err.file;
+                if fs::copy(tmp_file.path(), path).is_err() {
                     let mut direct = File::create(path)?;
                     direct.write_all(content.as_bytes())?;
                     if force_fsync {
                         let _ = direct.sync_all();
                     }
                 }
-                let _ = fs::remove_file(&tmp_path);
+                Ok(())
             }
-            let _ = fs::remove_file(backup_path);
-        } else if let Err(_e) = fs::rename(&tmp_path, path) {
-            if let Err(_copy_err) = fs::copy(&tmp_path, path) {
-                let mut direct = File::create(path)?;
-                direct.write_all(content.as_bytes())?;
-                if force_fsync {
-                    let _ = direct.sync_all();
-                }
-            }
-            let _ = fs::remove_file(&tmp_path);
         }
-
-        Ok(())
     }
 
     pub fn atomic_write<P: AsRef<Path>>(path: P, content: &str) -> io::Result<()> {
@@ -154,7 +159,7 @@ impl SafeIO {
             .collect()
     }
 
-    /// 解析跨平台持久化应用数据根目录（彻底替代易被系统重启清空的 temp_dir，解决 Bug 6）
+    /// 解析跨平台持久化应用数据根目录
     pub fn resolve_app_data_root() -> PathBuf {
         #[cfg(target_os = "windows")]
         {
@@ -301,7 +306,7 @@ impl SafeIO {
     }
 
     fn build_history_store_path(file_path: &str) -> PathBuf {
-        let norm = file_path.replace('\\', "/").to_lowercase();
+        let norm = Self::normalize_history_key(file_path);
         let hash = Self::fnv1a_hash(&norm);
         let history_dir = Self::resolve_app_data_root().join("version-history");
         let _ = fs::create_dir_all(&history_dir);
@@ -382,25 +387,46 @@ impl SafeIO {
         Self::atomic_write_with_options(&store_path, &serialized, false)
     }
 
-    /// 当文件或上级目录在侧边栏被重命名时，同步迁移该文件的本地时间机器历史快照（Bug 6 修复）
+    fn migrate_single_file_history(old_path: &Path, new_path: &Path) {
+        let old_str = old_path.to_string_lossy().to_string();
+        let new_str = new_path.to_string_lossy().to_string();
+        let old_store = Self::build_history_store_path(&old_str);
+        let new_store = Self::build_history_store_path(&new_str);
+        if old_store.exists() && old_store != new_store {
+            if let Ok(raw) = fs::read_to_string(&old_store) {
+                if let Ok(mut list) = serde_json::from_str::<Vec<HistorySnapshotRecord>>(&raw) {
+                    for item in &mut list {
+                        item.file_path = new_str.clone();
+                    }
+                    if let Ok(serialized) = serde_json::to_string(&list) {
+                        let _ = Self::atomic_write_with_options(&new_store, &serialized, false);
+                    }
+                }
+            }
+            let _ = fs::remove_file(&old_store);
+        }
+    }
+
+    /// 当文件或上级目录在侧边栏被重命名时，同步迁移该文件或目录下所有笔记的本地时间机器历史快照
     pub fn migrate_file_history(old_path: &Path, new_path: &Path) {
         if new_path.is_file() {
-            let old_str = old_path.to_string_lossy().to_string();
-            let new_str = new_path.to_string_lossy().to_string();
-            let old_store = Self::build_history_store_path(&old_str);
-            let new_store = Self::build_history_store_path(&new_str);
-            if old_store.exists() && old_store != new_store {
-                if let Ok(raw) = fs::read_to_string(&old_store) {
-                    if let Ok(mut list) = serde_json::from_str::<Vec<HistorySnapshotRecord>>(&raw) {
-                        for item in &mut list {
-                            item.file_path = new_str.clone();
-                        }
-                        if let Ok(serialized) = serde_json::to_string(&list) {
-                            let _ = Self::atomic_write_with_options(&new_store, &serialized, false);
+            Self::migrate_single_file_history(old_path, new_path);
+        } else if new_path.is_dir() {
+            let mut stack = vec![(old_path.to_path_buf(), new_path.to_path_buf())];
+            while let Some((cur_old, cur_new)) = stack.pop() {
+                if let Ok(entries) = fs::read_dir(&cur_new) {
+                    for entry in entries.flatten() {
+                        let child_new = entry.path();
+                        if let Some(name) = child_new.file_name() {
+                            let child_old = cur_old.join(name);
+                            if child_new.is_dir() {
+                                stack.push((child_old, child_new));
+                            } else if child_new.is_file() {
+                                Self::migrate_single_file_history(&child_old, &child_new);
+                            }
                         }
                     }
                 }
-                let _ = fs::remove_file(&old_store);
             }
         }
     }

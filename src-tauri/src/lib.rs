@@ -5,14 +5,20 @@ pub mod search;
 pub mod watcher;
 
 use commands::AppState;
+use safe_io::SafeIO;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{Manager, WindowEvent};
 
+#[cfg(not(target_os = "linux"))]
+use std::net::{TcpListener, TcpStream};
+
+#[cfg(not(target_os = "linux"))]
 const SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:45789";
+
+const MAX_SINGLE_INSTANCE_IPC_BYTES: u64 = 64 * 1024;
 
 /// Tauri v1 / v2 统一事件广播适配 Trait：
 /// 将 `app_handle.emit(...)` 与 `app_handle.emit_to(...)` 映射至 `tauri::Manager::emit_all` / `emit_to`
@@ -51,12 +57,64 @@ impl WebviewWindowCompat for tauri::AppHandle {
     }
 }
 
-/// 银河麒麟 (Kylin OS V10 SP1 / UKUI / glibc 2.31 / webkit2gtk-4.0) 与海光 3350 (Hygon C86 3350) 运行时环境预初始化：
-/// 1. 自动注入 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（除非用户显式设置 `QUILLA_ALLOW_DMABUF=1`），
-///    规避 WebKitGTK 在银河麒麟 V10 + 景嘉微 (JM7200/JM9) / 海光集显 / Mesa 驱动下的启动白屏与闪屏；
-/// 2. 检测到景嘉微显卡、llvmpipe 软件渲染或传入 `--disable-gpu` / `--safe-render` 时，自动启用 `WEBKIT_DISABLE_COMPOSITING_MODE=1`；
-/// 3. 在 UKUI / Wayland 混合会话下优先注入 `GDK_BACKEND=x11,wayland`，确保无边框窗口拖拽、置顶 (`set_always_on_top`) 与多窗口定位稳定工作；
-/// 4. 针对海光 3350 (8核16线程) 初始化 Rayon 全局并行线程池，最大化全文倒排索引与知识图谱计算吞吐量。
+/// 检测 Linux 是否运行在 KVM/QEMU/VMware/VirtualBox 等虚拟化或软件渲染环境下
+#[cfg(target_os = "linux")]
+fn is_virtualized_or_software_gpu() -> bool {
+    // 1. 景嘉微国产显卡检测
+    if std::path::Path::new("/proc/driver/jmgpu").exists()
+        || std::path::Path::new("/dev/jmgpu").exists()
+    {
+        return true;
+    }
+
+    // 2. 常见 KVM/QEMU 虚拟显卡内核模块检测
+    for module in ["virtio_gpu", "qxl", "bochs", "bochs_drm", "vmwgfx", "cirrus"] {
+        if std::path::Path::new(&format!("/sys/module/{}", module)).exists() {
+            return true;
+        }
+    }
+
+    // 3. DMI 产品名与虚拟化特征检测（兼容 KVM / QEMU / VMware / VirtualBox）
+    for dmi_path in [
+        "/sys/class/dmi/id/product_name",
+        "/sys/class/dmi/id/sys_vendor",
+        "/sys/class/dmi/id/board_vendor",
+    ] {
+        if let Ok(raw) = std::fs::read_to_string(dmi_path) {
+            let lower = raw.to_lowercase();
+            if lower.contains("kvm")
+                || lower.contains("qemu")
+                || lower.contains("vmware")
+                || lower.contains("virtualbox")
+                || lower.contains("bochs")
+            {
+                return true;
+            }
+        }
+    }
+
+    // 4. 软件渲染环境变量检测 (llvmpipe / softpipe)
+    if let Ok(always_soft) = std::env::var("LIBGL_ALWAYS_SOFTWARE") {
+        if always_soft == "1" || always_soft.eq_ignore_ascii_case("true") {
+            return true;
+        }
+    }
+
+    // 5. 无可用硬件 DRM render 节点时视为软件渲染/远程 VNC 环境
+    if !std::path::Path::new("/dev/dri/renderD128").exists() {
+        return true;
+    }
+
+    false
+}
+
+/// 银河麒麟 (Kylin OS V10 SP1 / 高级服务器 OS V11 2503 / glibc 2.38 / AArch64·x86_64·LoongArch64) 运行时环境预初始化：
+/// 1. 默认注入 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（除非显式设置 `QUILLA_ALLOW_DMABUF=1`），规避 WebKitGTK 白屏；
+/// 2. 检测到景嘉微显卡、KVM/QEMU 虚拟化显卡（virtio-gpu/qxl/bochs/llvmpipe）、无硬件渲染节点或 `--safe-render` 时，
+///    自动启用 `WEBKIT_DISABLE_COMPOSITING_MODE=1`，彻底解决 V11 2503 虚拟化环境渲染冻结与无法输入；
+/// 3. 仅在存在 X11 `DISPLAY` 时才优先回退 `GDK_BACKEND=x11,wayland`，避免纯 Wayland 会话启动失败；
+/// 4. 不再盲目覆写 `GTK_IM_MODULE=fcitx`，仅保留系统原配输入法框架（兼容 Fcitx5 / Fcitx / IBus）；
+/// 5. 初始化 Rayon 全局并行线程池，兼顾多核处理器吞吐。
 pub fn init_linux_kylin_environment(args: &[String]) {
     #[cfg(target_os = "linux")]
     {
@@ -74,30 +132,22 @@ pub fn init_linux_kylin_environment(args: &[String]) {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
 
-        let has_jm_gpu = std::path::Path::new("/proc/driver/jmgpu").exists()
-            || std::path::Path::new("/dev/jmgpu").exists();
-
-        if (force_safe_render || has_jm_gpu)
+        if (force_safe_render || is_virtualized_or_software_gpu())
             && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none()
         {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
         }
 
+        // 仅在存在 X11 DISPLAY 且为 Wayland 混合会话时优先 x11；纯 Wayland 环境不强行覆写
         if std::env::var_os("GDK_BACKEND").is_none() {
-            if let Ok(session_type) = std::env::var("XDG_SESSION_TYPE") {
-                if session_type.eq_ignore_ascii_case("wayland") {
-                    std::env::set_var("GDK_BACKEND", "x11,wayland");
-                }
-            }
-        }
-
-        // 兼容银河麒麟预装 Fcitx / Fcitx5 / 搜狗输入法信创版
-        if std::env::var_os("GTK_IM_MODULE").is_none() {
-            if let Ok(xmod) = std::env::var("XMODIFIERS") {
-                if xmod.contains("fcitx") {
-                    std::env::set_var("GTK_IM_MODULE", "fcitx");
-                } else if xmod.contains("ibus") {
-                    std::env::set_var("GTK_IM_MODULE", "ibus");
+            let has_x11_display = std::env::var("DISPLAY")
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false);
+            if has_x11_display {
+                if let Ok(session_type) = std::env::var("XDG_SESSION_TYPE") {
+                    if session_type.eq_ignore_ascii_case("wayland") {
+                        std::env::set_var("GDK_BACKEND", "x11,wayland");
+                    }
                 }
             }
         }
@@ -107,19 +157,18 @@ pub fn init_linux_kylin_environment(args: &[String]) {
         let _ = args;
     }
 
-    // 针对海光 3350 (8C/16T) 或多核 CPU 配置 Rayon 并行工作线程池
     let logical_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(8)
         .clamp(2, 16);
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(logical_threads)
-        .thread_name(|idx| format!("quilla-hygon-worker-{}", idx))
+        .thread_name(|idx| format!("quilla-worker-{}", idx))
         .build_global();
 }
 
 /// 解析命令行或 Linux `.desktop` (`%U` / `%F`) 传入的文件/目录参数，
-/// 自动剥离 `file://` 协议头并解码 `%XX` UTF-8 中文路径（修复银河麒麟 Peony 文件管理器双击中文路径失效问题）
+/// 自动剥离 `file://` 协议头并解码 `%XX` UTF-8 中文路径；同时支持打开尚未创建的新 `.md` 文件路径
 pub fn normalize_cli_path_arg(raw_arg: &str) -> Option<String> {
     let trimmed = raw_arg.trim().trim_matches('"').trim_matches('\'');
     if trimmed.is_empty() || trimmed.starts_with('-') {
@@ -132,7 +181,13 @@ pub fn normalize_cli_path_arg(raw_arg: &str) -> Option<String> {
     } else {
         trimmed
     };
-    let decoded = commands::urlencoding_decode(without_scheme);
+    let mut decoded = commands::urlencoding_decode(without_scheme);
+    #[cfg(target_os = "windows")]
+    {
+        if decoded.starts_with('/') && decoded.as_bytes().get(2) == Some(&b':') {
+            decoded.remove(0);
+        }
+    }
     let path = std::path::Path::new(&decoded);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
@@ -141,65 +196,143 @@ pub fn normalize_cli_path_arg(raw_arg: &str) -> Option<String> {
     };
     if resolved.exists() {
         Some(resolved.to_string_lossy().to_string())
+    } else if resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+        .unwrap_or(false)
+        && resolved.parent().map(|p| p.exists()).unwrap_or(false)
+    {
+        Some(resolved.to_string_lossy().to_string())
     } else {
         None
     }
 }
 
-/// 单实例文件接管守卫 (原生零依赖实现)：
-/// - 当已有 Quilla 实例运行且未传入 `--new-window` 时，将双击打开的 `.md` 文件或工作区目录通过本地回环 IPC 秒级转发给主实例并立即退出；
-/// - 主实例监听本地回环端口，收到外部双击文件请求后自动唤醒窗口、置顶聚焦并派发 `quilla-open-external-file` 事件在新标签页打开。
+#[cfg(target_os = "linux")]
+fn resolve_single_instance_socket_path() -> std::path::PathBuf {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let dir = std::path::PathBuf::from(runtime_dir);
+        if dir.exists() {
+            return dir.join("quilla-single-instance.sock");
+        }
+    }
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let safe_user: String = user
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    std::env::temp_dir().join(format!("quilla-ipc-{}.sock", safe_user))
+}
+
+fn handle_single_instance_payload(app_handle: &tauri::AppHandle, buf: &str) {
+    if let Some(win) = app_handle.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(buf) {
+        if let Some(arr) = json.get("paths").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(path_str) = item.as_str() {
+                    if !path_str.trim().is_empty() {
+                        let _ = app_handle.emit(
+                            "quilla-open-external-file",
+                            path_str.trim().to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 单实例文件接管守卫：
+/// - Linux 使用 per-user Unix Domain Socket (`$XDG_RUNTIME_DIR/quilla-single-instance.sock`, 0600 隔离)，
+///   避免多用户服务器上固定 TCP 端口抢占与跨用户转发；
+/// - Windows/macOS 使用本地回环 TCP；
+/// - 统一限制单次 IPC 读取上限为 64 KiB，防止 OOM DoS。
 fn try_forward_to_existing_instance(cli_paths: &[String], is_new_window: bool) -> bool {
     if is_new_window {
         return false;
     }
-    if let Ok(mut stream) = TcpStream::connect_timeout(
-        &SINGLE_INSTANCE_ADDR.parse().unwrap(),
-        Duration::from_millis(180),
-    ) {
-        let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
-        let payload = serde_json::json!({
-            "paths": cli_paths,
-            "cwd": std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-        })
-        .to_string();
-        if stream.write_all(payload.as_bytes()).is_ok() {
-            let _ = stream.flush();
-            return true;
+    let payload = serde_json::json!({
+        "paths": cli_paths,
+        "cwd": std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    })
+    .to_string();
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::net::UnixStream;
+        let sock_path = resolve_single_instance_socket_path();
+        if let Ok(mut stream) = UnixStream::connect(&sock_path) {
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+            if stream.write_all(payload.as_bytes()).is_ok() {
+                let _ = stream.flush();
+                return true;
+            }
         }
+        return false;
     }
-    false
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Ok(addr) = SINGLE_INSTANCE_ADDR.parse() {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(180)) {
+                let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+                if stream.write_all(payload.as_bytes()).is_ok() {
+                    let _ = stream.flush();
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 fn start_single_instance_ipc_server(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
-        if let Ok(listener) = TcpListener::bind(SINGLE_INSTANCE_ADDR) {
-            for stream in listener.incoming().flatten() {
-                let mut s = stream;
-                let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-                let mut buf = String::new();
-                if s.read_to_string(&mut buf).is_ok() {
-                    if let Some(win) = app_handle.get_webview_window("main") {
-                        let _ = win.unminimize();
-                        let _ = win.show();
-                        let _ = win.set_focus();
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::net::UnixListener;
+            let sock_path = resolve_single_instance_socket_path();
+            let _ = std::fs::remove_file(&sock_path);
+            if let Ok(listener) = UnixListener::bind(&sock_path) {
+                let _ = std::fs::set_permissions(
+                    &sock_path,
+                    std::fs::Permissions::from_mode(0o600),
+                );
+                for stream in listener.incoming().flatten() {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                    let mut buf = String::new();
+                    if stream
+                        .take(MAX_SINGLE_INSTANCE_IPC_BYTES)
+                        .read_to_string(&mut buf)
+                        .is_ok()
+                    {
+                        handle_single_instance_payload(&app_handle, &buf);
                     }
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&buf) {
-                        if let Some(arr) = json.get("paths").and_then(|v| v.as_array()) {
-                            for item in arr {
-                                if let Some(path_str) = item.as_str() {
-                                    if !path_str.trim().is_empty() {
-                                        let _ = app_handle.emit(
-                                            "quilla-open-external-file",
-                                            path_str.trim().to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Ok(listener) = TcpListener::bind(SINGLE_INSTANCE_ADDR) {
+                for stream in listener.incoming().flatten() {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                    let mut buf = String::new();
+                    if stream
+                        .take(MAX_SINGLE_INSTANCE_IPC_BYTES)
+                        .read_to_string(&mut buf)
+                        .is_ok()
+                    {
+                        handle_single_instance_payload(&app_handle, &buf);
                     }
                 }
             }
@@ -227,7 +360,6 @@ pub fn run() {
         }
     }
 
-    // 若已有主实例正在运行，将双击打开的 .md 文件转发给现有实例并在新标签页秒开
     if try_forward_to_existing_instance(&cli_paths, is_new_window) {
         return;
     }
@@ -241,21 +373,26 @@ pub fn run() {
         workspace_watcher: watcher::WorkspaceWatcher::default(),
         workspace_index: search::WorkspaceIndex::default(),
         force_closing_windows: Mutex::new(HashSet::new()),
+        window_maximized_state: Mutex::new(HashMap::new()),
     };
 
     let app = tauri::Builder::default()
         .manage(app_state)
         .setup(|app| {
-            // 启动单实例文件接管 IPC 监听服务
             start_single_instance_ipc_server(app.handle().clone());
 
-            // 启动主题目录监听器（同时兼容开发环境 src/themes 与生产环境可执行文件同级目录）
-            if let Ok(current_dir) = std::env::current_dir() {
-                let dev_themes = current_dir.join("src").join("themes");
-                if dev_themes.exists() {
-                    watcher::ThemeWatcher::start_theme_watcher(dev_themes, app.handle().clone());
-                } else {
-                    watcher::ThemeWatcher::start_theme_watcher(current_dir, app.handle().clone());
+            // 仅监控明确的主题目录（开发环境 src/themes 或用户数据目录 themes/），
+            // 严禁回退递归监控 current_dir()，彻底杜绝 Linux inotify 句柄耗尽。
+            let dev_themes = std::env::current_dir()
+                .ok()
+                .map(|d| d.join("src").join("themes"))
+                .filter(|p| p.is_dir());
+            if let Some(themes_dir) = dev_themes {
+                watcher::ThemeWatcher::start_theme_watcher(themes_dir, app.handle().clone());
+            } else {
+                let user_themes = SafeIO::resolve_app_data_root().join("themes");
+                if std::fs::create_dir_all(&user_themes).is_ok() {
+                    watcher::ThemeWatcher::start_theme_watcher(user_themes, app.handle().clone());
                 }
             }
             Ok(())
@@ -278,8 +415,21 @@ pub fn run() {
                     }
                 }
                 WindowEvent::Resized(_) => {
+                    // 状态去重：仅当最大化状态真实变化时才向前端广播，消除缩放/拖动时的事件风暴
                     if let Ok(maximized) = window.is_maximized() {
-                        let _ = window.emit("window-maximized-changed", maximized);
+                        let state = window.state::<AppState>();
+                        let label = window.label().to_string();
+                        let changed = state
+                            .window_maximized_state
+                            .lock()
+                            .map(|mut map| {
+                                let prev = map.insert(label, maximized);
+                                prev != Some(maximized)
+                            })
+                            .unwrap_or(true);
+                        if changed {
+                            let _ = window.emit("window-maximized-changed", maximized);
+                        }
                     }
                 }
                 _ => {}
@@ -343,11 +493,7 @@ pub fn run() {
             commands::register_default_markdown_app,
             commands::reveal_in_explorer,
             commands::reveal_in_folder,
-            commands::open_external_url,
-            commands::workspace_git_status,
-            commands::workspace_git_sync,
-            commands::parse_git_conflict_file,
-            commands::webdav_sync_workspace
+            commands::open_external_url
         ])
         .build(tauri::generate_context!())
         .expect("构建 Quilla 失败");

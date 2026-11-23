@@ -249,9 +249,10 @@ export function extractLineInlineTokens(
     });
   }
 
-  const mathRegex = /(?<![\\$\d])\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g;
+  const mathRegex = /\$([^\s$\\](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/g;
   while ((m = mathRegex.exec(text)) !== null) {
     if (m.index < prefixEnd) continue;
+    if (m.index > 0 && /[\\$\d]/.test(text[m.index - 1])) continue;
     tokens.push({
       type: "math",
       start: m.index,
@@ -323,9 +324,10 @@ export function extractLineInlineTokens(
   }
 
   const tagRegex =
-    /(?:^|(?<=\s))#([a-zA-Z0-9_\-\u4e00-\u9fa5]+(?:\/[a-zA-Z0-9_\-\u4e00-\u9fa5]+)*)(?=\s|$|[，。！？、；：,.!?;:])/g;
+    /#([a-zA-Z0-9_\-\u4e00-\u9fa5]+(?:\/[a-zA-Z0-9_\-\u4e00-\u9fa5]+)*)(?=\s|$|[，。！？、；：,.!?;:])/g;
   while ((m = tagRegex.exec(text)) !== null) {
     if (m.index < prefixEnd) continue;
+    if (m.index > 0 && !/\s/.test(text[m.index - 1])) continue;
     const tagBody = m[1];
     if (/^\d+$/.test(tagBody) || /^[0-9a-fA-F]{3,8}$/.test(tagBody)) continue;
     tokens.push({
@@ -423,11 +425,14 @@ export function extractLineInlineTokens(
   }
 
   const boldRegex =
-    /(?<!\*)(\*{2})(?!\*)([^\n]+?)(?<!\*)\1(?!\*)|(?<!_)(_{2})(?!_)([^\n]+?)(?<!_)\3(?!_)/g;
+    /(\*{2})(?!\*)([^\n]+?)\1(?!\*)|(_{2})(?!_)([^\n]+?)\3(?!_)/g;
   while ((m = boldRegex.exec(text)) !== null) {
     if (m.index < prefixEnd) continue;
     const s = m.index;
     const e = m.index + m[0].length;
+    const delimChar = m[1] ? "*" : "_";
+    if (s > 0 && text[s - 1] === delimChar) continue;
+    if (e >= 3 && text[e - 3] === delimChar) continue;
     if (canPlaceDelimiters(s, s + 2, e - 2, e)) {
       acceptedTokens.push({
         type: "bold",
@@ -439,11 +444,16 @@ export function extractLineInlineTokens(
   }
 
   const italicRegex =
-    /(?<!\*)\*([^*\s\n][^*\n]*?)\*(?!\*)|(?<![_\p{L}\p{N}])_([^_\s\n][^_\n]*?)_(?![_\p{L}\p{N}])/gu;
+    /\*([^*\s\n][^*\n]*?)\*(?!\*)|_([^_\s\n][^_\n]*?)_(?![_0-9a-zA-Z\u4e00-\u9fa5])/g;
   while ((m = italicRegex.exec(text)) !== null) {
     if (m.index < prefixEnd) continue;
     const s = m.index;
     const e = m.index + m[0].length;
+    if (m[1] !== undefined) {
+      if (s > 0 && text[s - 1] === "*") continue;
+    } else {
+      if (s > 0 && /[_0-9a-zA-Z\u4e00-\u9fa5]/.test(text[s - 1])) continue;
+    }
     if (canPlaceDelimiters(s, s + 1, e - 1, e)) {
       acceptedTokens.push({
         type: "italic",

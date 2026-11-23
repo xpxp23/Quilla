@@ -1152,11 +1152,15 @@ export class TabsManager {
         this.snapshotActiveTabState();
         await this.callbacks.onOpenInNewWindowRequest?.(tab);
       } else if (act === "copy-name") {
-        navigator.clipboard.writeText(tab.title).catch(() => {});
-        showToast("已复制文件名", "success");
+        navigator.clipboard
+          .writeText(tab.title)
+          .then(() => showToast("已复制文件名", "success"))
+          .catch(() => showToast("复制失败，请检查剪贴板权限", "error"));
       } else if (act === "copy-path" && tab.filePath) {
-        navigator.clipboard.writeText(tab.filePath).catch(() => {});
-        showToast("已复制文件完整路径", "success");
+        navigator.clipboard
+          .writeText(tab.filePath)
+          .then(() => showToast("已复制文件完整路径", "success"))
+          .catch(() => showToast("复制失败，请检查剪贴板权限", "error"));
       } else if (act === "reveal-folder" && tab.filePath) {
         invoke("reveal_in_folder", { path: tab.filePath }).catch((err) => {
           showToast(`无法定位文件夹: ${err}`, "error");
